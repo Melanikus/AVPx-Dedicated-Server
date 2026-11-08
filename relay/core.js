@@ -375,6 +375,32 @@ class RelayCore {
     return secret !== null && (sameSecret(secret, this.cookieFor(address, port, now, 0)) || sameSecret(secret, this.cookieFor(address, port, now, 1)));
   }
 
+  // ----- For the list (list/routes.js)
+
+  // The live game whose token this is (16 bytes), or null. The token is checked byte by byte in a fixed time, so how long this takes
+  // says nothing about how near a guess was.
+  gameByToken(token) {
+    if (!Buffer.isBuffer(token) || token.length !== P.kSecretBytes) {
+      return null;
+    }
+
+    const game = this.gamesByToken.get(token.toString('hex'));
+    return game && sameSecret(game.token, token) ? game : null;
+  }
+
+  // Every live game, for the list to read. A game's list entry lives on the game itself (game.listing), so it ends when the game does.
+  liveGames() {
+    return this.games.values();
+  }
+
+  // Ends a game now, as a HOST_CLOSE would
+  endGame(game) {
+    if (this.games.get(game.code.toString('latin1')) === game) {
+      this.closeGame(game);
+      this.counts.closed++;
+    }
+  }
+
   // ----- Endings
 
   freeSlot(slot) {

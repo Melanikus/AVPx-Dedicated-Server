@@ -24,8 +24,9 @@ import java.util.stream.Stream;
 //
 //   1. Every file is ASCII: every byte of every file in the repository.
 //   2. No third-party code: module-info.java names no module it needs, so javac itself can use nothing but java.base; every import is
-//      Java's own (java., javax.) or ours (avpx.); and nowhere in the repository is there a Java build file that fetches packages
-//      (Maven's, Gradle's) or any compiled code at all (.jar, .class, .dll, ...): nothing precompiled from outside (AVP Tao 1).
+//      Java's own (java., javax.) or ours (avpx.); and nowhere in the repository is there a build file that fetches packages
+//      (Maven's, Gradle's, npm's, yarn's, pnpm's, or a node_modules folder) or any compiled code at all (.jar, .class, .dll, ...):
+//      nothing precompiled from outside (AVP Tao 1).
 //   3. No code made from text: none of the ways Java turns text or bytes into code, or reaches past its own safety (reflection, scripts,
 //      class loaders, reading Java objects back from bytes, native code).
 //   4. The server starts no other program: only java/tools/ may.
@@ -47,9 +48,11 @@ public final class CheckStandard {
   // Rule 2: compiled code, and the files of build tools that fetch packages
   private static final Set<String> COMPILED = Set.of(".jar", ".war", ".ear", ".class", ".so", ".dll", ".dylib", ".exe", ".o", ".obj", ".a",
       ".lib", ".pyc", ".node", ".jmod");
+  // Java's (Maven, Gradle), and Node's (npm, yarn, pnpm): this repository was Node's until 2026-11-08, and a Node tree must not creep back
   private static final Set<String> BUILD_FILES = Set.of("pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle",
-      "settings.gradle.kts", "gradlew", "gradlew.bat", "mvnw", "mvnw.cmd");
-  private static final Set<String> BUILD_FOLDERS = Set.of(".mvn", ".gradle");
+      "settings.gradle.kts", "gradlew", "gradlew.bat", "mvnw", "mvnw.cmd", "package.json", "package-lock.json", "npm-shrinkwrap.json",
+      "yarn.lock", "pnpm-lock.yaml", "pnpm-workspace.yaml");
+  private static final Set<String> BUILD_FOLDERS = Set.of(".mvn", ".gradle", "node_modules");
   private static final Pattern IMPORT = Pattern.compile("^\\s*import\\s+(static\\s+)?([A-Za-z0-9_.*]+)\\s*;");
   private static final Pattern REQUIRES = Pattern.compile("^\\s*requires\\b");
 

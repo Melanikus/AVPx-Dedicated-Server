@@ -25,7 +25,9 @@
    - the counters and the replay window of the sealed messages after the handshake: ProVerif doesn't count; the tests hold them;
    - fragments: they carry bytes, and change nothing a proof is about;
    - the game proving itself to the relay: pqNK doesn't, by design (the game is anonymous; its tokens and tickets, inside the channel,
-     are what prove a host or joiner).
+     are what prove a host or joiner);
+   - the relay taking the game's first sealed message in place of an A3 that was lost (CRYPTO.md section 6, "Losses"): no query here is
+     about what the relay agrees to, because the game is anonymous, so it changes no answer.
 
    THE QUERIES (proofs/run.sh runs them, and says what each must give):
    1. secrecy: the attacker never learns what an honest game sends under its session key, even when the relay's static keys are given
@@ -83,7 +85,9 @@ reduc forall k: key, n: nonce, ad: bitstring, m: bitstring; adec(k, n, ad, aenc(
 free secretI: bitstring [private].
 
 (* The game has finished its handshake with the relay whose static P-384 key is the first argument, over the transcript h, with the two
-   keys k_ir and k_ri; and the relay has derived those keys over that transcript *)
+   keys k_ir and k_ri; and the relay has derived those keys over that transcript. The h here is h10, before A3's tag; CRYPTO.md 5.1 point
+   15 calls h after A3 "the transcript". They come to the same: h11 is the hash of h10 and A3's tag, which is made under k4 from h10, so
+   agreeing on h10 and the keys is agreeing on h11. *)
 event IDone(G, bitstring, key, key).
 event RKeys(G, bitstring, key, key).
 

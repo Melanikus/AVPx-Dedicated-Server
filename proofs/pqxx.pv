@@ -68,7 +68,9 @@ reduc forall k: key, n: nonce, ad: bitstring, m: bitstring; adec(k, n, ad, aenc(
 free secretJ: bitstring [private].
 free secretH: bitstring [private].
 
-(* Arguments: the host's static P-384 key, the joiner's static P-384 key, the transcript, and the two keys *)
+(* Arguments: the host's static P-384 key, the joiner's static P-384 key, the transcript, and the two keys. The h here is h10, before
+   B5's tag; CRYPTO.md 5.1 point 15 calls h after B5 "the transcript". They come to the same: h after B5 is the hash of h10 and B5's tag,
+   which is made under k6 from h10. *)
 event JDone(G, G, bitstring, key, key).
 event HKeys(G, G, bitstring, key, key).
 event HDone(G, G, bitstring, key, key).

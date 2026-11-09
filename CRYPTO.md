@@ -245,6 +245,7 @@ Every implementation must make the same bytes. Where Noise leaves a choice, or w
 12. **The limits on handshakes are kept by address and port,** not by address alone. Behind carrier-grade NAT, many homes share one address, and those are the players the relay exists for. One handshake being put together, and 2 a second (4 at once), per address and port; a ceiling of 16 at once per address; 1,000 at once in all (section 17).
 13. **The replay window is 1,024 messages, one per direction:** behind the highest counter taken from the other side. Counters count messages, never fragments. The relay's sealed answers stay exactly 104 bytes.
 14. **The test vectors** (section 15) are made by a Java tool, and fix whole handshakes: A1, A2 and A3 as bytes, and every `h` and `ck`, with seeded randomness given to ML-KEM's key generation and encapsulation. A Java test makes the file again and fails if it differs.
+15. **"The transcript" is `h` after the last handshake message:** after A3 for handshake A, after B5 for handshake B. That's Noise's own handshake hash. It's what a handshake gives back with its two keys, what the test vectors hold as each handshake's transcript, and what the check code (section 8) is made from. The Java server already does this (HandshakeA's Keys.transcript); settled 2026-11-09 from Primary's read of the model.
 
 ## 6. Handshake A: a game and its relay (pattern pqNK, hybrid)
 

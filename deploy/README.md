@@ -54,6 +54,33 @@ GitHub puts each version on the machine, with no key stored anywhere. It's done 
 
    If it doesn't answer, the command points `current` back at the version before, and restarts again.
 
+## The Java version (added 2026-11-09; nothing here has been run on a real machine yet)
+
+The Java version (`java/` in the repository) does the same job as the Node version, with the same settings file and the same firewall.
+A machine runs one of the two, never both: they'd want the same ports. Setting up is the same as above, except:
+
+1. **Instead of Node, the JDK, checked before it runs.** Use `java/tools/get-jdk.sh`, the same script the tests run with, as root:
+   - `sh get-jdk.sh /opt/avpx-jdk-25.0.5+8` (the version in the script's `JDK_RELEASE` line).
+   - It uses the JDK only if three things hold: its signature is good by Adoptium's key, pinned in the script by its fingerprint; its
+     sha256 is the pinned one; and it says it is that version. So the machine runs the very JDK the tests ran on, byte for byte.
+   - It needs `curl`, `gpg`, `sha256sum` and `tar`, which Ubuntu has.
+   - Then point the name the service uses at it: `ln -sfn /opt/avpx-jdk-25.0.5+8 /opt/avpx-jdk`. The script refuses a folder that's there
+     already, so each JDK gets a folder of its own, and the link moves.
+2. **The server is one file, `avpx-server.jar`,** which GitHub builds with `java/build.sh`. The same code always makes the same jar, so its
+   sha256 must be the one in the commit's own run of the checks. It goes in `/opt/avpx/releases/<commit>/`, with `/opt/avpx/current`
+   pointing at that folder, as for the Node version.
+3. **The certificate's key must be in PKCS#8 form** (its first line is `-----BEGIN PRIVATE KEY-----`). As far as we know, that's how
+   certbot writes `privkey.pem`, but it hasn't been checked on a machine yet. If it isn't, the server says so plainly when it starts, and
+   `openssl pkcs8 -topk8 -nocrypt -in privkey.pem -out privkey.pem.new` makes it. The server checks the key belongs to the certificate
+   before using the pair, and takes up a renewed pair within an hour, with no restart.
+4. **The service is `avpx-java.service`,** with every limit of `avpx.service` kept. Java needs more threads than Node, so it allows more
+   tasks, and it runs the JDK from `/opt/avpx-jdk`: copy it to `/etc/systemd/system/`, then `systemctl daemon-reload`,
+   `systemd-analyze security avpx-java`, and `systemctl enable --now avpx-java`.
+5. **A new JDK every quarter.** Oracle's security updates come in January, April, July and October. When one lands, the check "The JDK
+   is the newest Temurin 25" fails (GATES.md) until get-jdk.sh's four pinned lines move to the new release. On the machine, fetch the
+   new JDK into its own folder as in step 1, move the `/opt/avpx-jdk` link, and `systemctl restart avpx-java`.
+6. **Reading what it says:** `journalctl -u avpx-java`. Its lines are counts and times, never an address, a code, a token or a name.
+
 ## Adding a region later (not done yet)
 
 The first version runs on one machine, `virginia` (AWS us-east-1), with the relay and the list. The code is ready for more relays; these steps aren't written as files yet:

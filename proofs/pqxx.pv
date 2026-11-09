@@ -16,6 +16,8 @@
    - B5, joiner to host: an EncryptAndHash of the joiner's 32 bytes, which the host checks against B1's commitment: the joiner's key
      confirmation, after B4's skem;
    - Split, then each side sends a sealed game datagram holding a secret.
+     (Split gives each direction a secret, and epoch 0's key is made from it: 5.1 points 3 and 8. The model makes those two one-way
+     steps one, splitir and splitri, because a one-way function of a one-way function is the same to the attacker here.)
    The joiner takes the host only if the fingerprint of the static keys in B2 is the one the listing gave. The host takes any joiner (in
    the game, anyone may join), and what's proved is about a joiner whose identity it knows.
 

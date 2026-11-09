@@ -9,6 +9,7 @@ import java.util.Comparator;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -61,6 +62,8 @@ public final class Takeouts {
   // The shell, by its full path, so it can't be another program of that name found first in the PATH
   private static final String SHELL = "/bin/sh";
 
+  private static final Set<String> CHECKS = Set.of("tests", "standard", "live");
+
   private static final long MOST_MINUTES_A_CHECK = 10;
   private static final int MOST_AT_ONCE = 4;
 
@@ -87,6 +90,12 @@ public final class Takeouts {
       String name = line.substring(4);
       String check = field(lines, k + 1, "check: ");
       String file = field(lines, k + 2, "file: ");
+
+      // Every row is whole: a name, a check that exists, a plain file path, and its text (as Node's takeouts-file test asked of its rows)
+      if (name.isBlank() || !CHECKS.contains(check) || !PLAIN_PATH.matcher(file).matches() || file.contains("..")) {
+        throw new IllegalArgumentException("takeouts.txt line " + (k + 1) + ": a row needs a name, a check (tests, standard or live) and a "
+            + "plain file path");
+      }
       k += 3;
       String block = k < lines.size() ? lines.get(k) : "";
       k++;

@@ -36,16 +36,13 @@ import java.util.stream.Stream;
 //
 // This file is the one place the words rules 3 to 6 look for are listed, so it leaves its own text out of those rules, and so does
 // java/tools/takeouts.txt, whose rows put those words into a copy on purpose, to prove this check notices them. The words are written in
-// pieces here, so tools/check-standard.js, which looks for some of the same words, doesn't find them in this file either.
+// pieces here, so no other tool that looks for them (a scanner's own search, say) finds them in this file either.
 public final class CheckStandard {
   private CheckStandard() {
   }
 
   private static final String SELF = "java/tools/CheckStandard.java";
   private static final String ROWS = "java/tools/takeouts.txt";
-
-  // The Node version's take-out rows, which also put rule 6's words into a copy on purpose: left out while the Node version is here
-  private static final String NODE_ROWS = "tools/takeouts.json";
 
   // Rule 2: compiled code, and the files of build tools that fetch packages
   private static final Set<String> COMPILED = Set.of(".jar", ".war", ".ear", ".class", ".so", ".dll", ".dylib", ".exe", ".o", ".obj", ".a",
@@ -177,7 +174,7 @@ public final class CheckStandard {
       }
     }
 
-    if (!file.equals(SELF) && !file.equals(ROWS) && !file.equals(NODE_ROWS)) {
+    if (!file.equals(SELF) && !file.equals(ROWS)) {
       String[] lines = new String(bytes, StandardCharsets.ISO_8859_1).split("\n", -1);
 
       for (int k = 0; k < lines.length; k++) {

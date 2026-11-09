@@ -65,7 +65,7 @@ jobs:
           echo "$second"
           test "$first" = "$second"
 
-      # CODING-STANDARD.md's rules, the Java side (tools/check-standard.js keeps the Node side): run from the repository's top folder
+      # CODING-STANDARD.md's rules, every one CheckStandard checks, over the whole repository: run from its top folder
       - name: The Java standard
         run: '"$JAVA_HOME/bin/java" -cp java/build/tools avpx.tools.CheckStandard'
 
@@ -89,10 +89,11 @@ jobs:
           echo "pinned $pinned, Adoptium's newest $newest"
           test "$pinned" = "$newest"
 
-  # The smoke test (java/tools/Smoke.java, 38 checks from outside the process) against the running Java server, and against the Node
-  # server too while it's still here, with the same certificate, settings and expected results: proof the two speak the same wire
+  # The smoke test (java/tools/Smoke.java, 38 checks from outside the process, the game's way) against the running server, with a
+  # certificate and settings of its own. Before the Node version was taken out, the java branch's runs of this job ran the same 38
+  # checks against the Node server too, to show the two spoke the same wire (this merged only once they had).
   smoke:
-    name: Smoke test, 38 checks, against each server
+    name: Smoke test, 38 checks, against the running server
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -104,8 +105,6 @@ jobs:
         run: |
           sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
           echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
-
-      - uses: ./.github/actions/node
 
       - name: Build
         run: sh java/build.sh
@@ -152,20 +151,6 @@ jobs:
           wait "$server" || true
           echo "----- what the Java server wrote to its screen"
           cat java-server.out
-          exit "$status"
-
-      - name: The Node server, and the same 38 checks against it (while the Node version is still here)
-        run: |
-          cd "$RUNNER_TEMP/smoke"
-          rm -f server.log
-          node "$GITHUB_WORKSPACE/main.js" /etc/avpx/settings.json > node-server.out 2>&1 &
-          server=$!
-          status=0
-          "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" || status=$?
-          kill "$server"
-          wait "$server" || true
-          echo "----- what the Node server wrote to its screen"
-          cat node-server.out
           exit "$status"
 
       # A relay-only machine (a later region's: its settings have no list) gets the relay's checks only, through --installed as the deploy's

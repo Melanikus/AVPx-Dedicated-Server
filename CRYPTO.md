@@ -488,7 +488,7 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 - **Stopping determined cheaters:** section 1. That needs a server that decides the game.
 - **Hardware keys for ML-DSA:** no consumer token holds ML-DSA keys yet. The root's ECDSA half could live on a hardware token.
 - **Hole punching (a direct path):** later, and it changes nothing here: handshake B and the sealing run the same over a direct path.
-- **Constant time of ML-KEM decapsulation as MSVC builds it for 32-bit x86: not yet known.** Upstream checks constant time with gcc and clang, and its constant-time proofs are for the assembly, which the game doesn't build (section 3.1). It's a card on AvP (posted by PO, 2026-11-08): look at MSVC's output for branches or table lookups that depend on secrets, and time decapsulation in a test. This line stays until that card is done. ML-DSA verification works on public data only, so it isn't affected.
+- **Constant time of ML-KEM decapsulation as MSVC builds it for 32-bit x86: not yet known.** Upstream checks constant time with gcc and clang, and its constant-time proofs are for the assembly, which the game doesn't build (section 3.1). It's card Melanikus/AvP#169: look at MSVC's output for branches or table lookups that depend on secrets, and time decapsulation in a test. This line stays until that card is done. ML-DSA verification works on public data only, so it isn't affected.
 
 ## 19. For the user to decide
 

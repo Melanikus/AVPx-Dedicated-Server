@@ -1,6 +1,5 @@
 package avpx.list;
 
-import avpx.access.AccessStore;
 import avpx.list.Requests.Ending;
 import avpx.list.Requests.Posted;
 import avpx.list.Requests.Refusal;
@@ -15,7 +14,8 @@ import java.util.Map;
 //
 // The list's seven calls (PROTOCOL.md section 4):
 //   POST   /v1/access-requests  a player asks to play here, from the game's page: 200 {v, fp, state}; 400, 429, 503 with {v, error}.
-//                               AccessRequests.java has its rules; the access store keeps the requests and the owner's decisions
+//                               AccessRequests.java has its rules, and ListServer calls it, not this (handle says why); the access
+//                               store keeps the requests and the owner's decisions
 //   GET    /v1/relays           the relays a game can use: 200 {relays}, never a key
 //   GET    /v1/relay-keys       with ?region= and a region, and nothing else (400): that version 2 relay's two static PUBLIC keys,
 //                               200 {region, p384, mlkem}; 404 for a region the list doesn't know or a version 1 relay. The game holds
@@ -69,14 +69,11 @@ public final class Routes {
     return answer(status, "error", words);
   }
 
-  // A request: its method, its path, its query (the text after the first ?, or ""), and its body's bytes, at now
-  // access: the access store, or null where the settings give none (then POST /v1/access-requests is 503 "closed")
-  public static Answer handle(Listings listings, AccessStore access, String method, String path, String query, byte[] body, long now) {
+  // A request: its method, its path, its query (the text after the first ?, or ""), and its body's bytes, at now. POST
+  // /v1/access-requests never comes here: ListServer hands it to AccessRequests itself, outside the lock this is called under, so a
+  // request being written to the disk keeps no other call waiting.
+  public static Answer handle(Listings listings, String method, String path, String query, byte[] body, long now) {
     try {
-      if (path.equals(AccessRequests.PATH)) {
-        return AccessRequests.handle(access, method, query, body, now);
-      }
-
       if (path.equals("/v1/relays")) {
         if (!method.equals("GET")) {
           return error(405, "no such call on this path");

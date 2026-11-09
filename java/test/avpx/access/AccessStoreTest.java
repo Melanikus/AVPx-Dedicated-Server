@@ -15,10 +15,20 @@ import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
 
 // The tests of AccessStore.java: requests kept and read back, the owner's decisions taken whole or not at all, approval by the whole id,
-// and every file it reads held as hostile input. Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
+// every file it reads held as hostile input, and the fixes from Secondary's review of it (the review's numbers are in the tests' names).
+// Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
 public final class AccessStoreTest {
   private AccessStoreTest() {
   }
@@ -26,6 +36,9 @@ public final class AccessStoreTest {
   private static final long NOW = 1794268800000L;   // 2026-11-11, in milliseconds
   private static final long DAY = 24L * 60 * 60 * 1000;
   private static final boolean POSIX = FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+
+  // The list's limit on new requests, saying yes
+  private static final BooleanSupplier YES = () -> true;
 
   // Player number n's fingerprint (32 hex digits) and id (96, starting with the fingerprint), different for every n
   private static String fp(int n) {
@@ -41,11 +54,20 @@ public final class AccessStoreTest {
   }
 
   private static void remove(Path folder) throws IOException {
+    if (!Files.exists(folder, LinkOption.NOFOLLOW_LINKS)) {
+      return;
+    }
+
     try (Stream<Path> all = Files.walk(folder)) {
       for (Path p : all.sorted(Comparator.reverseOrder()).toList()) {
         Files.deleteIfExists(p);
       }
     }
+  }
+
+  // Decision lines as the owner's tools write a whole file: the lines, then "end" and how many there were
+  private static String whole(String lines) {
+    return lines + "end " + lines.chars().filter(c -> c == '\n').count() + "\n";
   }
 
   // A decisions file, as the owner's tools write it: rights for its owner only, where the file system has them
@@ -76,14 +98,14 @@ public final class AccessStoreTest {
 
       try {
         AccessStore store = AccessStore.open(folder);
-        same(store.request(fp(1), id(1), "Ripley", NOW), AccessStore.Reply.WAITING, "a new request: waiting");
+        same(store.request(fp(1), id(1), "Ripley", NOW, YES), AccessStore.Reply.WAITING, "a new request: waiting");
         same(stored(folder), "{\"requests\":[{\"fp\":\"" + fp(1) + "\",\"id\":\"" + id(1) + "\",\"name\":\"Ripley\",\"state\":\"waiting\","
             + "\"firstSeen\":" + NOW + "}]}", "written as it is: fingerprint, id, name, state, time, and nothing else");
-        same(store.request(fp(1), id(1), "Hicks", NOW + 1000), AccessStore.Reply.WAITING, "asking again: still waiting");
+        same(store.request(fp(1), id(1), "Hicks", NOW + 1000, YES), AccessStore.Reply.WAITING, "asking again: still waiting");
         ok(stored(folder).contains("\"Ripley\"") && !stored(folder).contains("Hicks"), "with the first name kept");
         ok(!store.approved(id(1)), "waiting isn't approved");
         AccessStore again = AccessStore.open(folder);
-        same(again.request(fp(1), id(1), "Ripley", NOW), AccessStore.Reply.WAITING, "a store opened afresh has it");
+        same(again.request(fp(1), id(1), "Ripley", NOW, YES), AccessStore.Reply.WAITING, "a store opened afresh has it");
 
         if (POSIX) {
           same(PosixFilePermissions.toString(Files.getPosixFilePermissions(folder.resolve(AccessStore.STORE_FILE))), "rw-------",
@@ -103,9 +125,10 @@ public final class AccessStoreTest {
 
       try {
         AccessStore store = AccessStore.open(folder);
-        store.request(fp(1), id(1), "Ripley", NOW);
+        store.request(fp(1), id(1), "Ripley", NOW, YES);
         String sameStart = fp(1) + "f".repeat(64);
-        same(store.request(fp(1), sameStart, "Bishop", NOW), AccessStore.Reply.NOT_THEIRS, "another id with Ripley's fingerprint: not theirs");
+        same(store.request(fp(1), sameStart, "Bishop", NOW, YES), AccessStore.Reply.NOT_THEIRS,
+            "another id with Ripley's fingerprint: not theirs");
         ok(!stored(folder).contains("Bishop"), "and nothing of it is kept");
         ok(store.countsLine().contains("1 refused as another's fingerprint"), "counted");
       } finally {
@@ -118,9 +141,9 @@ public final class AccessStoreTest {
 
       try {
         AccessStore store = AccessStore.open(folder);
-        store.request(fp(1), id(1), "Ripley", NOW);
-        store.request(fp(0xabb), id(0xabb), "Hicks", NOW);
-        decide(folder, "decisions.1", fp(1) + " approved\n" + fp(0xabb) + " approved\n");
+        store.request(fp(1), id(1), "Ripley", NOW, YES);
+        store.request(fp(0xabb), id(0xabb), "Hicks", NOW, YES);
+        decide(folder, "decisions.1", whole(fp(1) + " approved\n" + fp(0xabb) + " approved\n"));
         store.turn(NOW);
         ok(store.approved(id(1)) && store.approved(id(0xabb)), "Ripley's and Hicks's own ids: approved");
         ok(!store.approved(fp(1) + "0".repeat(64)), "her fingerprint with another 64 digits after it: not");
@@ -139,16 +162,18 @@ public final class AccessStoreTest {
         AccessStore store = AccessStore.open(folder);
 
         for (int i = 1; i <= 4; i++) {
-          store.request(fp(i), id(i), "Player " + i, NOW);
+          store.request(fp(i), id(i), "Player " + i, NOW, YES);
         }
 
-        decide(folder, "decisions.100", fp(1) + " approved\n" + fp(2) + " refused\n" + fp(3) + " approved\n" + fp(3) + " revoked\n");
-        same(store.takeRevoked(NOW), List.of(id(3)), "the turn applies it: player 3, approved then revoked in the same file, is given back by id");
+        decide(folder, "decisions.100", whole(fp(1) + " approved\n" + fp(2) + " refused\n" + fp(3) + " approved\n" + fp(3) + " revoked\n"));
+        same(store.takeRevoked(NOW), List.of(), "nothing is revoked before a turn has taken the file");
+        same(store.turn(NOW), null, "the turn goes as expected");
+        same(store.takeRevoked(NOW), List.of(id(3)), "after it: player 3, approved then revoked in the same file, is given back by id");
         ok(store.approved(id(1)), "player 1 approved");
         ok(!store.approved(id(2)) && !store.approved(id(3)) && !store.approved(id(4)), "2 refused, 3 revoked, 4 still waiting");
-        same(store.request(fp(2), id(2), "x", NOW), AccessStore.Reply.REFUSED, "a refused player asking again: refused, and it stays so");
-        same(store.request(fp(3), id(3), "x", NOW), AccessStore.Reply.REVOKED, "a revoked one: revoked");
-        same(store.request(fp(1), id(1), "x", NOW), AccessStore.Reply.APPROVED, "an approved one: approved");
+        same(store.request(fp(2), id(2), "x", NOW, YES), AccessStore.Reply.REFUSED, "a refused player asking again: refused, and it stays so");
+        same(store.request(fp(3), id(3), "x", NOW, YES), AccessStore.Reply.REVOKED, "a revoked one: revoked");
+        same(store.request(fp(1), id(1), "x", NOW, YES), AccessStore.Reply.APPROVED, "an approved one: approved");
         ok(!Files.exists(folder.resolve("decisions.100")), "the file is deleted once applied");
         same(store.takeRevoked(NOW), List.of(), "and a revoke is given back once only");
         ok(AccessStore.open(folder).approved(id(1)), "the decisions are in the store's file: a store opened afresh has them");
@@ -157,44 +182,119 @@ public final class AccessStoreTest {
       }
     });
 
-    test("a decisions file with any bad line, or any move the store doesn't allow, changes nothing, and is deleted", () -> {
+    test("a decisions file with any bad line, a wrong or missing end line (2.2), or a move not allowed, changes nothing, and is deleted",
+        () -> {
+          Path folder = folder();
+
+          try {
+            AccessStore store = AccessStore.open(folder);
+            store.request(fp(1), id(1), "Player 1", NOW, YES);
+            store.request(fp(2), id(2), "Player 2", NOW, YES);
+            decide(folder, "decisions.1", whole(fp(2) + " refused\n"));
+            store.turn(NOW);
+            String before = stored(folder);
+            String a = fp(1) + " approved\n";
+            List<String> bad = List.of(
+                whole(a + fp(9) + " approved\n"),                               // a fingerprint the store doesn't have
+                whole(fp(1) + " revoked\n"),                                    // waiting to revoked
+                whole(fp(2) + " approved\n"),                                   // refused to approved
+                whole(a + a),                                                   // approved to approved
+                whole(fp(1) + " waiting\n"),                                    // back to waiting
+                whole(fp(9) + " forgotten\n"),                                  // forgetting one the store doesn't have
+                whole(fp(1) + " forgotten\n" + a),                              // a decision for one forgotten above it
+                whole(fp(1) + "  approved\n"),                                  // two spaces
+                whole(fp(1) + " Approved\n"),                                   // a capital
+                whole(fp(0xabb).toUpperCase() + " approved\n"),                 // capitals in a fingerprint (...ABC)
+                whole(fp(1).substring(1) + " approved\n"),                      // 31 hex digits
+                whole(id(1) + " approved\n"),                                   // a whole id, not a fingerprint
+                whole(a + "# a comment\n"),                                     // anything else
+                whole(fp(1) + " approv" + (char) 0xe9 + "d\n"),                 // not ASCII (an e with an accent, written as UTF-8 below)
+                whole(a.repeat(1700)),                                          // more than 64 KB
+                a,                                                              // no end line: a file cut short at a line end
+                a + "end 2\n",                                                  // an end line that counts another number
+                a + "end 0\n",                                                  // an end line of 0
+                a + "end 01\n",                                                 // a number with a 0 in front
+                "end 1\n" + a,                                                  // the end line not last
+                "end 0\n",                                                      // an end line and nothing else
+                "end 1\n",                                                      // the same, counting a line that isn't there
+                a + "end  1\n",                                                 // two spaces in the end line
+                a + "END 1\n",                                                  // a capital
+                a + "end 1 \n",                                                 // a space after the number
+                a + "end 1",                                                    // no line end after the end line
+                a + "end 1\n\n",                                                // an empty line after it
+                fp(1) + " approved\r\nend 1\r\n",                               // Windows line ends
+                a + "\nend 2\n",                                                // an empty line among the decisions
+                "");                                                            // nothing at all
+
+            for (int i = 0; i < bad.size(); i++) {
+              decide(folder, "decisions." + (10 + i), bad.get(i).getBytes(StandardCharsets.UTF_8));
+              store.turn(NOW);
+              ok(!Files.exists(folder.resolve("decisions." + (10 + i))), "bad file " + i + " is deleted");
+              same(stored(folder), before, "bad file " + i + " changed nothing");
+              ok(!store.approved(id(1)), "bad file " + i + " approved nobody");
+            }
+
+            ok(store.countsLine().contains((bad.size()) + " decision files refused"), "each counted, as a refused file");
+            decide(folder, "decisions.99", whole(a));
+            store.turn(NOW);
+            ok(store.approved(id(1)), "and after all of those, the same decision written whole is taken");
+          } finally {
+            remove(folder);
+          }
+        });
+
+    test("forgotten (1.1): a waiting or refused record is taken out, and that key may ask again; approved and revoked ones can't be", () -> {
       Path folder = folder();
 
       try {
         AccessStore store = AccessStore.open(folder);
-        store.request(fp(1), id(1), "Player 1", NOW);
-        store.request(fp(2), id(2), "Player 2", NOW);
-        decide(folder, "decisions.1", fp(2) + " refused\n");
-        store.turn(NOW);
-        String before = stored(folder);
-        List<String> bad = List.of(
-            fp(1) + " approved\n" + fp(9) + " approved\n",                  // a fingerprint the store doesn't have
-            fp(1) + " revoked\n",                                           // waiting to revoked
-            fp(2) + " approved\n",                                          // refused to approved
-            fp(1) + " approved\n" + fp(1) + " approved\n",                  // approved to approved
-            fp(1) + " waiting\n",                                           // back to waiting
-            fp(1) + " approved",                                            // no line end at the end
-            fp(1) + " approved\r\n",                                        // a Windows line end
-            fp(1) + "  approved\n",                                         // two spaces
-            fp(1) + " Approved\n",                                          // a capital
-            fp(0xabb).toUpperCase() + " approved\n",                        // capitals in a fingerprint (...ABC)
-            fp(1).substring(1) + " approved\n",                             // 31 hex digits
-            id(1) + " approved\n",                                          // a whole id, not a fingerprint
-            fp(1) + " approved\n\n",                                        // an empty line
-            "",                                                             // nothing at all
-            fp(1) + " approved\n# a comment\n",                             // anything else
-            fp(1) + " approv" + (char) 0xe9 + "d\n",                       // not ASCII (an e with an accent, written as UTF-8 below)
-            (fp(1) + " approved\n").repeat(1700));                          // more than 64 KB
 
-        for (int i = 0; i < bad.size(); i++) {
-          decide(folder, "decisions." + (10 + i), bad.get(i).getBytes(StandardCharsets.UTF_8));
-          store.turn(NOW);
-          ok(!Files.exists(folder.resolve("decisions." + (10 + i))), "bad file " + i + " is deleted");
-          same(stored(folder), before, "bad file " + i + " changed nothing");
-          ok(!store.approved(id(1)), "bad file " + i + " approved nobody");
+        for (int i = 1; i <= 4; i++) {
+          store.request(fp(i), id(i), "Player " + i, NOW, YES);
         }
 
-        ok(store.countsLine().contains((bad.size()) + " decision files refused"), "each counted, as a refused file");
+        decide(folder, "decisions.1", whole(fp(2) + " refused\n" + fp(3) + " approved\n" + fp(4) + " approved\n" + fp(4) + " revoked\n"));
+        store.turn(NOW);
+        store.takeRevoked(NOW);
+        decide(folder, "decisions.2", whole(fp(1) + " forgotten\n" + fp(2) + " forgotten\n"));
+        same(store.turn(NOW), null, "the turn goes as expected");
+        ok(!stored(folder).contains(fp(1)) && !stored(folder).contains(fp(2)), "the waiting one and the refused one are gone from the file");
+        same(store.request(fp(1), id(1), "Again", NOW, YES), AccessStore.Reply.WAITING, "the waiting one's key may ask again: waiting");
+        same(store.request(fp(2), id(2), "Again", NOW, YES), AccessStore.Reply.WAITING, "and so may the refused one's");
+        String before = stored(folder);
+
+        for (String bad : List.of(whole(fp(3) + " forgotten\n"), whole(fp(4) + " forgotten\n"))) {
+          decide(folder, "decisions.3", bad);
+          store.turn(NOW);
+          same(stored(folder), before, "an approved or a revoked record can't be forgotten: the file changes nothing");
+        }
+
+        ok(store.approved(id(3)), "the approved one is still approved (it would be revoked, which ends its sessions)");
+        same(store.request(fp(4), id(4), "x", NOW, YES), AccessStore.Reply.REVOKED, "and the revoked one is still revoked");
+        same(store.takeRevoked(NOW), List.of(), "and forgetting revokes nobody");
+      } finally {
+        remove(folder);
+      }
+    });
+
+    test("a new request asks the list's limit on new requests (1.1), and only one the store would keep", () -> {
+      Path folder = folder();
+
+      try {
+        AccessStore store = AccessStore.open(folder);
+        AtomicInteger asked = new AtomicInteger();
+        BooleanSupplier no = () -> {
+          asked.incrementAndGet();
+          return false;
+        };
+        same(store.request(fp(1), id(1), "A", NOW, no), AccessStore.Reply.BUSY, "a new request, with the day's limit used up: busy");
+        same(asked.get(), 1, "the limit was asked once");
+        ok(!Files.exists(folder.resolve(AccessStore.STORE_FILE)), "and nothing was kept");
+        same(store.request(fp(1), id(1), "A", NOW, YES), AccessStore.Reply.WAITING, "with the limit saying yes: kept");
+        same(store.request(fp(1), id(1), "A", NOW, no), AccessStore.Reply.WAITING, "asking again: the state, and the limit isn't asked");
+        same(store.request(fp(1), fp(1) + "f".repeat(64), "B", NOW, no), AccessStore.Reply.NOT_THEIRS, "another's fingerprint: not asked");
+        same(asked.get(), 1, "still asked only the once");
+        ok(store.countsLine().contains("1 over the day's limit on new requests"), "counted on its own");
       } finally {
         remove(folder);
       }
@@ -205,18 +305,18 @@ public final class AccessStoreTest {
 
       try {
         AccessStore store = AccessStore.open(folder);
-        store.request(fp(1), id(1), "Player 1", NOW);
+        store.request(fp(1), id(1), "Player 1", NOW, YES);
 
         if (POSIX) {
           for (String mode : List.of("rw-r--r--", "rw-rw----", "rw-----w-", "rw----r--")) {
             Path file = folder.resolve("decisions.5");
-            Files.writeString(file, fp(1) + " approved\n", StandardCharsets.US_ASCII);
+            Files.writeString(file, whole(fp(1) + " approved\n"), StandardCharsets.US_ASCII);
             Files.setPosixFilePermissions(file, PosixFilePermissions.fromString(mode));
             store.turn(NOW);
             ok(!store.approved(id(1)) && !Files.exists(file), "a decisions file of mode " + mode + ": refused, and deleted");
           }
 
-          decide(folder, "decisions.6", fp(1) + " approved\n");
+          decide(folder, "decisions.6", whole(fp(1) + " approved\n"));
           store.turn(NOW);
           ok(store.approved(id(1)), "the same file with rights for its owner only (0600, as the owner's tools write it): taken");
         } else {
@@ -233,7 +333,7 @@ public final class AccessStoreTest {
       try {
         if (POSIX) {
           same(PosixFilePermissions.toString(Files.getPosixFilePermissions(folder)), "rwx------", "(a new temporary folder is 0700)");
-          AccessStore.open(folder).request(fp(1), id(1), "Player 1", NOW);
+          AccessStore.open(folder).request(fp(1), id(1), "Player 1", NOW, YES);
           Files.setPosixFilePermissions(folder.resolve(AccessStore.STORE_FILE), PosixFilePermissions.fromString("rw-r--r--"));
           throwsWith(() -> AccessStore.open(folder), "rights for nobody else (0600)", "a store file others could read");
           Files.setPosixFilePermissions(folder.resolve(AccessStore.STORE_FILE), PosixFilePermissions.fromString("rw-------"));
@@ -253,16 +353,60 @@ public final class AccessStoreTest {
       }
     });
 
+    test("the server's own user is the operating system's answer, not Java's user.name, which the command line could change (3.2)",
+        () -> {
+          Path folder = folder();
+          String was = System.getProperty("user.name");
+
+          try {
+            if (POSIX) {
+              System.setProperty("user.name", "not-" + was);
+              doesNotThrow(() -> AccessStore.open(folder), "a folder of the user the server runs as opens, whatever user.name says");
+            } else {
+              ok(true, "this file system has no owners: checked on Linux, in CI");
+            }
+          } finally {
+            System.setProperty("user.name", was);
+            remove(folder);
+          }
+        });
+
+    test("the folder is checked at every turn (3.1): one that's gone, or no longer 0700, takes nothing, and the turn says why", () -> {
+      Path folder = folder();
+
+      try {
+        AccessStore store = AccessStore.open(folder);
+        store.request(fp(1), id(1), "Player 1", NOW, YES);
+
+        if (POSIX) {
+          Files.setPosixFilePermissions(folder, PosixFilePermissions.fromString("rwxr-x---"));
+          decide(folder, "decisions.1", whole(fp(1) + " approved\n"));
+          String problem = store.turn(NOW);
+          ok(problem != null && problem.contains("with rights for nobody else (0700)"), "a folder of mode 0750: the turn says so");
+          ok(!store.approved(id(1)) && Files.exists(folder.resolve("decisions.1")), "and takes nothing from it");
+          Files.setPosixFilePermissions(folder, PosixFilePermissions.fromString("rwx------"));
+          same(store.turn(NOW), null, "0700 again: the turn goes as expected");
+          ok(store.approved(id(1)), "and takes the decision");
+        }
+
+        remove(folder);
+        String problem = store.turn(NOW);
+        ok(problem != null && problem.contains("isn't a folder"), "a folder that's gone: the turn says so");
+      } finally {
+        remove(folder);
+      }
+    });
+
     test("only files named decisions.<digits> are read, in the order of their numbers; anything else is left alone", () -> {
       Path folder = folder();
 
       try {
         AccessStore store = AccessStore.open(folder);
-        store.request(fp(1), id(1), "Player 1", NOW);
+        store.request(fp(1), id(1), "Player 1", NOW, YES);
 
         for (String other : List.of("decisions.tmp", ".decisions.5", "decisions.12a", "decisions.", "decisions.123456789012345678901",
             "Decisions.5", "decisions.5.new")) {
-          decide(folder, other, fp(1) + " approved\n");
+          decide(folder, other, whole(fp(1) + " approved\n"));
         }
 
         store.turn(NOW);
@@ -270,13 +414,42 @@ public final class AccessStoreTest {
         ok(Files.exists(folder.resolve("decisions.tmp")), "and they're left where they are");
 
         // 9 before 10: a shorter number is an earlier one. So the approve in 9 comes first, and the revoke in 10 then applies.
-        decide(folder, "decisions.10", fp(1) + " revoked\n");
-        decide(folder, "decisions.9", fp(1) + " approved\n");
+        decide(folder, "decisions.10", whole(fp(1) + " revoked\n"));
+        decide(folder, "decisions.9", whole(fp(1) + " approved\n"));
+        store.turn(NOW);
         same(store.takeRevoked(NOW), List.of(id(1)), "decisions.9, then decisions.10: approved, then revoked");
       } finally {
         remove(folder);
       }
     });
+
+    test("what can't be deleted under a decisions name is counted once, then left alone, and never stands in front of a decision (2.3)",
+        () -> {
+          Path folder = folder();
+
+          try {
+            AccessStore store = AccessStore.open(folder);
+            store.request(fp(1), id(1), "Player 1", NOW, YES);
+
+            // 150 folders, each with a file in it, so none can be deleted: more than the 100 files a turn takes
+            for (int i = 1; i <= 150; i++) {
+              Path stuck = Files.createDirectory(folder.resolve("decisions." + i));
+              Files.writeString(stuck.resolve("x"), "x");
+            }
+
+            decide(folder, "decisions.151", whole(fp(1) + " approved\n"));
+            same(store.turn(NOW), null, "the turn goes as expected");
+            ok(store.approved(id(1)), "the decision after them all is taken");
+            String line = store.countsLine();
+            ok(line.contains("150 decision files refused") && line.contains("150 that couldn't be deleted and are left alone"),
+                "each folder refused and counted once");
+            store.turn(NOW);
+            line = store.countsLine();
+            ok(line.contains("0 decision files refused") && line.contains("0 that couldn't be deleted"), "and at the next turn, not again");
+          } finally {
+            remove(folder);
+          }
+        });
 
     test("a decisions file that's a link is never followed: it's refused, and the file it points to is left as it was", () -> {
       Path folder = folder();
@@ -284,9 +457,9 @@ public final class AccessStoreTest {
 
       try {
         AccessStore store = AccessStore.open(folder);
-        store.request(fp(1), id(1), "Player 1", NOW);
+        store.request(fp(1), id(1), "Player 1", NOW, YES);
         Path target = outside.resolve("decisions.1");
-        decide(outside, "decisions.1", fp(1) + " approved\n");
+        decide(outside, "decisions.1", whole(fp(1) + " approved\n"));
         boolean made;
 
         try {
@@ -311,42 +484,170 @@ public final class AccessStoreTest {
       }
     });
 
+    test("an access folder that's a link to a folder is refused, and so the store doesn't open", () -> {
+      Path real = folder();
+      Path holder = folder();
+
+      try {
+        Path link = holder.resolve("access");
+        boolean made;
+
+        try {
+          Files.createSymbolicLink(link, real);
+          made = true;
+        } catch (IOException | UnsupportedOperationException e) {
+          made = false;
+        }
+
+        if (made) {
+          throwsWith(() -> AccessStore.open(link), "isn't a folder", "a link to a good folder");
+        } else {
+          ok(true, "this account can't make a link here, so this is checked on Linux, in CI");
+        }
+      } finally {
+        remove(holder);
+        remove(real);
+      }
+    });
+
+    test("a decision that came in time is taken before the waiting run out (2.5)", () -> {
+      Path folder = folder();
+
+      try {
+        AccessStore store = AccessStore.open(folder);
+        store.request(fp(1), id(1), "Player 1", NOW, YES);
+        decide(folder, "decisions.1", whole(fp(1) + " approved\n"));
+        same(store.turn(NOW + 30 * DAY), null, "the first turn comes 30 days on, as the request would run out");
+        ok(store.approved(id(1)), "the approval in the folder is taken first, so it's approved, not forgotten");
+      } finally {
+        remove(folder);
+      }
+    });
+
     test("a waiting request is forgotten after 30 days, and may ask again; a decided one is kept", () -> {
       Path folder = folder();
 
       try {
         AccessStore store = AccessStore.open(folder);
-        store.request(fp(1), id(1), "Old", NOW);
-        store.request(fp(2), id(2), "Decided", NOW);
-        decide(folder, "decisions.1", fp(2) + " approved\n");
+        store.request(fp(1), id(1), "Old", NOW, YES);
+        store.request(fp(2), id(2), "Decided", NOW, YES);
+        decide(folder, "decisions.1", whole(fp(2) + " approved\n"));
         store.turn(NOW + 30 * DAY - 1);
-        same(store.request(fp(1), id(1), "x", NOW + 30 * DAY - 1), AccessStore.Reply.WAITING, "a millisecond short of 30 days: still there");
+        same(store.request(fp(1), id(1), "x", NOW + 30 * DAY - 1, YES), AccessStore.Reply.WAITING,
+            "a millisecond short of 30 days: still there");
         store.turn(NOW + 30 * DAY);
         ok(!stored(folder).contains(fp(1)), "at 30 days: gone from the file");
         ok(store.approved(id(2)), "the approved one is kept");
-        same(store.request(fp(1), id(1), "New", NOW + 30 * DAY), AccessStore.Reply.WAITING, "and the forgotten one may ask again");
+        same(store.request(fp(1), id(1), "New", NOW + 30 * DAY, YES), AccessStore.Reply.WAITING, "and the forgotten one may ask again");
         ok(stored(folder).contains("\"New\""), "as a new request, with its new name");
       } finally {
         remove(folder);
       }
     });
 
-    test("at most 1,000 waiting: the next is busy, and a request already there still gets its state", () -> {
+    test("at most 1,000 waiting: the next is busy, without asking the list's limit, and a request already there still gets its state",
+        () -> {
+          Path folder = folder();
+
+          try {
+            AccessStore store = AccessStore.open(folder);
+
+            for (int i = 0; i < AccessStore.MOST_WAITING; i++) {
+              store.request(fp(i), id(i), "Player", NOW, YES);
+            }
+
+            AtomicInteger asked = new AtomicInteger();
+            same(store.request(fp(5000), id(5000), "One more", NOW, () -> asked.incrementAndGet() > 0), AccessStore.Reply.BUSY,
+                "the 1,001st waiting: busy");
+            same(asked.get(), 0, "and the list's day isn't used up by it");
+            same(store.request(fp(0), id(0), "Player", NOW, YES), AccessStore.Reply.WAITING, "one already there: its state");
+            ok(store.countsLine().contains("1 refused as busy"), "counted");
+          } finally {
+            remove(folder);
+          }
+        });
+
+    test("the relay never waits for the store (1.2): approved and takeRevoked answer while a request holds the lock for writing", () -> {
       Path folder = folder();
+      ExecutorService asker = Executors.newSingleThreadExecutor();
 
       try {
         AccessStore store = AccessStore.open(folder);
+        store.request(fp(1), id(1), "Player 1", NOW, YES);
+        decide(folder, "decisions.1", whole(fp(1) + " approved\n"));
+        store.turn(NOW);
+        CountDownLatch inside = new CountDownLatch(1);
+        CountDownLatch letGo = new CountDownLatch(1);
 
-        for (int i = 0; i < AccessStore.MOST_WAITING; i++) {
-          store.request(fp(i), id(i), "Player", NOW);
+        // A request held inside the store, with its lock for writing, as one waiting for a slow disk would be
+        Thread request = new Thread(() -> store.request(fp(2), id(2), "Player 2", NOW, () -> {
+          inside.countDown();
+
+          try {
+            return letGo.await(30, TimeUnit.SECONDS);
+          } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+          }
+        }));
+        request.start();
+        ok(inside.await(10, TimeUnit.SECONDS), "(the request is inside, holding the lock)");
+        Future<Boolean> asked = asker.submit(() -> store.approved(id(1)) && store.takeRevoked(NOW).isEmpty());
+        boolean answered;
+
+        try {
+          answered = asked.get(5, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+          answered = false;
         }
 
-        same(store.request(fp(5000), id(5000), "One more", NOW), AccessStore.Reply.BUSY, "the 1,001st waiting: busy");
-        same(store.request(fp(0), id(0), "Player", NOW), AccessStore.Reply.WAITING, "one already there: its state");
-        ok(store.countsLine().contains("1 refused as busy"), "counted");
+        letGo.countDown();
+        request.join();
+        ok(answered, "the relay's two calls answered at once, while the request still held the lock");
       } finally {
+        asker.shutdownNow();
         remove(folder);
       }
+    });
+
+    test("the store's own thread: a folder gone wrong stops the store, which says why, approves nobody, keeps nothing, tells once", () -> {
+      Path folder = folder();
+      AccessStore store = AccessStore.open(folder);
+      List<String> lines = new CopyOnWriteArrayList<>();
+      AtomicInteger told = new AtomicInteger();
+      CountDownLatch failed = new CountDownLatch(1);
+
+      try {
+        store.request(fp(1), id(1), "Player 1", NOW, YES);
+        decide(folder, "decisions.1", whole(fp(1) + " approved\n"));
+        store.turn(NOW);
+        ok(store.approved(id(1)), "(approved, before)");
+        store.start(lines::add, () -> NOW, () -> {
+          told.incrementAndGet();
+          failed.countDown();
+        });
+        remove(folder);
+        ok(failed.await(10, TimeUnit.SECONDS), "the server is told, within a turn or two");
+        ok(store.stopped(), "the store has stopped");
+        ok(!store.approved(id(1)), "it approves nobody, the approved player included");
+        same(store.request(fp(1), id(1), "Player 1", NOW, YES), AccessStore.Reply.CLOSED, "and answers nothing but closed, to a player it "
+            + "has as well");
+        ok(lines.stream().anyMatch(l -> l.startsWith("access: the access folder isn't a folder")
+            && l.endsWith("; the server stops, for systemd to start it again")), "the log says why, and what happens next");
+        Thread.sleep(2500);
+        same(told.get(), 1, "and the server is told once only");
+      } finally {
+        store.stopTurns();
+        remove(folder);
+      }
+    });
+
+    test("a turn is stuck once it has gone on more than 60 s, counted by System.nanoTime's difference", () -> {
+      long sixty = TimeUnit.SECONDS.toNanos(60);
+      ok(!AccessStore.stuck(false, 0, sixty * 10), "no turn going on: never");
+      ok(!AccessStore.stuck(true, 5, 5 + sixty), "60 s exactly: not yet");
+      ok(AccessStore.stuck(true, 5, 5 + sixty + 1), "a nanosecond more: stuck");
+      ok(AccessStore.stuck(true, Long.MAX_VALUE - 10, Long.MAX_VALUE - 10 + sixty + 1), "and the same where nanoTime wraps round");
     });
 
     test("the store's own file is hostile input too: anything this server wouldn't write stops it opening", () -> {
@@ -408,7 +709,7 @@ public final class AccessStoreTest {
 
       try {
         AccessStore store = AccessStore.open(folder);
-        store.request(fp(1), id(1), "Ripley", NOW);
+        store.request(fp(1), id(1), "Ripley", NOW, YES);
         String line = store.countsLine();
         ok(line.startsWith("access: 1 new requests"), "it counts the request");
         ok(!line.contains("Ripley") && !line.contains(fp(1)), "and says nothing of who");

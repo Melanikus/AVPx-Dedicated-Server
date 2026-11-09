@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.regex.Pattern;
 
 // POST /v1/access-requests: a player asks to play on this server, from the game's page, only when they press "Request access" (PROTOCOL.md
@@ -28,7 +29,9 @@ import java.util.regex.Pattern;
 // - Asking again is safe, and how a player checks their state later: a fingerprint the store has only gets its state back, with the name
 //   it first asked with. There's no way to ask about a fingerprint without its keys.
 // - The answers are fixed words, never the request's own text, and the game shows its own words for each.
-// - Limits, in ListServer: 1 a minute and 10 an hour from one address; the store holds at most 1,000 waiting. Logged as counts only.
+// - Limits (AccessLimits.java): every try, 1 a minute and 10 an hour from one address, asked by ListServer before the body is read; a
+//   new request, 5 a day from one address and 10 from one network, asked through newAllowed only once the store would keep it. The
+//   store holds at most 1,000 waiting. Logged as counts only.
 // - Approval itself gives nothing until handshake A proves the player holds those keys (CRYPTO.md section 6). And with no pin on the list
 //   yet (#175), the access code the game shows, read to the owner by another way, is what stops a key swapped on the way from ever being
 //   approved: the owner's approve refuses unless exactly one waiting request matches the code they were told.
@@ -55,7 +58,8 @@ final class AccessRequests {
     return answer(429, "error", "busy");
   }
 
-  static Routes.Answer handle(AccessStore store, String method, String query, byte[] body, long now) {
+  // newAllowed: whether the sender may make one more new request now (AccessLimits.allowsNew, under the list's lock), asked by the store
+  static Routes.Answer handle(AccessStore store, String method, String query, byte[] body, long now, BooleanSupplier newAllowed) {
     if (!method.equals("POST")) {
       return answer(405, "error", "shape");
     }
@@ -99,7 +103,7 @@ final class AccessRequests {
     // The fingerprint for people (the answer, the access code, the owner's decisions), and the whole id for what the relay compares
     String fingerprint = Identity.fingerprintHex(p384, kem);
     String id = Identity.idHex(p384, kem);
-    AccessStore.Reply reply = store.request(fingerprint, id, name, now);
+    AccessStore.Reply reply = store.request(fingerprint, id, name, now, newAllowed);
 
     return switch (reply) {
       case BUSY -> busy();

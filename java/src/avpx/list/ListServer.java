@@ -13,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -48,7 +49,8 @@ import javax.net.ssl.SSLSocket;
 //      body, and the answer going out, within BODY_MILLISECONDS after that. A timer closes the connection at each deadline, whatever it's
 //      doing, so a sender who trickles a byte at a time is cut off.
 //   5. The request is held to the per-address limits (5 a second, 20 at once; the three GETs 1 a second, 5 at once) and everyone's (500 a
-//      second, 1,000 at once), and then Routes.java answers it, under the one lock that keeps the listings to one thread at a time.
+//      second, 1,000 at once), and then Routes.java answers it, under the one lock that keeps the listings to one thread at a time. The
+//      access call is held to its own limits too (AccessLimits.java), and answered by AccessRequests.java outside that lock.
 //   6. One request a connection: every answer says Connection: close, and the connection is closed after it.
 // Every answer is JSON, with headers that tell a browser to treat it as nothing but data, and HSTS.
 //
@@ -72,11 +74,7 @@ public final class ListServer {
   static final double REQUEST_BURST = 20;
   static final double LIST_RATE = 1;
   static final double LIST_BURST = 5;
-  // POST /v1/access-requests, from one address: 1 a minute, and 10 an hour (agreed with Third and Fourth, 2026-11-09)
-  static final double ACCESS_PER_MINUTE_RATE = 1.0 / 60;
-  static final double ACCESS_PER_MINUTE_BURST = 1;
-  static final double ACCESS_PER_HOUR_RATE = 10.0 / 3600;
-  static final double ACCESS_PER_HOUR_BURST = 10;
+  // POST /v1/access-requests has limits of its own, in AccessLimits.java
   static final double EVERYONE_RATE = 500;
   static final double EVERYONE_BURST = 1000;
   static final int MOST_SENDERS = 10000;
@@ -126,13 +124,14 @@ public final class ListServer {
   private final Path keyFile;
   private volatile Certificates.Loaded certificate;
 
-  // Everything below is used only under lock: the hasher, the limits, the connections each address has open, and the listings
+  // Everything below is used only under lock: the hasher, the limits, the connections each address has open, and the listings. The
+  // access store is never called holding it (it has locks of its own, and writes to the disk); the store calls back in, for
+  // AccessLimits.allowsNew, and takes it then. One order only (the store's, then this), so the two can never wait on each other.
   private final Object lock = new Object();
   private final AddressHasher hasher = new AddressHasher(RandomBytes.secure());
   private final PerSender perAddress;
   private final PerSender lists;
-  private final PerSender accessPerMinute;
-  private final PerSender accessPerHour;
+  private final AccessLimits accessLimits;
   private final TokenBucket everyone;
   private final AccessStore access;
   private final Map<String, Integer> open = new HashMap<>();
@@ -158,8 +157,7 @@ public final class ListServer {
     this.certificate = certificate;
     this.perAddress = new PerSender(REQUEST_RATE, REQUEST_BURST, MOST_SENDERS, hasher);
     this.lists = new PerSender(LIST_RATE, LIST_BURST, MOST_SENDERS, hasher);
-    this.accessPerMinute = new PerSender(ACCESS_PER_MINUTE_RATE, ACCESS_PER_MINUTE_BURST, MOST_SENDERS, hasher);
-    this.accessPerHour = new PerSender(ACCESS_PER_HOUR_RATE, ACCESS_PER_HOUR_BURST, MOST_SENDERS, hasher);
+    this.accessLimits = new AccessLimits(MOST_SENDERS, hasher);
     this.everyone = new TokenBucket(EVERYONE_RATE, EVERYONE_BURST);
     this.timers = Executors.newSingleThreadScheduledExecutor(task -> new Thread(task, "list-timers"));
   }
@@ -314,7 +312,7 @@ public final class ListServer {
         // The head came in time: from here, the body and the answer have their own time
         deadline.cancel(false);
         deadline = timers.schedule(() -> closeQuietly(raw), BODY_MILLISECONDS, TimeUnit.MILLISECONDS);
-        answer(head, tls, in, out, raw.getInetAddress().getHostAddress());
+        answer(head, tls, in, out, raw.getInetAddress());
       }
     } catch (IOException | RuntimeException e) {
       // The sender went away, was too slow, or its TLS was no good: nothing to answer, and nothing to write about it
@@ -342,8 +340,9 @@ public final class ListServer {
     return strong.toArray(new String[0]);
   }
 
-  private void answer(Http.Head head, SSLSocket tls, InputStream in, OutputStream out, String address) throws IOException {
+  private void answer(Http.Head head, SSLSocket tls, InputStream in, OutputStream out, InetAddress from) throws IOException {
     long at = now.getAsLong();
+    String address = from.getHostAddress();
     boolean isList = head.method().equals("GET")
         && (head.path().equals("/v1/games") || head.path().equals("/v1/relays") || head.path().equals("/v1/relay-keys"));
     boolean isAccess = head.path().equals(AccessRequests.PATH);
@@ -351,7 +350,7 @@ public final class ListServer {
 
     synchronized (lock) {
       allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at))
-          && (!isAccess || (accessPerMinute.allows(address, at) && accessPerHour.allows(address, at))) && everyone.take(at);
+          && (!isAccess || accessLimits.allowsTry(from, at)) && everyone.take(at);
     }
 
     if (!allowed) {
@@ -402,8 +401,18 @@ public final class ListServer {
 
     Routes.Answer answer;
 
-    synchronized (lock) {
-      answer = Routes.handle(listings, access, head.method(), head.path(), head.query(), body, now.getAsLong());
+    if (isAccess) {
+      // Outside the list's lock: a new request is written to the disk, and no other call should wait for that (Secondary's review of the
+      // access store, 1.2). The store asks the day's limits on new requests only for a request it would keep, and takes the lock for that.
+      answer = AccessRequests.handle(access, head.method(), head.query(), body, now.getAsLong(), () -> {
+        synchronized (lock) {
+          return accessLimits.allowsNew(from, now.getAsLong());
+        }
+      });
+    } else {
+      synchronized (lock) {
+        answer = Routes.handle(listings, head.method(), head.path(), head.query(), body, now.getAsLong());
+      }
     }
 
     send(out, answer);
@@ -490,18 +499,9 @@ public final class ListServer {
       lines = listings.tick(now.getAsLong());
     }
 
+    // The access store takes the owner's decisions, and writes its own counts, on its own thread (AccessStore.start)
     for (String line : lines) {
       log.accept(line);
-    }
-
-    // The owner's decisions are taken here too, for a list whose relay doesn't take them (a version 1 relay); the store has its own lock.
-    // Its counts go with the list's, once a minute.
-    if (access != null) {
-      access.turn(now.getAsLong());
-
-      if (!lines.isEmpty()) {
-        log.accept(access.countsLine());
-      }
     }
   }
 

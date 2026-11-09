@@ -150,7 +150,7 @@ public final class ListTest {
   // A request: o is a body to write as JSON, bytes to send as they are, or null for none
   private static Answer call(Listings l, String method, Object o, String query, long now, String path) {
     byte[] body = o == null ? new byte[0] : (o instanceof byte[] raw ? raw : Stringify.bytes(o));
-    return Routes.handle(l, null, method, path, query, body, now);
+    return Routes.handle(l, method, path, query, body, now);
   }
 
   private static Answer call(Listings l, String method, Object o, String query, long now) {

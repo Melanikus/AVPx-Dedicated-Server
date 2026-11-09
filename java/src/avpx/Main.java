@@ -101,14 +101,16 @@ public final class Main {
         + (listSettings != null ? ", and the list for " + listSettings.relays().size() + " relays" : ", and no list"));
 
     ListServer list = null;
+    AccessStore store = access;
 
-    // If the list stops on an error nobody expected (avpx/Fatal.java), the relay is told to stop too, and run() gives 1, for systemd to
-    // start the server again. The list starts before the relay, so the relay is handed over once it exists, and checked for a list
-    // that failed in between.
-    AtomicBoolean listFailed = new AtomicBoolean();
+    // If the list stops on an error nobody expected (avpx/Fatal.java), or the access store stops (AccessStore.start: its folder is no
+    // longer the server's own and 0700, or a turn of the owner's decisions has hung), the relay is told to stop too, and run() gives 1,
+    // for systemd to start the server again. Both start before the relay, so the relay is handed over once it exists, and checked for
+    // one that failed in between.
+    AtomicBoolean partFailed = new AtomicBoolean();
     AtomicReference<RelaySockets> relayToStop = new AtomicReference<>();
-    Runnable whenListFails = () -> {
-      listFailed.set(true);
+    Runnable whenPartFails = () -> {
+      partFailed.set(true);
       RelaySockets toStop = relayToStop.get();
 
       if (toStop != null) {
@@ -116,16 +118,23 @@ public final class Main {
       }
     };
 
+    // The store's own thread: the owner's decisions about once a second, and its line of counts once a minute
+    if (store != null) {
+      store.start(log::line, System::currentTimeMillis, whenPartFails);
+    }
+
     if (listSettings != null) {
       try {
         Listings listings = new Listings(listSettings.relays(), RandomBytes.secure(), System.currentTimeMillis());
-        list = ListServer.start(listSettings, listings, access, log::line, System::currentTimeMillis, whenListFails);
+        list = ListServer.start(listSettings, listings, store, log::line, System::currentTimeMillis, whenPartFails);
       } catch (ListServer.CertificateProblem e) {
         log.line("list: the certificate files could not be used (" + e.getMessage() + "), so the server did not start");
+        stopTurns(store);
         log.close();
         return 1;
       } catch (IOException e) {
         log.line("list: the HTTPS port could not be used (" + e.getClass().getSimpleName() + "), so the server did not start");
+        stopTurns(store);
         log.close();
         return 1;
       }
@@ -142,13 +151,14 @@ public final class Main {
         list.stop();
       }
 
+      stopTurns(store);
       log.close();
       return 1;
     }
 
     relayToStop.set(relay);
 
-    if (listFailed.get()) {
+    if (partFailed.get()) {
       relay.stopSoon();
     }
 
@@ -161,18 +171,27 @@ public final class Main {
         started.stop();
       }
 
+      stopTurns(store);
       log.close();
     }, "stop"));
 
-    // The relay runs until the stop above ends it, or until it or the list stops on an error nobody expected: then the server ends with
+    // The relay runs until the stop above ends it, or until it, the list or the store stops on something wrong: then the server ends with
     // 1, and systemd starts it afresh (deploy/avpx-java.service), rather than going on from a state nobody can vouch for
     relay.join();
 
-    if (relay.failed() || listFailed.get()) {
-      log.line("server: stopping on an error nobody expected, with 1, for systemd to start it again");
+    if (relay.failed() || partFailed.get()) {
+      log.line("server: stopping, with 1, for systemd to start it again (the line before this says why)");
+      stopTurns(store);
       return 1;
     }
 
     return 0;
+  }
+
+  // The access store's turns end, where there's a store
+  private static void stopTurns(AccessStore store) {
+    if (store != null) {
+      store.stopTurns();
+    }
   }
 }

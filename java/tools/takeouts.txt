@@ -375,9 +375,7 @@ file: java/src/avpx/relay/TokenBucket.java
 check: tests
 file: java/src/avpx/relay/PerSender.java
 <<< from
-      if (buckets.size() >= most) {
-        buckets.remove(buckets.keySet().iterator().next());
-      }
+        buckets.remove(oldest.getKey());
 <<< to
 >>>
 
@@ -1593,7 +1591,7 @@ check: live
 file: java/src/avpx/list/ListServer.java
 <<< from
       allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at))
-          && (!isAccess || (accessPerMinute.allows(address, at) && accessPerHour.allows(address, at))) && everyone.take(at);
+          && (!isAccess || accessLimits.allowsTry(from, at)) && everyone.take(at);
 <<< to
       allowed = true;
 >>>
@@ -1979,18 +1977,19 @@ file: java/src/avpx/access/AccessStore.java
 check: tests
 file: java/src/avpx/access/AccessStore.java
 <<< from
-  private static final Pattern DECISION_LINE = Pattern.compile("([0-9a-f]{32}) (approved|refused|revoked)");
+  private static final Pattern DECISION_LINE = Pattern.compile("([0-9a-f]{32}) (approved|refused|revoked|forgotten)");
 <<< to
-  private static final Pattern DECISION_LINE = Pattern.compile("([0-9a-fA-F]{32}) +(approved|refused|revoked|waiting)\r?");
+  private static final Pattern DECISION_LINE = Pattern.compile("([0-9a-fA-F]{32}) +(approved|refused|revoked|forgotten|waiting)\r?");
 >>>
 
-=== a decisions file that's a link is followed
+=== a link is looked at as what it points to
 check: tests
 file: java/src/avpx/access/AccessStore.java
 <<< from
-    BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+    return posix() ? Files.readAttributes(path, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS)
+        : Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
 <<< to
-    BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+    return posix() ? Files.readAttributes(path, PosixFileAttributes.class) : Files.readAttributes(path, BasicFileAttributes.class);
 >>>
 
 === a waiting request is never forgotten
@@ -2033,9 +2032,9 @@ file: java/src/avpx/access/AccessStore.java
 check: tests
 file: java/src/avpx/access/AccessStore.java
 <<< from
-      if (line[1].equals("revoked")) {
-        revoked.add(next.get(line[0]).id());
-      }
+          if (line[1].equals("revoked")) {
+            revoked.add(next.get(line[0]).id());
+          }
 <<< to
 >>>
 
@@ -2071,7 +2070,7 @@ file: java/src/avpx/list/AccessRequests.java
 check: live
 file: java/src/avpx/list/ListServer.java
 <<< from
-          && (!isAccess || (accessPerMinute.allows(address, at) && accessPerHour.allows(address, at))) && everyone.take(at);
+          && (!isAccess || accessLimits.allowsTry(from, at)) && everyone.take(at);
 <<< to
           && everyone.take(at);
 >>>
@@ -2109,10 +2108,10 @@ file: java/src/avpx/access/AccessStore.java
 check: tests
 file: java/src/avpx/access/AccessStore.java
 <<< from
-      if (!known.id().equals(id)) {
-        counts.notTheirs++;
-        return Reply.NOT_THEIRS;
-      }
+        if (!known.id().equals(id)) {
+          counts.notTheirs++;
+          return Reply.NOT_THEIRS;
+        }
 <<< to
 >>>
 
@@ -2120,28 +2119,27 @@ file: java/src/avpx/access/AccessStore.java
 check: tests
 file: java/src/avpx/access/AccessStore.java
 <<< from
-      byte[] bytes = ownOnly(file, owner) ? readAtMost(file, MOST_DECISION_FILE_BYTES) : null;
+      return p.owner().getName().equals(user) && others.isEmpty();
 <<< to
-      byte[] bytes = readAtMost(file, MOST_DECISION_FILE_BYTES);
+      return p.owner().getName().equals(user);
 >>>
 
 === an access folder others can open is taken
 check: tests
 file: java/src/avpx/access/AccessStore.java
 <<< from
-        if (!owner.equals(System.getProperty("user.name")) || !a.permissions().equals(FOLDER_MODE)) {
+    if (user != null && a instanceof PosixFileAttributes p && (!p.owner().getName().equals(user) || !p.permissions().equals(FOLDER_MODE))) {
 <<< to
-        if (!owner.equals(System.getProperty("user.name"))) {
+    if (user != null && a instanceof PosixFileAttributes p && !p.owner().getName().equals(user)) {
 >>>
 
 === a store file others can read is taken
 check: tests
 file: java/src/avpx/access/AccessStore.java
 <<< from
-      if (!ownOnly(file, owner)) {
-        throw new Refused(STORE_FILE + " must be the access folder's owner's, with rights for nobody else (0600)");
-      }
+      bytes = readTrusted(file, user, MOST_STORE_BYTES).bytes();
 <<< to
+      bytes = Files.readAllBytes(file);
 >>>
 
 === a relay's id is cut to 16 bytes
@@ -2169,4 +2167,202 @@ file: java/src/avpx/access/AccessCode.java
         value = (value << 1) | ((b[k / 8] >> (7 - k % 8)) & 1);
 <<< to
         value = (value << 1) | ((b[k / 8] >> (k % 8)) & 1);
+>>>
+
+# ----- Secondary's review of the access store (AvP-docs, 2026-11-09): each fix, taken out again. The review's numbers are in the names.
+# Not here, because no test can make them happen on time: a file swapped between the two looks (2.1), the revoke handed over before
+# the records say no, and the list's two calls into AccessLimits and the store (ListServer: 1.2's lock, and allowsNew), which only a
+# live test with a store could reach, at one request a minute.
+
+=== 1.1: a forgotten record is kept
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+        next.remove(line[0]);
+<<< to
+>>>
+
+=== 1.1: an approved or revoked record may be forgotten
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+        if (e == null || (e.state() != State.WAITING && e.state() != State.REFUSED)) {
+<<< to
+        if (e == null) {
+>>>
+
+=== 1.1: the store never asks the list's limit on new requests
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (!newAllowed.getAsBoolean()) {
+        counts.overNewLimits++;
+        return Reply.BUSY;
+      }
+<<< to
+>>>
+
+=== 1.1: a new request isn't held to a day from one address
+check: tests
+file: java/src/avpx/list/AccessLimits.java
+<<< from
+    return newPerDay.allows(from.getHostAddress(), now) && newPerNetwork.allows(networkOf(from), now);
+<<< to
+    return newPerNetwork.allows(networkOf(from), now);
+>>>
+
+=== 1.1: a new request isn't held to a day from one network
+check: tests
+file: java/src/avpx/list/AccessLimits.java
+<<< from
+    return newPerDay.allows(from.getHostAddress(), now) && newPerNetwork.allows(networkOf(from), now);
+<<< to
+    return newPerDay.allows(from.getHostAddress(), now);
+>>>
+
+=== 1.1: a network is the whole address
+check: tests
+file: java/src/avpx/list/AccessLimits.java
+<<< from
+    int keep = v4 ? IPV4_NETWORK_BYTES : IPV6_NETWORK_BYTES;
+<<< to
+    int keep = bytes.length;
+>>>
+
+=== 1.1: a crowd of senders starts each one afresh
+check: tests
+file: java/src/avpx/relay/PerSender.java
+<<< from
+        if (keepDrained && !oldest.getValue().full(now)) {
+          return false;
+        }
+<<< to
+>>>
+
+=== 1.1: a bucket is full while it still lacks tokens
+check: tests
+file: java/src/avpx/relay/TokenBucket.java
+<<< from
+    return held >= burst;
+<<< to
+    return true;
+>>>
+
+=== 1.2: the relay's approved waits on the store's lock for writing
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    Entry e = entries.get(id.substring(0, FINGERPRINT_DIGITS));
+    return e != null && e.id().equals(id) && e.state() == State.APPROVED;
+<<< to
+    synchronized (writing) {
+      Entry e = entries.get(id.substring(0, FINGERPRINT_DIGITS));
+      return e != null && e.id().equals(id) && e.state() == State.APPROVED;
+    }
+>>>
+
+=== 2.1: a turn that hangs is never seen
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    return inTurn && nowNanos - startedAt > TimeUnit.MILLISECONDS.toNanos(STUCK_MILLISECONDS);
+<<< to
+    return false;
+>>>
+
+=== 2.1: a store that stopped still approves
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    if (stopped || !isId(id)) {
+<<< to
+    if (!isId(id)) {
+>>>
+
+=== 2.1: a store that stopped still answers requests
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (stopped) {
+        return Reply.CLOSED;
+      }
+<<< to
+>>>
+
+=== 2.1: the server isn't told when the store stops
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      whenFailed.run();
+<<< to
+>>>
+
+=== 2.2: a decisions file's end line may count any number
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    if (!end.matches() || Integer.parseInt(end.group(1)) != lines.length - 1) {
+<<< to
+    if (!end.matches()) {
+>>>
+
+=== 2.3: what isn't a plain file is counted among the 100 a turn
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (a.isRegularFile()) {
+        files.add(p);
+<<< to
+      if (true) {
+        files.add(p);
+>>>
+
+=== 2.3: what can't be deleted is refused again every turn
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (what.equals(leftAlone.get(p.getFileName().toString()))) {
+        continue;
+      }
+<<< to
+>>>
+
+=== 2.5: the waiting run out before the decisions are taken
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      String problem = folderProblem(folder, user);
+<<< to
+      expire(now);
+      String problem = folderProblem(folder, user);
+>>>
+
+=== 3.1: the folder isn't checked at each turn
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      String problem = folderProblem(folder, user);
+
+      if (problem == null) {
+        problem = takeDecisions();
+      }
+<<< to
+      String problem = takeDecisions();
+>>>
+
+=== 3.2: the server's own user is Java's user.name
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      return Files.readAttributes(probe, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS).owner().getName();
+<<< to
+      return System.getProperty("user.name");
+>>>
+
+=== 4.1: a revoke keeps the A2s kept for that player's A1s
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    answered.values().removeIf(answer -> answer.player.equals(player));
+<<< to
 >>>

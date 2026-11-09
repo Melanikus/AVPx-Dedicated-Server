@@ -229,10 +229,17 @@ jobs:
           grep -q '^NOT RUN  the list' smoke.out || { echo "the version 2 run didn't say which list checks were left out"; exit 1; }
           exit "$status"
 
-  takeouts:
-    name: Java take-outs
+  # The rows in shares, side by side: at 220 rows one job no longer fit its 45 minutes, and a cancelled job proves no row
+  # (java/tools/Takeouts.java, "WHY SHARES"). Each share runs the rows whose number, divided by how many shares there are, leaves its own
+  # place. Both numbers are GitHub's own (strategy.job-index and strategy.job-total), never the list below, which only says how many.
+  takeouts-shares:
+    name: Java take-outs, share ${{ strategy.job-index }} of ${{ strategy.job-total }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        share: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -244,10 +251,28 @@ jobs:
           echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
 
       # Each row of java/tools/takeouts.txt breaks one thing in a copy, and its check must fail: proof the checks can fail
-      - name: Every take-out row is noticed
+      - name: Every take-out row in this share is noticed
+        env:
+          SHARE: ${{ strategy.job-index }}/${{ strategy.job-total }}
         run: |
           sh java/build.sh
-          "$JAVA_HOME/bin/java" -cp java/build/tools avpx.tools.Takeouts
+          "$JAVA_HOME/bin/java" -cp java/build/tools avpx.tools.Takeouts --shard "$SHARE"
+
+  # The one check branch protection asks for, by this name: green only when every share ran to the end and passed. A share cancelled or
+  # skipped is red here, so no row is ever taken as proved when it didn't run.
+  takeouts:
+    name: Java take-outs
+    needs: takeouts-shares
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every share ran, and every row in it was noticed
+        env:
+          RESULT: ${{ needs.takeouts-shares.result }}
+        run: |
+          echo "the shares: $RESULT"
+          test "$RESULT" = success
 
   codeql:
     name: CodeQL (Java)

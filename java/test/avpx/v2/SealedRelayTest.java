@@ -348,6 +348,17 @@ public final class SealedRelayTest {
       same(sendAll(relay, "10.0.0.1", 5000, otherA1, NOW + 600).size(), 0, "another A1 under the same id: nothing");
     });
 
+    test("after a revoke, the same A1 sent again gets nothing, not the A2 kept for it (the access store's review, 4.1)", () -> {
+      SealedRelay relay = relay();
+      Identity who = identity(83);
+      Begun begun = begin(relay, "10.0.0.1", 5000, who, 83, NOW);
+      same(sendAll(relay, "10.0.0.1", 5000, begun.a1(), NOW).size(), 3, "A2, before the revoke");
+      APPROVED.remove(fingerprintOf(who));
+      same(relay.revoke(fingerprintOf(who)), 1, "the revoke gives up the handshake waiting for A3");
+      same(sendAll(relay, "10.0.0.1", 5000, begun.a1(), NOW + 500).size(), 0, "the same A1 again, within its 10 s: nothing");
+      same(relay.counts.again, 0L, "and it was never sent the kept A2");
+    });
+
     test("if A3 is lost, the game's first sealed message confirms the keys; a wrong A3, or one from elsewhere, confirms nothing", () -> {
       SealedRelay relay = relay();
       Begun lost = begin(relay, "10.0.0.1", 5000, 44, NOW);

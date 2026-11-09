@@ -71,6 +71,25 @@ public final class LimitsTest {
       ok(!s.allows("a", 0), "a was kept");
     });
 
+    test("a bucket says whether it's full again without taking anything", () -> {
+      TokenBucket b = new TokenBucket(1, 2);
+      ok(b.full(0), "a new one is full");
+      ok(b.take(0) && b.full(-5) == false, "one taken: not full (and a clock going back gives nothing)");
+      ok(!b.full(999), "999 ms on, at 1 a second: not yet");
+      ok(b.full(1000), "a second on: full again");
+      ok(b.take(1000) && b.take(1000) && !b.take(1000), "and full means its whole burst: the asking took nothing");
+    });
+
+    test("the access call's way (keepingDrained): a sender still holding part of its limit is never forgotten for a new one", () -> {
+      PerSender s = PerSender.keepingDrained(1, 1, 3, new AddressHasher(SeededRandom.of(1)));
+      ok(s.allows("a", 0) && s.allows("b", 0) && s.allows("c", 0), "three senders, each with its one used");
+      ok(!s.allows("d", 0), "a fourth, while the oldest's bucket isn't full again: refused");
+      same(s.size(), 3, "and nobody was forgotten for it");
+      ok(!s.allows("a", 500), "so a is still held to its own limit");
+      ok(s.allows("d", 1000), "a second on, the oldest (b) is full again, so it goes, and the new sender is let in");
+      same(s.size(), 3, "still 3");
+    });
+
     test("a new secret forgets every sender", () -> {
       AddressHasher h = new AddressHasher(SeededRandom.of(1));
       PerSender s = new PerSender(1, 1, 10, h);

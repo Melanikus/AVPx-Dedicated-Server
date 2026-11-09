@@ -543,6 +543,10 @@ public final class SealedRelay implements Relay {
       }
     }
 
+    // And the A2s kept for their A1s, so the same A1 sent again gets nothing either, rather than its A2 for the rest of its 10 s
+    // (Secondary's review of the access store, 4.1). Nothing could have come of that A2, but a revoked player is answered by nothing.
+    answered.values().removeIf(answer -> answer.player.equals(player));
+
     counts.revoked += ended;
     return ended;
   }

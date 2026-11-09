@@ -21,6 +21,7 @@ import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BooleanSupplier;
 import java.util.stream.Stream;
 
 // The tests of AccessRequests.java, POST /v1/access-requests: the request read to its exact shape, the fingerprint worked out from the
@@ -44,7 +45,12 @@ public final class AccessRequestsTest {
   }
 
   private static Answer post(AccessStore store, String body) {
-    return AccessRequests.handle(store, "POST", "", body.getBytes(StandardCharsets.ISO_8859_1), NOW);
+    return post(store, body, () -> true);
+  }
+
+  // With the list's day limits on new requests saying newAllowed
+  private static Answer post(AccessStore store, String body, BooleanSupplier newAllowed) {
+    return AccessRequests.handle(store, "POST", "", body.getBytes(StandardCharsets.ISO_8859_1), NOW, newAllowed);
   }
 
   private static Map<String, Object> said(String field, String value) {
@@ -90,7 +96,7 @@ public final class AccessRequestsTest {
         ok(Json.write(a.body()).length() <= AccessRequests.MOST_ANSWER_BYTES, "at most 512 bytes");
         same(post(store, body("Someone", key)).body(), want, "asking again: the same answer");
         Path decisions = folder.resolve("decisions.1");
-        Files.writeString(decisions, want.get("fp") + " approved\n", StandardCharsets.US_ASCII);
+        Files.writeString(decisions, want.get("fp") + " approved\nend 1\n", StandardCharsets.US_ASCII);
 
         if (FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
           Files.setPosixFilePermissions(decisions, PosixFilePermissions.fromString("rw-------"));
@@ -112,7 +118,7 @@ public final class AccessRequestsTest {
         Identity id = identity(10);
         String fp = Identity.fingerprintHex(id.p384Public(), id.kemPublic());
         // No two real key pairs share a fingerprint within reach, so the record that holds it with another id is put in by hand
-        same(store.request(fp, fp + "0".repeat(64), "Someone", NOW), AccessStore.Reply.WAITING, "(another id under this fingerprint)");
+        same(store.request(fp, fp + "0".repeat(64), "Someone", NOW, () -> true), AccessStore.Reply.WAITING, "(another id under this fingerprint)");
         refused(store, body("Melanikus", key(id)), 400, "key", "the real keys of that fingerprint");
       } finally {
         remove(folder);
@@ -121,7 +127,7 @@ public final class AccessRequestsTest {
 
     test("no store: closed (503); any method but POST: 405", () -> {
       refused(null, body("Melanikus", key(identity(10))), 503, "closed", "a list with no access store");
-      same(AccessRequests.handle(null, "GET", "", new byte[0], NOW).status(), 405, "GET");
+      same(AccessRequests.handle(null, "GET", "", new byte[0], NOW, () -> true).status(), 405, "GET");
     });
 
     test("the request is exactly {v: 1, name, key}, or it's \"shape\"", () -> {
@@ -139,7 +145,7 @@ public final class AccessRequestsTest {
           refused(store, bad, 400, "shape", "body " + (bad.length() > 40 ? bad.substring(0, 40) : bad));
         }
 
-        same(AccessRequests.handle(store, "POST", "x=1", body("A", key).getBytes(StandardCharsets.US_ASCII), NOW).body(),
+        same(AccessRequests.handle(store, "POST", "x=1", body("A", key).getBytes(StandardCharsets.US_ASCII), NOW, () -> true).body(),
             said("error", "shape"), "a query");
         refused(store, body("A", key) + " ".repeat(4096), 400, "shape", "a body over 4,096 bytes");
       } finally {
@@ -203,7 +209,7 @@ public final class AccessRequestsTest {
 
         for (int i = 0; i < AccessStore.MOST_WAITING; i++) {
           String fp = String.format("%032x", i + 1L);
-          store.request(fp, fp + "0".repeat(64), "Player", NOW);
+          store.request(fp, fp + "0".repeat(64), "Player", NOW, () -> true);
         }
 
         refused(store, body("A", key(identity(10))), 429, "busy", "the 1,001st waiting");

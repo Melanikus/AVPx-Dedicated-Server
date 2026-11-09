@@ -196,6 +196,14 @@ To play the game against this machine from your own PC (PO gives the game's side
 
 Nothing is open to anyone else. **To be done with it:** destroy the droplet in DigitalOcean; its pass key and certificate go with it.
 
+### 5. The access folder (version 2)
+
+`/var/lib/avpx` holds who asked to play and what the owner decided (`java/src/avpx/access/AccessStore.java`). systemd makes it, the `avpx` user's, `0700` (the service's `StateDirectory`).
+- **The server checks it at start and again about once a second:** it must still be `avpx`'s, with rights for nobody else. If it isn't, the server says why in its log (`journalctl -u avpx-java`) and stops. systemd starts it again, and it refuses to start until the folder is put right, as root: `chown avpx:avpx /var/lib/avpx && chmod 0700 /var/lib/avpx`.
+- **The owner's decisions** go in as files, made by the owner's own tools as the `avpx` user. The server takes them about once a second, on a thread of its own, and deletes each one once it's taken.
+- **If taking them ever hangs for 60 s** (a decisions file swapped for a named pipe, or a disk that has stopped), the server says so and stops, and systemd starts it again. At that start, anything under a decisions name that isn't a plain file is refused before it's opened.
+- **Never edit `requests.json` by hand.** To clear a request, the owner's tools write a `forgotten` decision.
+
 ## Later: the public machine
 
 When SERVER-BLOCKERS.md says `Nothing.`, GitHub's **Deploy** workflow (`.github/workflows/deploy.yml`) puts each version on the public machine, after you approve its `production` environment. It needs:

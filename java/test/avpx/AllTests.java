@@ -57,6 +57,8 @@ public final class AllTests {
     avpx.v2.CryptoV2VectorsTest.register();
     Tests.file("SealedRelayTest");
     avpx.v2.SealedRelayTest.register();
+    Tests.file("FatalTest");
+    avpx.FatalTest.register();
     Tests.file("LiveTest");
     avpx.LiveTest.register();
     System.exit(Tests.runAll());

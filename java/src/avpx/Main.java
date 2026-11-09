@@ -11,6 +11,8 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.time.Instant;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 // AVPx Dedicated Server: a relay, and the list if the settings say so, started together. Written 2026-11-08 by Melanikus for AVPx
 // Dedicated Server, from main.js.
@@ -83,10 +85,24 @@ public final class Main {
 
     ListServer list = null;
 
+    // If the list stops on an error nobody expected (avpx/Fatal.java), the relay is told to stop too, and run() gives 1, for systemd to
+    // start the server again. The list starts before the relay, so the relay is handed over once it exists, and checked for a list
+    // that failed in between.
+    AtomicBoolean listFailed = new AtomicBoolean();
+    AtomicReference<RelaySockets> relayToStop = new AtomicReference<>();
+    Runnable whenListFails = () -> {
+      listFailed.set(true);
+      RelaySockets toStop = relayToStop.get();
+
+      if (toStop != null) {
+        toStop.stopSoon();
+      }
+    };
+
     if (listSettings != null) {
       try {
         Listings listings = new Listings(listSettings.relays(), RandomBytes.secure(), System.currentTimeMillis());
-        list = ListServer.start(listSettings, listings, log::line, System::currentTimeMillis);
+        list = ListServer.start(listSettings, listings, log::line, System::currentTimeMillis, whenListFails);
       } catch (ListServer.CertificateProblem e) {
         log.line("list: the certificate files could not be used (" + e.getMessage() + "), so the server did not start");
         log.close();
@@ -113,6 +129,12 @@ public final class Main {
       return 1;
     }
 
+    relayToStop.set(relay);
+
+    if (listFailed.get()) {
+      relay.stopSoon();
+    }
+
     ListServer started = list;
     Runtime.getRuntime().addShutdownHook(new Thread(() -> {
       log.line("server: stopping");
@@ -125,8 +147,15 @@ public final class Main {
       log.close();
     }, "stop"));
 
-    // The relay runs until the stop above ends it
+    // The relay runs until the stop above ends it, or until it or the list stops on an error nobody expected: then the server ends with
+    // 1, and systemd starts it afresh (deploy/avpx-java.service), rather than going on from a state nobody can vouch for
     relay.join();
+
+    if (relay.failed() || listFailed.get()) {
+      log.line("server: stopping on an error nobody expected, with 1, for systemd to start it again");
+      return 1;
+    }
+
     return 0;
   }
 }

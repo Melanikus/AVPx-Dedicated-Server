@@ -59,7 +59,7 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    if (game.joiners.size() >= limits.mostJoinersPerGame) {
+    if (seats(game) >= limits.mostJoinersPerGame) {
 <<< to
     if (false) {
 >>>
@@ -68,18 +68,18 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    if (m.type() == Type.HOST_HELLO && Crypto.same(m.secret(), slot.game.token) && m.port() == slot.port) {
+    boolean fromHost = m.type() == Type.HOST_HELLO && Crypto.same(m.secret(), slot.game.token) && m.port() == slot.port;
 <<< to
-    if (m.type() == Type.HOST_HELLO && m.port() == slot.port) {
+    boolean fromHost = m.type() == Type.HOST_HELLO && m.port() == slot.port;
 >>>
 
 === a joiner hello with any ticket
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    } else if (m.type() == Type.JOINER_HELLO && Crypto.same(m.secret(), slot.ticket)) {
+    boolean fromJoiner = m.type() == Type.JOINER_HELLO && Crypto.same(m.secret(), slot.ticket);
 <<< to
-    } else if (m.type() == Type.JOINER_HELLO) {
+    boolean fromJoiner = m.type() == Type.JOINER_HELLO;
 >>>
 
 === no rate limit on a joiner's port
@@ -132,7 +132,7 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-      if (waitedTooLong || idleTooLong) {
+      if (notClaimed || waitedTooLong || idleTooLong) {
 <<< to
       if (false) {
 >>>
@@ -176,9 +176,9 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    return List.of(control(from, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(game.joiners.size()), game, now)));
+    return List.of(control(from, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(seats(game)), game, now)));
 <<< to
-    return List.of(control(from, Message.of(Type.HOST_KEPT).secret(game.token).number(game.joiners.size())));
+    return List.of(control(from, Message.of(Type.HOST_KEPT).secret(game.token).number(seats(game))));
 >>>
 
 === a pass made for another region
@@ -1032,7 +1032,7 @@ file: java/src/avpx/list/ListServer.java
 check: live
 file: java/src/avpx/relay/RelaySockets.java
 <<< from
-    log.accept(core.countsLine(now.getAsLong()));
+    Fatal.turn("relay", () -> log.accept(core.countsLine(now.getAsLong())), log);
 <<< to
 >>>
 
@@ -1385,6 +1385,129 @@ file: java/src/avpx/crypto/MlKem.java
   private static final String KEM_NAME = NamedParameterSpec.ML_KEM_1024.getName();
 <<< to
   private static final String KEM_NAME = "ML-KEM";
+>>>
+
+# ----- The independent review's V1 fixes (2026-11-09, AvP-docs/engine/review-server-Reviewer.md): V1-1, a JOIN that never says hello
+# holds nothing for long; V1-2, a hello's secret is checked before anything is spent; V1-3, an error nobody expected stops the server
+
+=== a JOIN alone holds a player's place: every port counted, claimed or not
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      n += slots.get(relayPort).claimed ? 1 : 0;
+<<< to
+      n += 1;
+>>>
+
+=== a port nobody claims kept for the 15 s, not freed after 5
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      boolean notClaimed = slot.state == Slot.State.PENDING && !slot.claimed && now - slot.madeAt >= limits.claimMilliseconds;
+<<< to
+      boolean notClaimed = false;
+>>>
+
+=== no most unclaimed ports for one sender
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (unclaimedPerSender.getOrDefault(sender, 0) >= limits.mostUnclaimedPerSender) {
+<<< to
+    if (false) {
+>>>
+
+=== no most ports for one sender
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (portsPerSender.getOrDefault(sender, 0) >= limits.mostPortsPerSender) {
+<<< to
+    if (false) {
+>>>
+
+=== the host told of a JOIN before the joiner's hello
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    return List.of(control(from, Message.of(Type.JOIN_PORT).secret(slot.ticket).code(game.code).port(relayPort)));
+<<< to
+    return List.of(control(from, Message.of(Type.JOIN_PORT).secret(slot.ticket).code(game.code).port(relayPort)),
+        control(game.host, Message.of(Type.NEW_JOINER).secret(game.token).port(relayPort)));
+>>>
+
+=== the same JOIN again given a second port
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (again != null) {
+<<< to
+    if (false) {
+>>>
+
+=== a claim taken when the game has its most players already
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (seats(slot.game) >= limits.mostJoinersPerGame) {
+<<< to
+    if (false) {
+>>>
+
+=== NEW_JOINER never sent again while the host is still to say hello
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      if (fromJoiner && (!slot.hostTold || now - slot.hostToldAt >= HOST_TOLD_AGAIN_MILLISECONDS || now < slot.hostToldAt)) {
+<<< to
+      if (fromJoiner && !slot.hostTold) {
+>>>
+
+=== a hello's limit spent before its secret is checked, so strangers use up the real ones'
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (!fromHost && !fromJoiner) {
+<<< to
+    if (!slot.hellos.take(now) || (!fromHost && !fromJoiner)) {
+>>>
+
+=== an Error out of a turn not caught, so its thread dies with nobody told
+check: tests
+file: java/src/avpx/Fatal.java
+<<< from
+    } catch (RuntimeException | Error e) {
+<<< to
+    } catch (RuntimeException e) {
+>>>
+
+=== the error's words written with it, an address among them perhaps
+check: tests
+file: java/src/avpx/Fatal.java
+<<< from
+    return t.getClass().getName() + at;
+<<< to
+    return t.getClass().getName() + at + " " + t.getMessage();
+>>>
+
+=== the relay's turn not guarded: an error ends its thread, and the server looks up while it passes nothing
+check: live
+file: java/src/avpx/relay/RelaySockets.java
+<<< from
+      going = Fatal.turn("relay", this::oneTurn, log);
+<<< to
+      oneTurn();
+>>>
+
+=== the list's timer not guarded: an error ends it for good, and nobody is told
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+    if (!Fatal.turn("list", task, log)) {
+<<< to
+    task.run();
+
+    if (false) {
 >>>
 
 # ----- Live rows owed from the Node version's (card #18): each one's live test must notice it

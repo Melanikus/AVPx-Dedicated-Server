@@ -152,20 +152,21 @@ public final class SealedRelayTest {
 
       Player joiner = player(relay, "10.0.0.2", 6000, 31);
       List<Out> joined = joiner.say(relay, Message.of(Type.JOIN).code(hostOpened.code()), NOW);
-      same(joined.size(), 2, "JOIN_PORT to the joiner, NEW_JOINER to the host");
+      same(joined.size(), 1, "JOIN_PORT to the joiner, and nothing to the host yet (the review's V1-1: only a claimed port is told)");
       same(joined.get(0).address(), "10.0.0.2", "JOIN_PORT goes to the joiner");
-      same(joined.get(1).address(), "10.0.0.1", "NEW_JOINER goes to the host");
       Message joinPort = joiner.hear(joined.get(0), NOW);
       same(joinPort.type(), Type.JOIN_PORT, "the joiner opens JOIN_PORT");
-      same(host.hear(joined.get(1), NOW).type(), Type.NEW_JOINER, "the host opens NEW_JOINER: sealed under the host's own session");
       same(host.channel().open(joined.get(0).data(), NOW), null, "and the host can't open what's sealed for the joiner");
       int slot = joinPort.port();
 
-      // The hellos, sealed, each from its game's own socket
-      same(host.say(relay, slot, 5001, Message.of(Type.HOST_HELLO).secret(token).port(slot), NOW).size(), 0, "the host's hello: no answer");
-      List<Out> ready = joiner.say(relay, slot, 6001, Message.of(Type.JOINER_HELLO).secret(joinPort.secret()), NOW);
-      same(ready.size(), 1, "the joiner's hello: one answer");
-      ok(ready.get(0).from() == slot && ready.get(0).port() == 6001, "from the joiner's port, to its game's socket");
+      // The hellos, sealed, each from its game's own socket: the joiner's claims the port, and the host is told then
+      List<Out> told = joiner.say(relay, slot, 6001, Message.of(Type.JOINER_HELLO).secret(joinPort.secret()), NOW);
+      same(told.size(), 1, "the joiner's hello: the host is told");
+      same(told.get(0).address(), "10.0.0.1", "NEW_JOINER goes to the host");
+      same(host.hear(told.get(0), NOW).type(), Type.NEW_JOINER, "the host opens NEW_JOINER: sealed under the host's own session");
+      List<Out> ready = host.say(relay, slot, 5001, Message.of(Type.HOST_HELLO).secret(token).port(slot), NOW);
+      same(ready.size(), 1, "the host's hello: one answer");
+      ok(ready.get(0).from() == slot && ready.get(0).port() == 6001, "from the joiner's port, to the joiner's game's socket");
       same(joiner.hear(ready.get(0), NOW).type(), Type.READY, "READY, sealed for the joiner");
 
       // The games' own sealed packets go through unread, each way

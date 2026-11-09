@@ -444,15 +444,18 @@ public final class Smoke {
       Read joined = readOrNothing(ask(joiner, c.control(), msg(JOIN, c2.secret(), code, 0, 0)));
       check(joined.type() == JOIN_PORT && joined.port() >= c.firstRelayPort() && joined.port() <= c.lastRelayPort() && joined.code().equals(code),
           "JOIN_PORT: a ticket and a relay port", "port " + joined.port());
-      Read note = readOrNothing(next(host, 1000));
-      check(note.type() == NEW_JOINER && note.port() == joined.port() && Arrays.equals(note.secret(), token),
-          "the host hears NEW_JOINER with that port and its token");
       byte[] ticket = joined.secret();
       int port = joined.port();
 
+      // The joiner's hello claims its port, and only then is the host told (PROTOCOL.md section 2). A relay from before 2026-11-09
+      // told the host at the JOIN; its NEW_JOINER is waiting by now, so this passes against both.
+      send(joiner, port, msg(JOINER_HELLO, ticket, null, 0, 0));
+      Read note = readOrNothing(next(host, 1000));
+      check(note.type() == NEW_JOINER && note.port() == joined.port() && Arrays.equals(note.secret(), token),
+          "the joiner's hello claims its port, and the host hears NEW_JOINER with that port and its token");
+
       send(host, port, msg(HOST_HELLO, token, null, port, 0));
-      pause(50);
-      Got ready = ask(joiner, port, msg(JOINER_HELLO, ticket, null, 0, 0));
+      Got ready = next(joiner, 1000);
       check(ready != null && readOrNothing(ready).type() == READY && ready.fromPort() == port,
           "both hellos, and READY comes to the joiner from its port");
 

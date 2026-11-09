@@ -81,19 +81,21 @@ final class SmokeV2 {
       byte[] token = opened.secret();
       String code = opened.code();
 
-      // A joiner joins; the host hears of it under its own session
+      // A joiner joins
       Smoke.Read joined = hear(j, say(j, control, Smoke.msg(Smoke.JOIN, null, code, 0, 0)));
       Smoke.check(joined.type() == Smoke.JOIN_PORT && joined.port() >= ports[0] && joined.port() <= ports[ports.length - 1],
           "a sealed JOIN gets a sealed JOIN_PORT, with a ticket and a relay port", "port " + joined.port());
-      Smoke.Read note = hear(h, Smoke.next(host, 1000));
-      Smoke.check(note.type() == Smoke.NEW_JOINER && note.port() == joined.port() && Arrays.equals(note.secret(), token),
-          "the host hears NEW_JOINER, sealed under its own session");
       int port = joined.port();
 
-      // Both hellos, sealed, on the joiner's port
+      // The joiner's sealed hello claims its port, and only then does the host hear of it, under its own session (PROTOCOL.md section 2)
+      Smoke.send(j.socket(), port, j.channel().seal(Smoke.msg(Smoke.JOINER_HELLO, joined.secret(), null, 0, 0), System.currentTimeMillis()));
+      Smoke.Read note = hear(h, Smoke.next(host, 1000));
+      Smoke.check(note.type() == Smoke.NEW_JOINER && note.port() == joined.port() && Arrays.equals(note.secret(), token),
+          "the joiner's hello claims its port, and the host hears NEW_JOINER, sealed under its own session");
+
+      // The host's hello, sealed, on the joiner's port: READY goes to the joiner
       Smoke.send(host, port, h.channel().seal(Smoke.msg(Smoke.HOST_HELLO, token, null, port, 0), System.currentTimeMillis()));
-      Smoke.pause(50);
-      Smoke.Got ready = say(j, port, Smoke.msg(Smoke.JOINER_HELLO, joined.secret(), null, 0, 0));
+      Smoke.Got ready = Smoke.next(j.socket(), 1000);
       Smoke.check(ready != null && ready.fromPort() == port && hear(j, ready).type() == Smoke.READY,
           "both hellos, sealed, and a sealed READY comes to the joiner from its port");
 

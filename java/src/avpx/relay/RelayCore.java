@@ -28,17 +28,31 @@ import java.util.Set;
 //      has the host's TOKEN (16 random bytes: proof it's the host, from then on) and the game's CODE (8 letters, for joiners).
 //   2. The host says HOST_KEEP with its token every 15 s. A game not kept for gameLifeMilliseconds ends.
 //   3. A joiner asks the control port to JOIN a game by its code, with a cookie too. The relay gives it one of its other ports, its own
-//      for this joiner (JOIN_PORT, with a TICKET: proof it's that joiner), and tells the host (NEW_JOINER, with that port).
-//   4. Both send a hello to that port, from their game's own socket: the host with its token, the joiner with its ticket. That fixes the
-//      address and port each one's packets come from, as the relay sees them, through whatever NAT is between.
+//      for this joiner (JOIN_PORT, with a TICKET: proof it's that joiner). The same JOIN again from the same address and port, before
+//      that port is claimed (step 4), gets the same port and ticket again: the joiner's game asks each second until it hears.
+//   4. The joiner says hello to that port, from its game's own socket, with its ticket. That CLAIMS the port, and only then is the host
+//      told (NEW_JOINER, with that port), and the joiner counted as one of the game's players. The host then says hello there too, with
+//      its token. The two hellos fix the address and port each one's packets come from, as the relay sees them, through whatever NAT.
 //   5. Once both are there, the relay tells the joiner READY, and from then on passes every packet from one to the other, from that
 //      port, unread and unchanged. The host sees each joiner as a peer of its own, because each comes from a port of its own.
+//
+// WHY A PORT MUST BE CLAIMED (the independent review's V1-1, 2026-11-09): the list shows every game's code, so anyone can JOIN any game.
+// If a JOIN alone held a place, someone could JOIN every game again and again, never say hello, and keep every real player out, or take
+// all the relay's ports. So a JOIN that's never followed by its joiner's hello holds nothing for long: its port is freed after
+// claimMilliseconds (5 s: the game says hello at once, then every half second), it isn't one of the game's players, the host never hears of
+// it, and a sender may have only mostUnclaimedPerSender such ports at once. What's left (PROTOCOL.md section 6): someone who does say
+// the joiner's hello is a joiner as far as the relay can tell, until its port goes quiet; mostPortsPerSender caps how many one address
+// holds.
 //
 // WHAT IT REFUSES, AND THE LIMITS (AVP Tao 3: input is hostile): a packet bigger than mostDatagramBytes; anything on the control port
 // that isn't exactly a message, or comes too fast from its sender or from everyone; a hello with the wrong secret; a packet on a joiner's
 // port from anyone but its two ends; more than a port's share of packets and bytes a second. The most games, games for one sender,
-// joiners for one game and ports there are are all fixed. A port waiting for its two ends is freed after pendingMilliseconds, and one with
-// no traffic after idleMilliseconds.
+// joiners for one game, ports for one sender and ports there are are all fixed. A port not claimed is freed after claimMilliseconds, one
+// claimed but waiting for the host after pendingMilliseconds, and one with no traffic after idleMilliseconds.
+//
+// A HELLO'S SECRET IS CHECKED FIRST (the review's V1-2): a hello with the right token or ticket is the proof the relay is waiting for, so
+// it's never held back by anything a stranger sends. Hellos with a wrong secret are dropped, counted and never answered, and spend
+// nothing. The right ones are held only to their own port's limit (helloRate), which bounds the READYs and NEW_JOINERs they bring.
 //
 // COOKIES: a sender can put any address on its packets. Without cookies, someone could ask for a thousand games or ports in other
 // people's names, and fill the relay. So the two asks that make the relay keep something (HOST_OPEN, JOIN) need a cookie: 16 bytes the
@@ -60,9 +74,12 @@ public final class RelayCore implements Relay {
   public static final class Limits {
     public int mostGames = 500;
     public int mostGamesPerSender = 2;
-    public int mostJoinersPerGame = 8;                // the game's own most players is 8, the host among them
+    public int mostJoinersPerGame = 8;                // the game's own most players is 8, the host among them; claimed ports only
     public long gameLifeMilliseconds = 45000;         // a host keeps its game every 15 s
-    public long pendingMilliseconds = 15000;          // for both ends of a joiner's port to say hello
+    public long claimMilliseconds = 5000;             // for the joiner's hello to claim its port (the game says it at once, then every 0.5 s)
+    public int mostUnclaimedPerSender = 2;            // ports not yet claimed, at once, for one sender
+    public int mostPortsPerSender = 8;                // ports in all, at once, for one sender: one whole game's
+    public long pendingMilliseconds = 15000;          // for both ends of a joiner's port to say hello, from the JOIN
     public long idleMilliseconds = 30000;             // a connected game's ENet sends something every second or so
     public int mostDatagramBytes = 1500;              // ENet's packets are at most 1400 bytes as the game sets it up
     public long cookieSlotMilliseconds = 10000;
@@ -90,6 +107,9 @@ public final class RelayCore implements Relay {
 
   // How many times a new game's code is made before the relay says it's busy: 8 tries at 40 random bits each, against at most 500 games
   private static final int CODE_TRIES = 8;
+
+  // While a claimed port waits for its host's hello, NEW_JOINER goes to the host again at most this often, in case the first was lost
+  private static final long HOST_TOLD_AGAIN_MILLISECONDS = 1000;
 
   // A packet to send: from one of the relay's own ports, to an address and port. session is null for version 1, and for a game's own
   // packets passed on. In version 2 it's the sealed session (avpx.v2's) the packet is a control message for: the version 2 relay seals
@@ -150,6 +170,11 @@ public final class RelayCore implements Relay {
     byte[] ticket;
     End hostEnd;
     End joinerEnd;
+    boolean claimed;                   // the joiner has said hello with its ticket: only then is it one of the game's players
+    End asker;                         // where the JOIN came from, so the same JOIN again gets this port again
+    String sender;                     // the hash of the asker's address, for its per-sender counts
+    boolean hostTold;                  // NEW_JOINER has gone to the host
+    long hostToldAt;
     long madeAt;
     long trafficAt;
     TokenBucket hellos;
@@ -195,6 +220,8 @@ public final class RelayCore implements Relay {
   final Map<String, Integer> gamesPerSender = new HashMap<>();     // by hashed address: how many games it has open
   final Map<Integer, Slot> slots = new LinkedHashMap<>();          // by relay port
   final ArrayDeque<Integer> free = new ArrayDeque<>();             // the ports free, the one freed longest ago first
+  final Map<String, Integer> unclaimedPerSender = new HashMap<>(); // by hashed address: its ports not yet claimed
+  final Map<String, Integer> portsPerSender = new HashMap<>();     // by hashed address: all its ports
 
   private final TokenBucket everyone;
   private final PerSender perSender;
@@ -472,7 +499,7 @@ public final class RelayCore implements Relay {
     // where, and how, it is now
     game.host = from;
     game.keptAt = now;
-    return List.of(control(from, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(game.joiners.size()), game, now)));
+    return List.of(control(from, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(seats(game)), game, now)));
   }
 
   private List<Out> hostClose(Message m) {
@@ -500,7 +527,29 @@ public final class RelayCore implements Relay {
       return refuse(from, now, Why.NO_SUCH_GAME);
     }
 
-    if (game.joiners.size() >= limits.mostJoinersPerGame) {
+    // The same JOIN again, from the same address and port, before its port is claimed: its JOIN_PORT was lost, and the joiner's game is
+    // asking again, as it does each second. It gets the same port and ticket again, never a second port, and nothing more is spent.
+    Slot again = unclaimedFor(game, from.address(), from.port());
+
+    if (again != null) {
+      return List.of(control(from, Message.of(Type.JOIN_PORT).secret(again.ticket).code(game.code).port(again.port)));
+    }
+
+    String sender = hasher.keyOf(from.address(), now);
+
+    // A sender waiting on its most unclaimed ports gets no answer at all, and nothing of the game's is spent: the joiner's game asks
+    // again a second later, by when one of them may have been claimed or freed. A refusal would end its join at once.
+    if (unclaimedPerSender.getOrDefault(sender, 0) >= limits.mostUnclaimedPerSender) {
+      counts.overLimit++;
+      return List.of();
+    }
+
+    if (portsPerSender.getOrDefault(sender, 0) >= limits.mostPortsPerSender) {
+      return refuse(from, now, Why.BUSY);
+    }
+
+    // The game's players are its claimed ports: a JOIN no hello followed holds no one's place
+    if (seats(game) >= limits.mostJoinersPerGame) {
       return refuse(from, now, Why.GAME_FULL);
     }
 
@@ -515,17 +564,48 @@ public final class RelayCore implements Relay {
     slot.ticket = random.next(Protocol.SECRET_BYTES);
     slot.hostEnd = null;
     slot.joinerEnd = null;
+    slot.claimed = false;
+    slot.asker = new End(from.address(), from.port());
+    slot.sender = sender;
+    slot.hostTold = false;
+    slot.hostToldAt = now;
     slot.madeAt = now;
     slot.trafficAt = now;
     slot.hellos = new TokenBucket(limits.helloRate, limits.helloBurst);
     slot.up = new Way(new TokenBucket(limits.portPacketRate, limits.portPacketBurst), new TokenBucket(limits.portByteRate, limits.portByteBurst));
     slot.down = new Way(new TokenBucket(limits.portPacketRate, limits.portPacketBurst), new TokenBucket(limits.portByteRate, limits.portByteBurst));
     game.joiners.add(relayPort);
+    unclaimedPerSender.merge(sender, 1, Integer::sum);
+    portsPerSender.merge(sender, 1, Integer::sum);
     counts.joins++;
 
-    return List.of(
-        control(from, Message.of(Type.JOIN_PORT).secret(slot.ticket).code(game.code).port(relayPort)),
-        control(game.host, Message.of(Type.NEW_JOINER).secret(game.token).port(relayPort)));
+    // Only the joiner hears now. The host hears once the joiner's hello has claimed the port (onHello), so JOINs that never say hello
+    // never reach it, nor fill the places its game keeps for joiners it's saying hello to.
+    return List.of(control(from, Message.of(Type.JOIN_PORT).secret(slot.ticket).code(game.code).port(relayPort)));
+  }
+
+  // The game's port not yet claimed that this address and port asked for, or null
+  private Slot unclaimedFor(Game game, String address, int port) {
+    for (int relayPort : game.joiners) {
+      Slot slot = slots.get(relayPort);
+
+      if (slot.state == Slot.State.PENDING && !slot.claimed && slot.asker.is(address, port)) {
+        return slot;
+      }
+    }
+
+    return null;
+  }
+
+  // How many of the game's ports are claimed: its players, as far as the relay can tell
+  private int seats(Game game) {
+    int n = 0;
+
+    for (int relayPort : game.joiners) {
+      n += slots.get(relayPort).claimed ? 1 : 0;
+    }
+
+    return n;
   }
 
   // Version 1's joiner ports: a hello, or a game's packet to pass on
@@ -579,22 +659,48 @@ public final class RelayCore implements Relay {
   }
 
   private List<Out> onHello(Slot slot, Message m, End from, long now) {
+    // The secret first, in a time that says nothing, before anything is spent: a stranger's hellos, however many, never use up what the
+    // real ones need (the review's V1-2). One with a wrong secret is dropped, counted, and never answered.
+    boolean fromHost = m.type() == Type.HOST_HELLO && Crypto.same(m.secret(), slot.game.token) && m.port() == slot.port;
+    boolean fromJoiner = m.type() == Type.JOINER_HELLO && Crypto.same(m.secret(), slot.ticket);
+
+    if (!fromHost && !fromJoiner) {
+      counts.strangers++;
+      return List.of();
+    }
+
+    // A right one is held to its own port's limit, which nothing else spends: it bounds the READYs and NEW_JOINERs the relay sends
     if (!slot.hellos.take(now)) {
       counts.overLimit++;
       return List.of();
     }
 
     // A good hello from a new address moves that end there: that's how a NAT giving a player a new port keeps working
-    if (m.type() == Type.HOST_HELLO && Crypto.same(m.secret(), slot.game.token) && m.port() == slot.port) {
+    if (fromHost) {
       slot.hostEnd = from;
-    } else if (m.type() == Type.JOINER_HELLO && Crypto.same(m.secret(), slot.ticket)) {
-      slot.joinerEnd = from;
     } else {
-      counts.strangers++;
+      if (!slot.claimed && !claim(slot)) {
+        // The game filled up while this port waited to be claimed: it stays unclaimed, and is freed after claimMilliseconds
+        counts.overLimit++;
+        return List.of();
+      }
+
+      slot.joinerEnd = from;
+    }
+
+    // The host is told of a claimed port until it says hello there: at once, then at most once a second, in case a NEW_JOINER was lost
+    if (slot.hostEnd == null) {
+      if (fromJoiner && (!slot.hostTold || now - slot.hostToldAt >= HOST_TOLD_AGAIN_MILLISECONDS || now < slot.hostToldAt)) {
+        slot.hostTold = true;
+        slot.hostToldAt = now;
+        Game game = slot.game;
+        return List.of(control(game.host, Message.of(Type.NEW_JOINER).secret(game.token).port(slot.port)));
+      }
+
       return List.of();
     }
 
-    if (slot.hostEnd == null || slot.joinerEnd == null) {
+    if (slot.joinerEnd == null) {
       return List.of();
     }
 
@@ -611,6 +717,29 @@ public final class RelayCore implements Relay {
     // It goes from the joiner's port, and in version 2 sealed under the joiner's own session.
     End joiner = slot.joinerEnd;
     return List.of(new Out(slot.port, joiner.address(), joiner.port(), ready, joiner.session()));
+  }
+
+  // The joiner's first hello with its ticket: the port is claimed, and the joiner is one of the game's players. False, with nothing
+  // changed, if the game has its most players already: two joiners can each be given a port for its last place before either claims it.
+  private boolean claim(Slot slot) {
+    if (seats(slot.game) >= limits.mostJoinersPerGame) {
+      return false;
+    }
+
+    slot.claimed = true;
+    lessOne(unclaimedPerSender, slot.sender);
+    return true;
+  }
+
+  // One less for key, which goes once it's at 0
+  private static void lessOne(Map<String, Integer> counted, String key) {
+    int left = counted.getOrDefault(key, 1) - 1;
+
+    if (left > 0) {
+      counted.put(key, left);
+    } else {
+      counted.remove(key);
+    }
   }
 
   private List<Out> refuse(End from, long now, int why) {
@@ -660,11 +789,21 @@ public final class RelayCore implements Relay {
 
     slot.game.joiners.remove(slot.port);
     Arrays.fill(slot.ticket, (byte) 0);
+
+    if (!slot.claimed) {
+      lessOne(unclaimedPerSender, slot.sender);
+    }
+
+    lessOne(portsPerSender, slot.sender);
     slot.state = Slot.State.FREE;
     slot.game = null;
     slot.ticket = null;
     slot.hostEnd = null;
     slot.joinerEnd = null;
+    slot.claimed = false;
+    slot.asker = null;
+    slot.sender = null;
+    slot.hostTold = false;
     slot.hellos = null;
     slot.up = null;
     slot.down = null;
@@ -723,10 +862,11 @@ public final class RelayCore implements Relay {
     }
 
     for (Slot slot : slots.values()) {
+      boolean notClaimed = slot.state == Slot.State.PENDING && !slot.claimed && now - slot.madeAt >= limits.claimMilliseconds;
       boolean waitedTooLong = slot.state == Slot.State.PENDING && now - slot.madeAt >= limits.pendingMilliseconds;
       boolean idleTooLong = slot.state == Slot.State.ACTIVE && now - slot.trafficAt >= limits.idleMilliseconds;
 
-      if (waitedTooLong || idleTooLong) {
+      if (notClaimed || waitedTooLong || idleTooLong) {
         freeSlot(slot);
         counts.portsExpired++;
       }

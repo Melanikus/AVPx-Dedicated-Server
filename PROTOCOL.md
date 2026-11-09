@@ -83,22 +83,29 @@ A UDP sender can put anyone's address on its packets. So the two asks that make 
 
 ## 4. The list (HTTPS)
 
-Every call is HTTPS with TLS 1.2 or newer. On port 80 there's only Let's Encrypt's check and a redirect to HTTPS, and the server sends HSTS. JSON in and out, UTF-8, and only the fields named here; any other field, or one out of range, gets `400`.
+Every call is HTTPS with TLS 1.2 or newer, and the server sends HSTS. The server listens on HTTPS only: getting the certificate (Let's Encrypt, through win-acme or certbot) is that tool's own job, on the machine. JSON in and out, UTF-8, and only the fields named here; any other field, or one out of range, gets `400`.
 
 | Call | Body | Answer |
 |---|---|---|
 | `POST /v1/games` | `{"token", "name", "level", "mode", "players", "maxPlayers", "version"}` | `201 {"code"}`; `403` for no room with that token; `409` if it's listed already |
-| `PUT /v1/games` | the same | `200`; `403` for no room with that token |
-| `DELETE /v1/games` | `{"token"}` | `204`; the room ends too |
+| `PUT /v1/games` | the same | `200 {"code"}`; `403` for no room with that token; `404` if it isn't listed |
+| `DELETE /v1/games` | `{"token"}` | `204`, no body; the room ends too. `403` for no room with that token |
 | `GET /v1/games?version=N` | none | `200 {"games": [{"code", "name", "level", "mode", "players", "maxPlayers", "version", "seconds"}]}`, at most 100 games, newest first |
 
+Any other status, and every `{"error"}` answer, means the call didn't work. The error's words are for the server's own tests and are never shown to a player: they come from the network.
+
 **Fields:**
-- **token:** 32 hex digits, the room's token from `HOST_OPENED`.
+- **token:** 32 hex digits, small letters, the room's token from `HOST_OPENED`.
+- **code:** 8 code letters (section 2).
 - **name:** 1 to 32 characters, printable ASCII (0x20 to 0x7E).
 - **level and mode:** 1 to 32 characters each, the same letters.
 - **players and maxPlayers:** whole numbers, 1 to 8, with players no more than maxPlayers.
 - **version:** a whole number, 1 to 65535, the game's network version.
-- **seconds:** how long the game has been listed.
+- **seconds:** how long the game has been listed, 0 to 31,536,000 (a year); a game listed longer still says a year.
+
+**What a reader can hold the answer to:**
+- **Its size:** an answer to `GET /v1/games` is at most 32 KB. The worst case, 100 games with every text at its longest and made of the characters JSON writes as two, is 30,511 bytes. A reader can refuse anything bigger.
+- **Its escapes:** names, levels and modes are printable ASCII, and for those JSON writes only two escapes, `\"` and `\\`. A reader can refuse any other escape (`\u`, `\n`, `\/` and the rest). The server's tests check both of these.
 
 **Heartbeat and expiry:** a game's list entry lives exactly as long as its room. The room's `HOST_KEEP` is the heartbeat. A room unkept for 45 s ends, and so does its entry.
 

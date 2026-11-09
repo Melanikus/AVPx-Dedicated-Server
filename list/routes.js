@@ -16,6 +16,14 @@ const { Refusal, parseListing, parseEnding, parseListQuery } = require('./reques
 
 const kMostGames = 100;
 
+// How long a game is said to have been listed is at most a year, so a reader can hold that number to a limit too (a room kept for longer
+// still says a year)
+const kMostSeconds = 31536000;
+
+// The most an answer to GET /v1/games can be: 100 games with every text field at its longest and every character one JSON writes as two
+// (" and \) come to 30,511 bytes. A game can refuse anything bigger. test/list.test.js checks the worst case fits.
+const kMostListBytes = 32 * 1024;
+
 function answer(status, body = null) {
   return { status, body };
 }
@@ -52,7 +60,7 @@ function handle(relay, { method, path, query, body }, now) {
           players: g.listing.players,
           maxPlayers: g.listing.maxPlayers,
           version: g.listing.version,
-          seconds: Math.max(0, Math.floor((now - g.listing.listedAt) / 1000)),
+          seconds: Math.min(kMostSeconds, Math.max(0, Math.floor((now - g.listing.listedAt) / 1000))),
         })),
       });
     }
@@ -109,4 +117,4 @@ function handle(relay, { method, path, query, body }, now) {
   }
 }
 
-module.exports = { handle, kMostGames };
+module.exports = { handle, kMostGames, kMostSeconds, kMostListBytes };

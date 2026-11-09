@@ -5,7 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const P = require('../relay/protocol');
 const { RelayCore } = require('../relay/core');
-const { handle, kMostGames } = require('../list/routes');
+const { handle, kMostGames, kMostSeconds, kMostListBytes } = require('../list/routes');
 const { seededRandom } = require('../support/seeded-random');
 
 const CONTROL = 27500;
@@ -74,6 +74,30 @@ test('the list gives at most 100 games, the newest first', () => {
   assert.strictEqual(games[99].name, 'game 20');
 });
 
+test('the largest list answer fits in 32 KB, uses only the escapes \\" and \\\\, and says a year at most', () => {
+  const r = new RelayCore({ controlPort: CONTROL, ports: [27501], random: seededRandom(13), limits: { mostGames: 200 } });
+  const quote = String.fromCharCode(34), backslash = String.fromCharCode(92);
+  for (let i = 0; i < 120; i++) {
+    const room = openRoom(r, 0);
+    assert.strictEqual(call(r, 'POST', listing(room.token, { name: quote.repeat(32), level: backslash.repeat(32), mode: quote.repeat(32), players: 8, maxPlayers: 8, version: 65535 })).status, 201);
+  }
+  // Two years on, with every room still kept
+  const later = 2 * kMostSeconds * 1000;
+  for (const game of r.games.values()) game.keptAt = later;
+  const answer = call(r, 'GET', undefined, 'version=65535', later);
+  const text = JSON.stringify(answer.body);
+  assert.strictEqual(answer.body.games.length, 100);
+  assert.ok(text.length <= kMostListBytes, `${text.length} bytes`);
+  assert.ok(answer.body.games.every((g) => g.seconds === kMostSeconds), 'seconds stops at a year');
+
+  let printable = '';
+  for (let c = 0x20; c <= 0x7e; c++) printable += String.fromCharCode(c);
+  const all = JSON.stringify({ name: printable });
+  const escapes = new Set();
+  for (let i = 0; i < all.length; i++) if (all[i] === backslash) { escapes.add(all.slice(i, i + 2)); i++; }
+  assert.deepStrictEqual([...escapes].sort(), [backslash + quote, backslash + backslash].sort(), 'printable ASCII only ever needs these two');
+});
+
 test('the list never gives an address or a token', () => {
   const r = relay();
   const room = openRoom(r);
@@ -89,7 +113,7 @@ test('every field is held to its limits', () => {
   refused({ name: '' }, 'an empty name');
   refused({ name: 'x'.repeat(33) }, 'a name of 33');
   refused({ name: 'line\nbreak' }, 'a line break');
-  refused({ name: 'café' }, 'a letter outside printable ASCII');
+  refused({ name: `caf${String.fromCharCode(0xe9)}` }, 'a letter outside printable ASCII (an e with an accent), written as a number so this file stays ASCII');
   refused({ name: 'tab\there' }, 'a tab');
   refused({ name: 7 }, 'a number for a name');
   refused({ level: '' }, 'an empty level');

@@ -18,8 +18,8 @@ import java.util.regex.Pattern;
 // requests itself, and reads them strictly, the way the list's game sends them (PROTOCOL.md section 4, "How a request is read"):
 // - the head is at most MOST_HEAD_BYTES, every line ends with CR LF, and the head ends with an empty line; more is 431;
 // - the first line is METHOD /target HTTP/1.1 (or 1.0), with one space between each, the method in capitals;
-// - a header is name: value, the name made of the letters HTTP allows, the value printable ASCII; a line that starts with a space (an old
-//   way of folding one header onto two lines) is refused, so no header can be read two ways;
+// - a header is name: value, the name made of the letters HTTP allows, the value printable ASCII; so a line that starts with a space (an
+//   old way of folding one header onto two lines) is refused, and no header can be read two ways;
 // - every byte of the head is printable ASCII, a tab in a value, or a line's CR LF. Anything else is 400.
 // It never answers itself: it gives back the head, or a Refused with the status the list answers with.
 public final class Http {
@@ -123,10 +123,7 @@ public final class Http {
     for (int i = 1; i < lines.length; i++) {
       String line = lines[i];
 
-      if (line.startsWith(" ") || line.startsWith("\t")) {
-        throw new Refused(400, "a header folded onto two lines");
-      }
-
+      // A line folded onto the one before starts with a space or a tab, and no header's name can: so the name's own rule refuses it
       int colon = line.indexOf(':');
 
       if (colon <= 0 || !NAME.matcher(line.substring(0, colon)).matches()) {

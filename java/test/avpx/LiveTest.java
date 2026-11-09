@@ -293,7 +293,16 @@ public final class LiveTest {
         same(empty.headers().get("x-content-type-options"), "nosniff", "nothing but data");
         matches(empty.headers().get("strict-transport-security"), "max-age=", "HSTS");
         same(empty.headers().get("connection"), "close", "one request a connection");
-        same(request(list, "POST", "/v1/games", null, Map.of("Transfer-Encoding", "chunked")).status(), 400, "a body sent in chunks");
+        // Each of these is 400 for its own reason, not only because there's no good body, so each says which
+        Reply chunked = request(list, "POST", "/v1/games", null, Map.of("Transfer-Encoding", "chunked"));
+        same(chunked.status(), 400, "a body sent in chunks");
+        matches(chunked.body(), "Transfer-Encoding", "refused for its Transfer-Encoding");
+        Map<String, String> twoLengths = new LinkedHashMap<>();
+        twoLengths.put("Content-Length", "2");
+        twoLengths.put("content-length", "2");
+        Reply two = request(list, "POST", "/v1/games", null, twoLengths);
+        same(two.status(), 400, "two Content-Lengths");
+        matches(two.body(), "one Content-Length", "refused for its two Content-Lengths");
         same(request(list, "POST", "/v1/games", "x".repeat(1025), Map.of()).status(), 413, "a body over 1 KB");
         Reply relays = request(list, "GET", "/v1/relays");
         Map<String, Object> want = new LinkedHashMap<>();

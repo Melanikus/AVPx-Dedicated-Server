@@ -1147,3 +1147,138 @@ file: java/src/avpx/crypto/MlKem.java
 <<< to
       if (false) {
 >>>
+
+# The version 2 relay: java/src/avpx/v2/SealedRelay.java, and RelayCore.java's version 2 paths
+=== A1 kept and read with its cookie unchecked
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (!cookieIsGood(f.cookie(), address, port, f.id(), now)) {
+<<< to
+    if (false) {
+>>>
+
+=== the same A1 again gets no A2, where it must get the same one
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (seen.address.equals(address) && seen.port == port && MessageDigest.isEqual(seen.a1Hash, a1Hash)) {
+<<< to
+      if (false) {
+>>>
+
+=== any A3 taken as the game's key confirmation
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (!MessageDigest.isEqual(f.part(), answer.expected.a3())) {
+<<< to
+    if (false) {
+>>>
+
+=== an A3 taken from another address and port than A1's
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (answer == null || answer.expected == null || !answer.address.equals(address) || answer.port != port) {
+<<< to
+    if (answer == null || answer.expected == null) {
+>>>
+
+=== no limit on A1s being put together from one address
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (assembling.size() >= limits.mostAssemblies || assemblingPerAddress.getOrDefault(address, 0) >= limits.mostAssembliesPerAddress) {
+<<< to
+      if (assembling.size() >= limits.mostAssemblies) {
+>>>
+
+=== no limit on handshakes started from one address and port
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+        || !starts.allows(address + "|" + port, now) || !everyoneStarts.take(now)) {
+<<< to
+        || !everyoneStarts.take(now)) {
+>>>
+
+=== anything passed on through a joiner's port, not only sealed game traffic
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      return data.length >= GAME_OVERHEAD && startsWith(data, GAME_MAGIC) ? core.forward(localPort, address, port, data, now) : refused(2);
+<<< to
+      return core.forward(localPort, address, port, data, now);
+>>>
+
+=== quiet sessions never end
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      boolean idle = !held.contains(s) && now - s.heardAt >= limits.sessionIdleMilliseconds;
+<<< to
+      boolean idle = false;
+>>>
+
+=== a session a game holds ends when it's quiet
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      boolean idle = !held.contains(s) && now - s.heardAt >= limits.sessionIdleMilliseconds;
+<<< to
+      boolean idle = now - s.heardAt >= limits.sessionIdleMilliseconds;
+>>>
+
+=== a version 2 core takes bare messages
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      if (sealed) {
+        counts.notAMessage++;
+        return List.of();
+      }
+
+      if (data == null || data.length > limits.mostDatagramBytes) {
+<<< to
+      if (data == null || data.length > limits.mostDatagramBytes) {
+>>>
+
+=== a version 1 core takes opened messages
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      boolean shaped = sealed && session != null && message != null && message.length == Protocol.MESSAGE_BYTES;
+<<< to
+      boolean shaped = session != null && message != null && message.length == Protocol.MESSAGE_BYTES;
+>>>
+
+=== a sealed ECHO answered
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+        if (sealed) {
+          counts.notAMessage++;
+          return List.of();
+        }
+
+<<< to
+>>>
+
+=== a cookie round inside the sealed channel
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (sealed || cookieIsGood(m.secret(), from.address(), from.port(), now)) {
+<<< to
+    if (cookieIsGood(m.secret(), from.address(), from.port(), now)) {
+>>>
+
+=== a lost A3's stand-in, the game's first sealed message, taken from another address and port
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (answer == null || localPort != core.controlPort() || !answer.address.equals(address) || answer.port != port) {
+<<< to
+      if (answer == null || localPort != core.controlPort()) {
+>>>

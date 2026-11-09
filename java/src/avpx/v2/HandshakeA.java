@@ -101,9 +101,21 @@ public final class HandshakeA {
 
     // The game's first sealed message, when A3 was lost, counts as its confirmation: the keys, without A3's tag (CRYPTO.md section 6)
     public Keys keysWithoutA3() {
+      return expect().keys();
+    }
+
+    // What the game's A3 must be, and the keys it would confirm: both known at once, as nothing in them waits for A3. A3 is an empty
+    // EncryptAndHash, so its 16 bytes are fixed by what came before; the game sends them to prove it has the keys. So the relay (SealedRelay)
+    // works them out as soon as A2 is made, and takes the keys only once A3 comes and is exactly a3, or, if A3 was lost, once the game's
+    // first sealed message opens under them. Either way the transcript is h after A3 (CRYPTO.md 5.1, point 15). This state's secrets are
+    // wiped.
+    public record Expected(byte[] a3, Keys keys) {
+    }
+
+    public Expected expect() {
       try {
-        noise.encryptAndHash(NOTHING);
-        return new Keys(noise.split(), sessionId.clone(), noise.h());
+        byte[] a3 = noise.encryptAndHash(NOTHING);
+        return new Expected(a3, new Keys(noise.split(), sessionId.clone(), noise.h()));
       } finally {
         noise.wipe();
       }

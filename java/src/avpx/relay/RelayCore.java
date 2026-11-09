@@ -6,7 +6,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -685,6 +687,29 @@ public final class RelayCore implements Relay {
     }
 
     Arrays.fill(game.token, (byte) 0);
+  }
+
+  // Version 2: every session a game or a joiner's port holds now (a game's host's, and both ends of each joiner's port), as RelayCore
+  // carries them, unopened. SealedRelay keeps those: their ends may need them again (a hello from a new address, a NEW_JOINER).
+  public Set<Object> sessionsInUse() {
+    Set<Object> held = Collections.newSetFromMap(new IdentityHashMap<>());
+
+    for (Game game : games.values()) {
+      addSession(held, game.host);
+    }
+
+    for (Slot slot : slots.values()) {
+      addSession(held, slot.hostEnd);
+      addSession(held, slot.joinerEnd);
+    }
+
+    return held;
+  }
+
+  private static void addSession(Set<Object> held, End end) {
+    if (end != null && end.session() != null) {
+      held.add(end.session());
+    }
   }
 
   // Called about once a second: ends what has run out, and gives back the lines to write, if any (counts only, never an address or code)

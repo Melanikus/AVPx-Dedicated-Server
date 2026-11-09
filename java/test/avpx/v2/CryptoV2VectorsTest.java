@@ -4,6 +4,8 @@ import static avpx.testing.Tests.ok;
 import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.test;
 
+import avpx.crypto.MlKem;
+import avpx.crypto.P384;
 import avpx.list.Json;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -30,6 +32,27 @@ public final class CryptoV2VectorsTest {
   }
 
   public static void register() {
+    // What Smoke's pin (java/tools/SmokeV2.java) does on an installed machine, here on every test run: the game side, given the file's
+    // own inputs (keys as numbers and seeds, m), makes the file's handshake A, and its keys seal and open the file's first messages
+    test("from crypto-v2.json's own inputs, the game side makes its A1, A3, transcript and first sealed messages (Smoke's pin)", () -> {
+      Map<String, Object> top = Json.readObject(Files.readAllBytes(CryptoV2Vectors.FILE), DEPTH);
+      Map<String, Object> a = object(top.get("handshakeA"));
+      Map<String, Object> game = object(a.get("gameEphemeral"));
+      Map<String, Object> relay = object(a.get("relayStatic"));
+      HandshakeA.Initiator initiator = HandshakeA.writeA1((String) a.get("region"), bytes(relay.get("p384Public")),
+          bytes(relay.get("mlkemPublic")), P384.pair(bytes(game.get("p384Private")), bytes(game.get("p384Public"))),
+          MlKem.fromSeed(bytes(game.get("mlkemSeed"))), bytes(object(a.get("skem")).get("m")));
+      same(initiator.a1(), bytes(a.get("a1")), "A1, byte for byte");
+      HandshakeA.Initiator.Done done = initiator.readA2(bytes(a.get("a2")));
+      same(done.a3(), bytes(a.get("a3")), "A3");
+      same(done.keys().transcript(), bytes(a.get("transcript")), "the transcript");
+      Channel channel = Channel.gameSide(done.keys(), 0);
+      Map<String, Object> fromGame = object(Json.list(top.get("sealed")).get(0));
+      Map<String, Object> fromRelay = object(Json.list(top.get("sealed")).get(1));
+      same(channel.seal(bytes(fromGame.get("message")), 0), bytes(fromGame.get("sealed")), "the game's first sealed message");
+      same(channel.open(bytes(fromRelay.get("sealed")), 0), bytes(fromRelay.get("message")), "and the relay's, opened");
+    });
+
     test("test-vectors/crypto-v2.json is exactly what the server's code makes now, byte for byte (5.1, point 14)", () -> {
       String made = CryptoV2Vectors.make();
       String file = Files.readString(CryptoV2Vectors.FILE, StandardCharsets.US_ASCII);

@@ -56,6 +56,9 @@ import javax.net.ssl.TrustManagerFactory;
 // region, made again here with the pass key in its settings (PROTOCOL.md section 3). The list's checks over HTTPS can't run there, and
 // the output says so at its end, so a relay-only run never reads as a full one. It exits 0 only if every check that ran passed.
 //
+// A VERSION 2 RELAY (its settings say "protocol": 2) speaks version 2 only, so with --installed it gets SmokeV2.java's checks instead:
+// handshake A, then a whole game sealed. That file says how it's held to the known answers before it's trusted.
+//
 // SAFE TO RUN ANYWHERE: it sends only to 127.0.0.1, and binds only there, so it can test only a server on the same machine and can never be
 // pointed at anyone else's. HTTPS trusts only list-test.pem, and checks the certificate is for "localhost" (the name the relays' list gives).
 //
@@ -91,20 +94,20 @@ public final class Smoke {
   private static byte[] passKey;
 
   // The relay's message types, by their numbers (PROTOCOL.md section 2)
-  private static final int ECHO = 14;
+  static final int ECHO = 14;
   private static final int ECHO_BACK = 15;
-  private static final int HOST_OPEN = 1;
-  private static final int HOST_OPENED = 2;
-  private static final int HOST_KEEP = 3;
-  private static final int HOST_KEPT = 4;
-  private static final int HOST_CLOSE = 5;
-  private static final int JOIN = 6;
-  private static final int JOIN_PORT = 7;
-  private static final int NEW_JOINER = 8;
-  private static final int HOST_HELLO = 9;
-  private static final int JOINER_HELLO = 10;
-  private static final int READY = 11;
-  private static final int REFUSED = 12;
+  static final int HOST_OPEN = 1;
+  static final int HOST_OPENED = 2;
+  static final int HOST_KEEP = 3;
+  static final int HOST_KEPT = 4;
+  static final int HOST_CLOSE = 5;
+  static final int JOIN = 6;
+  static final int JOIN_PORT = 7;
+  static final int NEW_JOINER = 8;
+  static final int HOST_HELLO = 9;
+  static final int JOINER_HELLO = 10;
+  static final int READY = 11;
+  static final int REFUSED = 12;
   private static final int COOKIE = 13;
 
   private static final SecureRandom RANDOM = new SecureRandom();
@@ -113,12 +116,12 @@ public final class Smoke {
 
   private static int passed;
   private static int failed;
-  private static int notLoopback;
+  static int notLoopback;
 
   // The host's round trip to the relay, from its best echo, which its listing says (hostMs)
   private static long hostMs = 1;
 
-  private static void check(boolean ok, String name, String more) {
+  static void check(boolean ok, String name, String more) {
     if (ok) {
       passed++;
     } else {
@@ -128,15 +131,15 @@ public final class Smoke {
     System.out.println((ok ? "PASS" : "FAIL") + "  " + name + (more.isEmpty() ? "" : "  (" + more + ")"));
   }
 
-  private static void check(boolean ok, String name) {
+  static void check(boolean ok, String name) {
     check(ok, name, "");
   }
 
-  private static void pause(long ms) throws InterruptedException {
+  static void pause(long ms) throws InterruptedException {
     Thread.sleep(ms);
   }
 
-  private static byte[] random(int n) {
+  static byte[] random(int n) {
     byte[] out = new byte[n];
     RANDOM.nextBytes(out);
     return out;
@@ -144,7 +147,7 @@ public final class Smoke {
 
   // ----- The relay's 64-byte messages, by hand (PROTOCOL.md section 2): little-endian numbers
 
-  private static byte[] msg(int type, byte[] secret, String code, int port, int number) {
+  static byte[] msg(int type, byte[] secret, String code, int port, int number) {
     byte[] b = new byte[64];
     System.arraycopy("AVPR".getBytes(StandardCharsets.US_ASCII), 0, b, 0, 4);
     b[4] = 1;
@@ -165,15 +168,15 @@ public final class Smoke {
     return b;
   }
 
-  private static byte[] msg(int type) {
+  static byte[] msg(int type) {
     return msg(type, null, null, 0, 0);
   }
 
   // A message's fields, read by hand; null if it isn't one
-  private record Read(int type, byte[] secret, String code, int port, int number, byte[] pass, long passTime, byte[] tail) {
+  record Read(int type, byte[] secret, String code, int port, int number, byte[] pass, long passTime, byte[] tail) {
   }
 
-  private static Read read(byte[] b) {
+  static Read read(byte[] b) {
     if (b == null || b.length != 64 || !new String(b, 0, 4, StandardCharsets.US_ASCII).equals("AVPR") || b[4] != 1) {
       return null;
     }
@@ -189,7 +192,7 @@ public final class Smoke {
         Arrays.copyOfRange(b, 60, 64));
   }
 
-  private static boolean allZero(byte[] b) {
+  static boolean allZero(byte[] b) {
     for (byte x : b) {
       if (x != 0) {
         return false;
@@ -201,25 +204,25 @@ public final class Smoke {
 
   // ----- UDP, on 127.0.0.1 only
 
-  private record Got(byte[] data, int fromPort) {
+  record Got(byte[] data, int fromPort) {
   }
 
-  private static DatagramSocket udp() throws IOException {
+  static DatagramSocket udp() throws IOException {
     DatagramSocket s = new DatagramSocket(new InetSocketAddress(loopback(), 0));
     s.setReceiveBufferSize(1 << 20);
     return s;
   }
 
-  private static InetAddress loopback() {
+  static InetAddress loopback() {
     return Inet4Address.ofLiteral(HOST);
   }
 
-  private static void send(DatagramSocket s, int port, byte[] data) throws IOException {
+  static void send(DatagramSocket s, int port, byte[] data) throws IOException {
     s.send(new DatagramPacket(data, data.length, new InetSocketAddress(loopback(), port)));
   }
 
   // The next packet s gets within ms, or null
-  private static Got next(DatagramSocket s, int ms) throws IOException {
+  static Got next(DatagramSocket s, int ms) throws IOException {
     DatagramPacket packet = new DatagramPacket(new byte[2048], 2048);
     s.setSoTimeout(ms);
 
@@ -236,13 +239,13 @@ public final class Smoke {
     return new Got(Arrays.copyOf(packet.getData(), packet.getLength()), packet.getPort());
   }
 
-  private static Got ask(DatagramSocket s, int port, byte[] data) throws IOException {
+  static Got ask(DatagramSocket s, int port, byte[] data) throws IOException {
     send(s, port, data);
     return next(s, 1000);
   }
 
   // The message in what came back, or an empty one (type 0) if nothing did, so a check fails rather than the run stopping
-  private static Read readOrNothing(Got got) {
+  static Read readOrNothing(Got got) {
     Read r = got == null ? null : read(got.data());
     return r != null ? r : new Read(0, new byte[16], "", 0, 0, new byte[16], 0, new byte[4]);
   }
@@ -367,7 +370,16 @@ public final class Smoke {
     List<String> words = Arrays.asList(args);
 
     if (words.contains("--installed")) {
-      c = installed(words);
+      Settings settings = Settings.read(INSTALLED_SETTINGS);
+
+      // A version 2 relay speaks only version 2, so its checks are SmokeV2's (see the top)
+      if (settings.protocol() == 2) {
+        SmokeV2.run(settings);
+        finish();
+        return;
+      }
+
+      c = installed(settings, words);
     }
 
     boolean withList = c.certificate() != null;
@@ -422,7 +434,8 @@ public final class Smoke {
             "the listing shows, with no owner key or pass in it");
       } else {
         // No list here to check the pass, so it's checked by hand: this relay's own, for its region
-        check(Arrays.equals(opened.pass(), passFor(code, opened.passTime())), "the pass is this relay's own, for region " + c.region());
+        check(Arrays.equals(opened.pass(), passFor(passKey, c.region(), code, opened.passTime())),
+            "the pass is this relay's own, for region " + c.region());
       }
 
       // A joiner joins
@@ -613,11 +626,11 @@ public final class Smoke {
 
   // A pass, made by hand as PROTOCOL.md section 3 says: HMAC-SHA-256, with the relay's pass key, of "AVPX-PASS-1", the region, a 0 byte,
   // the room's code and the pass time (8 bytes, little-endian), cut to 16 bytes
-  private static byte[] passFor(String code, long passTime) throws Exception {
+  static byte[] passFor(byte[] key, String region, String code, long passTime) throws Exception {
     Mac mac = Mac.getInstance("HmacSHA256");
-    mac.init(new SecretKeySpec(passKey, "HmacSHA256"));
+    mac.init(new SecretKeySpec(key, "HmacSHA256"));
     mac.update("AVPX-PASS-1".getBytes(StandardCharsets.US_ASCII));
-    mac.update(c.region().getBytes(StandardCharsets.US_ASCII));
+    mac.update(region.getBytes(StandardCharsets.US_ASCII));
     mac.update((byte) 0);
     mac.update(code.getBytes(StandardCharsets.US_ASCII));
 
@@ -629,8 +642,7 @@ public final class Smoke {
   }
 
   // The config of the server installed on this machine, from its own settings, read as the server reads them
-  private static Config installed(List<String> words) throws Exception {
-    Settings settings = Settings.read(INSTALLED_SETTINGS);
+  private static Config installed(Settings settings, List<String> words) throws Exception {
     Settings.ListSettings list = settings.list();
     int[] ports = settings.relayPorts();
 
@@ -716,7 +728,7 @@ public final class Smoke {
     return "";
   }
 
-  private static void finish() {
+  static void finish() {
     System.out.println("\n" + passed + " passed, " + failed + " failed");
     System.exit(failed == 0 && passed > 0 ? 0 : 1);
   }

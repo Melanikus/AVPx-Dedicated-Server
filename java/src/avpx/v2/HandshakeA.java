@@ -8,6 +8,7 @@ import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.interfaces.ECPublicKey;
 import java.util.Arrays;
+import java.util.function.Function;
 
 // Handshake A (CRYPTO.md section 6): a game and its relay agree on keys, and the relay is proved to the game. Noise's pattern NK, made
 // post-quantum as PQNoise does (a KEM stands in for a Diffie-Hellman where a static key is proved), and hybrid (every ECDH result and
@@ -273,8 +274,23 @@ public final class HandshakeA {
     }
   }
 
-  // A1, from the game to a relay whose static keys the game knows: random gives the game's ephemeral keys and its encapsulation
+  // A1, from the game to a relay whose static keys the game knows: random gives the game's ephemeral keys and its encapsulation, in that
+  // order (the order they first appear in A1)
   public static Initiator writeA1(String region, byte[] relayStaticP384, byte[] relayStaticKem, SecureRandom random) {
+    KeyPair ephemeral = P384.generate(random);
+    KeyPair ephemeralKem = MlKem.generate(random);
+    return writeA1(region, relayStaticP384, relayStaticKem, ephemeral, ephemeralKem, key -> MlKem.encapsulate(key, random));
+  }
+
+  // The same A1 from given ephemeral keys and a given m, as test-vectors/crypto-v2.json writes them down: so a copy of this code can be
+  // held to those known answers before it's trusted (Smoke's pin). Never for a real handshake, whose keys and m must be fresh.
+  public static Initiator writeA1(String region, byte[] relayStaticP384, byte[] relayStaticKem, KeyPair ephemeral, KeyPair ephemeralKem,
+      byte[] m) {
+    return writeA1(region, relayStaticP384, relayStaticKem, ephemeral, ephemeralKem, key -> MlKem.encapsulate(key, m));
+  }
+
+  private static Initiator writeA1(String region, byte[] relayStaticP384, byte[] relayStaticKem, KeyPair ephemeral, KeyPair ephemeralKem,
+      Function<PublicKey, MlKem.Encapsulated> encapsulate) {
     ECPublicKey relayStatic = P384.decode(relayStaticP384);
     PublicKey relayStaticKemKey = MlKem.decode(relayStaticKem);
 
@@ -283,14 +299,12 @@ public final class HandshakeA {
     }
 
     Noise noise = start(region, relayStaticP384, relayStaticKem);
-    KeyPair ephemeral = P384.generate(random);
-    KeyPair ephemeralKem = MlKem.generate(random);
     byte[] gameP384 = P384.encode((ECPublicKey) ephemeral.getPublic());
     byte[] gameKem = MlKem.encode(ephemeralKem.getPublic());
     noise.mixHash(gameP384);
     noise.mixHash(gameKem);
     mix(noise, P384.agree(ephemeral.getPrivate(), relayStatic));
-    MlKem.Encapsulated toRelay = MlKem.encapsulate(relayStaticKemKey, random);
+    MlKem.Encapsulated toRelay = encapsulate.apply(relayStaticKemKey);
     noise.mixHash(toRelay.ciphertext());
     mix(noise, toRelay.secret());
     byte[] tag = noise.encryptAndHash(NOTHING);

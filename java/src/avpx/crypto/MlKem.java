@@ -74,7 +74,7 @@ public final class MlKem {
       return null;
     }
 
-    Seed given = new Seed(seed);
+    Fixed given = new Fixed(seed);
 
     try {
       KeyPair pair = generate(given);
@@ -86,16 +86,17 @@ public final class MlKem {
     }
   }
 
-  // A SecureRandom that gives exactly the bytes of a seed, once, in order, and then refuses
-  private static final class Seed extends SecureRandom {
+  // A SecureRandom that gives exactly the bytes it was made with, once, in order, and then refuses: so Java makes FIPS 203's own
+  // functions from given inputs (KeyGen from d and z, Encaps from m). Never for anything that needs real randomness.
+  private static final class Fixed extends SecureRandom {
     private static final long serialVersionUID = 1L;
     private final Bytes bytes;
 
-    Seed(byte[] seed) {
+    Fixed(byte[] seed) {
       this(new Bytes(seed.clone()));
     }
 
-    private Seed(Bytes bytes) {
+    private Fixed(Bytes bytes) {
       super(bytes, null);
       this.bytes = bytes;
     }
@@ -125,7 +126,7 @@ public final class MlKem {
       @Override
       protected void engineNextBytes(byte[] out) {
         if (at + out.length > seed.length) {
-          throw new IllegalStateException("MlKem.fromSeed: Java asked for more than d and z");
+          throw new IllegalStateException("MlKem: Java asked for more bytes than FIPS 203's inputs it was given");
         }
 
         System.arraycopy(seed, at, out, 0, out.length);
@@ -134,7 +135,7 @@ public final class MlKem {
 
       @Override
       protected byte[] engineGenerateSeed(int n) {
-        throw new IllegalStateException("MlKem.fromSeed: Java asked for a seed of its own");
+        throw new IllegalStateException("MlKem: Java asked for a seed of its own");
       }
     }
   }
@@ -230,6 +231,28 @@ public final class MlKem {
       return new Encapsulated(ciphertext, secret);
     } catch (GeneralSecurityException e) {
       throw new IllegalStateException("this Java can't encapsulate with ML-KEM-1024", e);
+    }
+  }
+
+  // An encapsulation from a given m (FIPS 203's Encaps_internal(ek, m)): the same m always gives the same ciphertext and secret. Only for
+  // checking the code against known answers (Smoke's pin to crypto-v2.json): a real encapsulation's m must be fresh (the one above).
+  public static Encapsulated encapsulate(PublicKey key, byte[] m) {
+    if (m == null || m.length != SECRET_BYTES) {
+      throw new IllegalArgumentException("MlKem.encapsulate: m is 32 bytes");
+    }
+
+    Fixed given = new Fixed(m);
+
+    try {
+      Encapsulated made = encapsulate(key, given);
+
+      if (!given.allTaken()) {
+        throw new IllegalStateException("this Java's ML-KEM-1024 didn't take m as FIPS 203 says");
+      }
+
+      return made;
+    } finally {
+      given.wipe();
     }
   }
 

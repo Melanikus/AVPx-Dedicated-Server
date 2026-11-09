@@ -191,6 +191,32 @@ jobs:
           grep -q '^NOT RUN  the list' smoke.out || { echo "the relay-only run didn't say the list's checks were left out"; exit 1; }
           exit "$status"
 
+      # A version 2 relay ("protocol": 2; relay-only, as version 2's list isn't built yet), its static keys made fresh by MakeRelayKeys, and
+      # Smoke --installed against it as the deploy will run it: SmokeV2's pin to crypto-v2.json first, then a whole game, sealed
+      - name: A version 2 Java relay, and Smoke --installed against it (the pin first)
+        run: |
+          dir="$RUNNER_TEMP/smoke-v2"
+          mkdir -p "$dir"
+          key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+          keys=$("$JAVA_HOME/bin/java" -cp "$GITHUB_WORKSPACE/java/build/tools:$GITHUB_WORKSPACE/java/build/server" avpx.tools.MakeRelayKeys \
+            | sed -n '/^"staticKeys": {$/,/^}$/p')
+          printf '{ "region": "saopaulo", "passKey": "%s", "relayAddress": "127.0.0.1", "controlPort": 27500, "relayPorts": "27501-27564",\n  "protocol": 2,\n%s\n}\n' \
+            "$key" "$keys" > "$dir/settings.json"
+          sudo install -m 0644 "$dir/settings.json" /etc/avpx/settings.json
+          cd "$dir"
+          "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-server.jar" > server.out 2>&1 &
+          server=$!
+          status=0
+          "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" --installed > smoke.out 2>&1 || status=$?
+          kill "$server"
+          wait "$server" || true
+          cat smoke.out
+          echo "----- what the version 2 server wrote to its screen"
+          cat server.out
+          grep -q '^PASS  the pin' smoke.out || { echo "the version 2 run didn't pass its pin to crypto-v2.json"; exit 1; }
+          grep -q '^NOT RUN  the list' smoke.out || { echo "the version 2 run didn't say the list's checks were left out"; exit 1; }
+          exit "$status"
+
   takeouts:
     name: Java take-outs
     runs-on: ubuntu-24.04

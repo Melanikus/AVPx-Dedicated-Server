@@ -56,3 +56,17 @@ jobs:
           persist-credentials: false
       - uses: ./.github/actions/node
       - run: node tools/takeouts.js --live
+
+  # SERVER-BLOCKERS.md: every deploy refuses while it lists anything. This check proves the refusal works, and shows what's listed; it
+  # doesn't fail because something is listed (that's the deploy's step: node tools/check-blockers.js, with no --list)
+  blockers:
+    name: Server blockers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/node
+      - run: node --test test/blockers.test.js
+      - run: node tools/check-blockers.js --list

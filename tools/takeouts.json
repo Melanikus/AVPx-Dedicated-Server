@@ -610,6 +610,27 @@
       "to": ""
     },
     {
+      "name": "a deploy let through whatever is listed",
+      "check": "tests",
+      "file": "tools/check-blockers.js",
+      "from": "if (items.length === 1 && items[0] === kClear) {",
+      "to": "if (true) {"
+    },
+    {
+      "name": "a cut-short SERVER-BLOCKERS.md taken",
+      "check": "tests",
+      "file": "tools/check-blockers.js",
+      "from": "if (filled[filled.length - 1] !== kEnd) {",
+      "to": "if (false) {"
+    },
+    {
+      "name": "the heading twice taken",
+      "check": "tests",
+      "file": "tools/check-blockers.js",
+      "from": "if (headings !== 1) {",
+      "to": "if (headings === 0) {"
+    },
+    {
       "name": "a row added to tools/takeouts.json by hand",
       "check": "tests",
       "file": "tools/takeouts.json",

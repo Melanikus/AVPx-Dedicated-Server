@@ -1347,3 +1347,13 @@ file: java/src/avpx/v2/SealedRelay.java
 <<< to
     if (sessions.size() + waiting.size() >= limits.mostSessions) {
 >>>
+
+# CRYPTO.md bd0e45d: handshake B's datagrams (AVPE) pass through a joiner's port, end to end
+=== handshake B's datagrams refused on a joiner's port
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (data.length == Fragments.DATAGRAM_BYTES && startsWith(data, END_TO_END)) {
+<<< to
+      if (false) {
+>>>

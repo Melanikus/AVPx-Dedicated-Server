@@ -178,7 +178,19 @@ public final class SealedRelayTest {
       same(relay.receive(slot, "10.0.0.2", 6001, changed(gamePacket(3), 3, 'X'), NOW).size(), 0,
           "a packet that isn't sealed game traffic is never passed on: no plaintext, ever");
       same(relay.receive(slot, "10.0.0.9", 7000, gamePacket(4), NOW).size(), 0, "nor one from a stranger");
-      same(relay.counts.refused[19], 1L, "refusal 19, for the one that wasn't version 2's on a joiner's port");
+
+      // Handshake B's datagrams (AVPE, exactly 1,200 bytes) go through the joiner's port unread too, each way: B runs from game to game
+      byte[] b1 = Fragments.cut(Fragments.hostToJoiner(), HandshakeB.B1, bytes(8, 3), new byte[16], bytes(1713, 0x44)).get(0);
+      List<Out> toHost = relay.receive(slot, "10.0.0.2", 6001, b1, NOW);
+      ok(toHost.size() == 1 && toHost.get(0).address().equals("10.0.0.1") && toHost.get(0).port() == 5001, "a B datagram, joiner to host");
+      same(toHost.get(0).data(), b1, "byte for byte");
+      byte[] b2 = Fragments.cut(Fragments.hostToJoiner(), HandshakeB.B2, bytes(8, 3), new byte[16], bytes(3362, 0x45)).get(0);
+      List<Out> toJoiner = relay.receive(slot, "10.0.0.1", 5001, b2, NOW);
+      ok(toJoiner.size() == 1 && toJoiner.get(0).address().equals("10.0.0.2") && toJoiner.get(0).port() == 6001, "and host to joiner");
+      same(toJoiner.get(0).data(), b2, "byte for byte");
+      same(relay.receive(slot, "10.0.0.2", 6001, Arrays.copyOf(b1, 1199), NOW).size(), 0, "an AVPE datagram that isn't 1,200 bytes: refused");
+
+      same(relay.counts.refused[19], 2L, "refusal 19, for the two that weren't version 2's on a joiner's port");
       same(relay.counts.dropped, 0L, "and nothing threw");
     });
 

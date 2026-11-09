@@ -39,8 +39,9 @@ import java.util.Set;
 //   On the control port, a 104-byte sealed control message (Channel.java): opened under its session, and the 64-byte message in it
 //   handed to RelayCore, whose answers are each sealed under the session they're for. If A3 was lost, the game's first sealed message
 //   that opens under the handshake's keys confirms them instead.
-//   On a joiner's port: a 104-byte sealed hello, opened under its sender's session and handed to RelayCore the same way; or the games'
-//   own sealed packets (AVPG, section 9), passed on unread. Nothing else goes through (refusal 19): no plaintext, ever.
+//   On a joiner's port: a 104-byte sealed hello, opened under its sender's session and handed to RelayCore the same way; or, passed on
+//   unread, the games' own: handshake B's datagrams (AVPE, exactly 1,200 bytes, section 8) and their sealed packets (AVPG, 28 to 1,500
+//   bytes, section 9). Nothing else goes through (refusal 19): no plaintext, ever.
 //   Anything else: the wrong size (1; every version 1 message is one), another magic (2), another version (3), an unknown kind (4).
 //
 // WHY THIS ORDER: the cheap checks first, and nothing kept before the cookie shows the sender gets packets at its address. The
@@ -84,6 +85,7 @@ public final class SealedRelay implements Relay {
   static final int COOKIE_ANSWER_BYTES = 64;
   private static final int MOST_BAD_A3 = 4;
   private static final byte[] TO_RELAY = Fragments.toRelay();
+  private static final byte[] END_TO_END = Fragments.hostToJoiner();
   private static final byte[] GAME_MAGIC = "AVPG".getBytes(StandardCharsets.US_ASCII);
   private static final int GAME_OVERHEAD = 28;
   private static final long COOKIE_KEY_LIFE_MILLISECONDS = 24L * 60 * 60 * 1000;
@@ -243,6 +245,11 @@ public final class SealedRelay implements Relay {
 
       if (data.length == Channel.SEALED_BYTES && startsWith(data, TO_RELAY)) {
         return onSealed(localPort, address, port, data, now);
+      }
+
+      // Handshake B's datagrams, from game to game (CRYPTO.md section 8): exactly 1,200 bytes each, end to end, passed on unread
+      if (data.length == Fragments.DATAGRAM_BYTES && startsWith(data, END_TO_END)) {
+        return core.forward(localPort, address, port, data, now);
       }
 
       return data.length >= GAME_OVERHEAD && startsWith(data, GAME_MAGIC) ? core.forward(localPort, address, port, data, now) : refused(19);

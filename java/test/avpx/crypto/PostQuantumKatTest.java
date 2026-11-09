@@ -1,10 +1,14 @@
 package avpx.crypto;
 
+import static avpx.testing.Tests.ok;
 import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.test;
 
 import avpx.testing.Kat;
 import avpx.testing.ScriptedRandom;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.PrivateKey;
@@ -25,7 +29,9 @@ import java.util.List;
 //
 // TWO KINDS OF CASE ARE COUNTED, NOT CHECKED, and each test says how many, so a change in the files is noticed:
 // - ML-DSA with a context: Java 25 has no way to give ML-DSA a context (its Signature signs and checks with the empty one only), so a
-//   case with a context can't be checked by it. Version 2 uses the empty context only (CRYPTO.md 5.1, point 16).
+//   case with a context can't be checked for its own answer. Version 2 uses the empty context only (CRYPTO.md 5.1, point 16). Those
+//   signatures are checked the other way instead, where they have a public key: each must be REFUSED with the empty context (the test
+//   "all 21 ... made with a context are refused"), which is what keeps version 2's signatures to the one context.
 // - Wycheproof's ML-KEM decapsulation cases whose private seed is the wrong length: they test a way of taking a seed from outside,
 //   which neither Java nor version 2 has.
 public final class PostQuantumKatTest {
@@ -252,6 +258,41 @@ public final class PostQuantumKatTest {
         return c.valid() ? unless(checks, pk == null ? "a good key refused" : "it doesn't check") : unless(!checks, "it checks");
       }), 234, "234 with the empty context");
       same(all.size() - empty.size(), 7, "7 with a context");
+    });
+
+    // Version 2 signs and checks ML-DSA with the empty context only (CRYPTO.md 5.1, point 16, and section 12). These are signatures
+    // made WITH a context, and a good one is good only under its own: FIPS 204 signs the context's length and bytes before the message.
+    // So checking with the empty context must refuse every one, the ones good under theirs included, or a signature made for another
+    // purpose, under another context, could pass here. (NIST's SigGen cases with a context carry no public key, so they can't be checked.)
+    test("ML-DSA-87: all 21 NIST and Wycheproof signatures made with a context are refused, the 5 good under their own included", () -> {
+      int checked = 0;
+      int goodUnderTheirs = 0;
+
+      for (String file : List.of("ml-dsa-87/nist-acvp-sigver.json", "ml-dsa-87/wycheproof-verify.json")) {
+        boolean nist = file.contains("nist");
+        List<Kat.Case> withContext = Kat.where(Kat.read(file), "context", "", false);
+
+        for (Kat.Case c : withContext) {
+          goodUnderTheirs += c.valid() ? 1 : 0;
+        }
+
+        checked += Kat.each(file, withContext, c -> {
+          PublicKey pk = Signatures.mlDsaDecode(c.bytes("pk"));
+          boolean checks = pk != null && Signatures.mlDsaVerify(pk, c.bytes(nist ? "message" : "msg"), c.bytes(nist ? "signature" : "sig"));
+          return unless(!checks, "a signature made with a context checks with the empty one");
+        });
+      }
+
+      same(checked, 21, "14 of NIST's and 7 of Wycheproof's");
+      same(goodUnderTheirs, 5, "5 of them good under their own context (3 of NIST's, 2 of Wycheproof's)");
+    });
+
+    // Java's ML-DSA takes no parameter at all (JDK 25), so a context can't be given to it. Nothing in Signatures.java may look as if it
+    // gave one: the next reader would take it for a context the signatures have, which CRYPTO.md says they haven't.
+    test("Signatures.java gives its signatures no parameter, so ML-DSA has the empty context the spec names", () -> {
+      String code = Files.readString(Path.of("src", "avpx", "crypto", "Signatures.java"), StandardCharsets.US_ASCII);
+      ok(code.contains("Signature.getInstance(ML_DSA)"), "Signatures.java makes its ML-DSA signatures, so this looks at the right file");
+      ok(!code.contains("setParameter("), "no setParameter( in Signatures.java");
     });
   }
 }

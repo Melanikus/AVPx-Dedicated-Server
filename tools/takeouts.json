@@ -3,8 +3,8 @@
     "The take-out rows tools/takeouts.js runs: each breaks one thing in a copy, and the check it names must fail. Written 2026-11-08 by Melanikus for AVPx Dedicated Server.",
     "Made by tools/make-takeouts.js: change the rows there and run it. test/takeouts-file.test.js fails if this file and that one differ.",
     "A row is { name, check: \"tests\" or \"standard\", file, from, to }. \"from\" is in its file exactly once; a \"from\" of \"\" makes a new file whose text is \"to\".",
-    "list/https.js and relay/sockets.js have no rows: their limits are tested only by test/live.test.js, which opens sockets, and take-outs run the tests without AVPX_LIVE. That is owed: rows run with the live tests, in the Tests check on GitHub.",
-    "The HTTP rules in list/https.js (one request a connection, Transfer-Encoding refused, 431) are checked by test/live.test.js only, so they have no rows yet either."
+    "Rows whose check is \"live\" break list/https.js or relay/sockets.js, which only test/live.test.js reaches. They run with node tools/takeouts.js --live, which opens sockets on 127.0.0.1 only: on GitHub every time, and on any other machine only when its owner says so.",
+    "list/https.js has no rows for its TLS limits (the handshake time, the certificate reload): the live tests run the list over plain HTTP, so those are left to Node itself and to the deploy checks."
   ],
   "rows": [
     {
@@ -544,6 +544,69 @@
       "check": "tests",
       "file": "log.js",
       "from": ".replace(/[\\r\\n]/g, ' ')",
+      "to": ""
+    },
+    {
+      "name": "a body in chunks taken",
+      "check": "live",
+      "file": "list/https.js",
+      "from": "if (request.headers['transfer-encoding'] !== undefined) {",
+      "to": "if (false) {"
+    },
+    {
+      "name": "the connection kept open after an answer",
+      "check": "live",
+      "file": "list/https.js",
+      "from": "Connection: 'close', ",
+      "to": ""
+    },
+    {
+      "name": "a body declared over 1 KB read before it is refused",
+      "check": "live",
+      "file": "list/https.js",
+      "from": "} else if (declared !== undefined && !(/^[0-9]{1,4}$/.test(declared) && Number(declared) <= kMostBodyBytes)) {",
+      "to": "} else if (false) {"
+    },
+    {
+      "name": "no per-address limit on the list",
+      "check": "live",
+      "file": "list/https.js",
+      "from": "if (!perAddress.allows(address, at) || (isList && !lists.allows(address, at)) || !everyone.take(at)) {",
+      "to": "if (!everyone.take(at)) {"
+    },
+    {
+      "name": "any number of connections from one address",
+      "check": "live",
+      "file": "list/https.js",
+      "from": "if (count > LIMITS.mostConnectionsPerAddress) {",
+      "to": "if (false) {"
+    },
+    {
+      "name": "headers over 8 KB answered 400, not 431",
+      "check": "live",
+      "file": "list/https.js",
+      "from": "'431 Request Header Fields Too Large'",
+      "to": "'400 Bad Request'"
+    },
+    {
+      "name": "nosniff left off the answers",
+      "check": "live",
+      "file": "list/https.js",
+      "from": "  'X-Content-Type-Options': 'nosniff',\n",
+      "to": ""
+    },
+    {
+      "name": "every packet sent from the control port",
+      "check": "live",
+      "file": "relay/sockets.js",
+      "from": "const socket = sockets.get(o.from);",
+      "to": "const socket = sockets.get(core.controlPort);"
+    },
+    {
+      "name": "a port that cannot be opened not caught",
+      "check": "live",
+      "file": "relay/sockets.js",
+      "from": "socket.once('error', reject);",
       "to": ""
     },
     {

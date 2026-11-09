@@ -9,6 +9,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const dgram = require('dgram');
 const http = require('http');
+const net = require('net');
 const P = require('../relay/protocol');
 const { RelayCore } = require('../relay/core');
 const { startRelay } = require('../relay/sockets');
@@ -70,9 +71,11 @@ test('a whole game through the relay\'s real UDP ports', { skip: !live && 'set A
     const ready = P.decode(await ask(joiner, joined.port, P.encode({ type: P.TYPE.JOINER_HELLO, secret: joined.secret })));
     assert.strictEqual(ready.type, P.TYPE.READY);
 
-    const toHost = new Promise((resolve) => host.once('message', resolve));
+    const toHost = new Promise((resolve) => host.once('message', (m, from) => resolve({ m, port: from.port })));
     joiner.send(Buffer.from('an ENet packet'), joined.port, LOOPBACK);
-    assert.strictEqual((await toHost).toString(), 'an ENet packet');
+    const got = await toHost;
+    assert.strictEqual(got.m.toString(), 'an ENet packet');
+    assert.strictEqual(got.port, joined.port, 'passed on from the joiner\'s own relay port, so the host sees the joiner as a peer of its own');
     const back = await ask(host, joined.port, Buffer.from('and its answer'));
     assert.strictEqual(back, null, 'the host\'s answer goes to the joiner, not back to the host');
   } finally {
@@ -95,9 +98,12 @@ test('the relay won\'t start on a port that\'s taken, and closes what it opened'
   }
 });
 
+// A request through Node's own client. A body goes with its Content-Length, unless the headers ask for it in chunks.
 function request(port, method, path, body = null, headers = {}) {
   return new Promise((resolve, reject) => {
-    const req = http.request({ host: LOOPBACK, port, method, path, headers: { ...headers, ...(body ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } : {}) } }, (res) => {
+    const chunked = headers['Transfer-Encoding'] !== undefined;
+    const length = body && !chunked ? { 'Content-Length': Buffer.byteLength(body) } : {};
+    const req = http.request({ host: LOOPBACK, port, method, path, headers: { ...headers, ...(body ? { 'Content-Type': 'application/json', ...length } : {}) } }, (res) => {
       const parts = [];
       res.on('data', (d) => parts.push(d));
       res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(parts).toString() }));
@@ -105,6 +111,21 @@ function request(port, method, path, body = null, headers = {}) {
     req.on('error', reject);
     if (body) req.write(body);
     req.end();
+  });
+}
+
+// Raw bytes to the list's port, for requests Node's own client won't make: the first line of what comes back, or null if nothing does
+// within ms
+function raw(port, bytes, ms = 1500) {
+  return new Promise((resolve) => {
+    const s = net.connect(port, LOOPBACK);
+    let got = '';
+    const done = () => { clearTimeout(timer); s.destroy(); resolve(got ? got.split('\r\n')[0] : null); };
+    const timer = setTimeout(done, ms);
+    s.on('data', (d) => { got += d.toString('latin1'); if (got.includes('\r\n')) done(); });
+    s.on('error', () => {});
+    s.on('close', () => { if (!got) done(); });
+    s.write(bytes);
   });
 }
 
@@ -126,12 +147,39 @@ test('the list\'s server answers with JSON and its safety headers, and refuses a
     assert.strictEqual(empty.headers['x-content-type-options'], 'nosniff');
     assert.match(empty.headers['strict-transport-security'], /max-age=/);
     assert.strictEqual(empty.headers.connection, 'close', 'one request a connection');
-    assert.strictEqual((await request(port, 'POST', '/v1/games', null, { 'Transfer-Encoding': 'chunked' })).status, 400, 'a body sent in chunks');
+    // A body sent in chunks is refused for that reason, not for something else about it (an empty body would be refused anyway, which is
+    // how this test once passed whether the check was there or not; Primary found it)
+    const chunked = await request(port, 'POST', '/v1/games', '{}', { 'Transfer-Encoding': 'chunked' });
+    assert.strictEqual(chunked.status, 400, 'a body sent in chunks');
+    assert.strictEqual(JSON.parse(chunked.body).error, 'a body comes with Content-Length only');
     assert.strictEqual((await request(port, 'POST', '/v1/games', 'x'.repeat(1025))).status, 413);
+    assert.match(String(await raw(port, 'POST /v1/games HTTP/1.1\r\nHost: t\r\nContent-Length: 2000\r\n\r\n')), /^HTTP\/1\.1 413 /,
+      'a body declared over 1 KB is refused before any of it comes');
+    assert.match(String(await raw(port, `GET /v1/relays HTTP/1.1\r\nHost: t\r\nX-Big: ${'a'.repeat(9000)}\r\n\r\n`)), /^HTTP\/1\.1 431 /,
+      'headers over 8 KB get 431');
     const relays = await request(port, 'GET', '/v1/relays');
     assert.deepStrictEqual(JSON.parse(relays.body), { relays: [{ region: REGION, host: 'virginia.relay.example.net', port: CONTROL }] });
     assert.strictEqual((await request(port, 'GET', '/nothing')).status, 404);
   } finally {
+    list.stop();
+  }
+});
+
+test('the list\'s server takes at most 10 connections from one address', { skip: !live && 'set AVPX_LIVE=1' }, async () => {
+  const { list, port } = await listServer();
+  const sockets = [];
+  try {
+    let closed = 0;
+    for (let i = 0; i < 11; i++) {
+      const s = net.connect(port, LOOPBACK);
+      s.on('error', () => {});
+      s.on('close', () => { closed++; });
+      sockets.push(s);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    assert.strictEqual(closed, 1, `of 11 connections from one address, the server closed ${closed}, not 1`);
+  } finally {
+    for (const s of sockets) s.destroy();
     list.stop();
   }
 });

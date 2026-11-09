@@ -20,6 +20,7 @@ const kFile = path.join(__dirname, 'takeouts.json');
 const T = (name, file, from, to) => ({ name, check: 'tests', file, from, to });
 const S = (name, file, from, to) => ({ name, check: 'standard', file, from, to });
 const NEW = (name, file, to) => ({ name, check: 'standard', file, from: '', to });
+const L = (name, file, from, to) => ({ name, check: 'live', file, from, to });
 const BQ = String.fromCharCode(96);
 const D = String.fromCharCode(36);
 
@@ -124,6 +125,17 @@ const rows = [
   // log.js
   T('a line break kept in a log line', 'log.js', ".replace(/[\\r\\n]/g, ' ')", ''),
 
+  // list/https.js and relay/sockets.js, which only the live tests reach (run with --live: they open sockets on 127.0.0.1)
+  L('a body in chunks taken', 'list/https.js', "if (request.headers['transfer-encoding'] !== undefined) {", 'if (false) {'),
+  L('the connection kept open after an answer', 'list/https.js', "Connection: 'close', ", ''),
+  L('a body declared over 1 KB read before it is refused', 'list/https.js', '} else if (declared !== undefined && !(/^[0-9]{1,4}$/.test(declared) && Number(declared) <= kMostBodyBytes)) {', '} else if (false) {'),
+  L('no per-address limit on the list', 'list/https.js', 'if (!perAddress.allows(address, at) || (isList && !lists.allows(address, at)) || !everyone.take(at)) {', 'if (!everyone.take(at)) {'),
+  L('any number of connections from one address', 'list/https.js', 'if (count > LIMITS.mostConnectionsPerAddress) {', 'if (false) {'),
+  L('headers over 8 KB answered 400, not 431', 'list/https.js', "'431 Request Header Fields Too Large'", "'400 Bad Request'"),
+  L('nosniff left off the answers', 'list/https.js', "  'X-Content-Type-Options': 'nosniff',\n", ''),
+  L('every packet sent from the control port', 'relay/sockets.js', 'const socket = sockets.get(o.from);', 'const socket = sockets.get(core.controlPort);'),
+  L('a port that cannot be opened not caught', 'relay/sockets.js', "socket.once('error', reject);", ''),
+
   // tools/takeouts.json itself
   T('a row added to tools/takeouts.json by hand', 'tools/takeouts.json', '"rows": [', '"rows": [\n    { "name": "by hand", "check": "tests", "file": "x", "from": "a", "to": "b" },'),
 
@@ -145,8 +157,8 @@ const out = {
     'The take-out rows tools/takeouts.js runs: each breaks one thing in a copy, and the check it names must fail. Written 2026-11-08 by Melanikus for AVPx Dedicated Server.',
     'Made by tools/make-takeouts.js: change the rows there and run it. test/takeouts-file.test.js fails if this file and that one differ.',
     'A row is { name, check: "tests" or "standard", file, from, to }. "from" is in its file exactly once; a "from" of "" makes a new file whose text is "to".',
-    'list/https.js and relay/sockets.js have no rows: their limits are tested only by test/live.test.js, which opens sockets, and take-outs run the tests without AVPX_LIVE. That is owed: rows run with the live tests, in the Tests check on GitHub.',
-    'The HTTP rules in list/https.js (one request a connection, Transfer-Encoding refused, 431) are checked by test/live.test.js only, so they have no rows yet either.',
+    'Rows whose check is "live" break list/https.js or relay/sockets.js, which only test/live.test.js reaches. They run with node tools/takeouts.js --live, which opens sockets on 127.0.0.1 only: on GitHub every time, and on any other machine only when its owner says so.',
+    'list/https.js has no rows for its TLS limits (the handshake time, the certificate reload): the live tests run the list over plain HTTP, so those are left to Node itself and to the deploy checks.',
   ],
   rows,
 };

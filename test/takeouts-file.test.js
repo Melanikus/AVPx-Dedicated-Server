@@ -19,7 +19,7 @@ test('every row is whole: a name, a check that exists, a file, and text to put i
   for (const row of rows) {
     assert.ok(typeof row.name === 'string' && row.name.length > 0 && !names.has(row.name), `a name, once: ${row.name}`);
     names.add(row.name);
-    assert.ok(row.check === 'tests' || row.check === 'standard', row.name);
+    assert.ok(row.check === 'tests' || row.check === 'standard' || row.check === 'live', row.name);
     assert.ok(typeof row.file === 'string' && row.file.length > 0 && !row.file.startsWith('/') && !row.file.includes('..'), `a file inside the copy: ${row.name}`);
     assert.ok(typeof row.from === 'string' && typeof row.to === 'string' && row.from !== row.to, `a change: ${row.name}`);
   }

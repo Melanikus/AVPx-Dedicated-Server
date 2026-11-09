@@ -1,5 +1,6 @@
 package avpx.relay;
 
+import avpx.Fatal;
 import java.io.Closeable;
 import java.io.IOException;
 import java.net.Inet4Address;
@@ -31,6 +32,10 @@ import java.util.function.LongSupplier;
 //
 // A socket's error is counted, with no address, and the relay goes on; the count goes in the log. About once a second, the core's tick
 // ends what has run out and may give a line for the log.
+//
+// ANYTHING ELSE thrown out of a turn of the loop (the review's V1-3) stops it: avpx/Fatal.java writes one line, the relay stops as if
+// told to, and failed() says so, so Main stops the server with a failure for systemd to start it again. Before, such an error ended the
+// relay's thread alone, and the server looked up while it passed no games.
 public final class RelaySockets {
   private static final long TICK_MILLISECONDS = 1000;
   private static final int MOST_PACKETS_A_TURN = 64;
@@ -43,7 +48,9 @@ public final class RelaySockets {
   private final ByteBuffer buffer;
   private Thread thread;
   private volatile boolean running = true;
+  private volatile boolean failed;
   private long errors;
+  private long tickedAt;
 
   private RelaySockets(RelayCore core, Consumer<String> log, LongSupplier now, Selector selector, Map<Integer, DatagramChannel> channels) {
     this.core = core;
@@ -99,50 +106,63 @@ public final class RelaySockets {
   }
 
   private void run() {
-    long tickedAt = now.getAsLong();
+    // Every turn, the first one's clock reading among them, is one Fatal.turn: anything thrown out of it stops the relay, said and seen
+    boolean going = Fatal.turn("relay", () -> tickedAt = now.getAsLong(), log);
 
-    while (running && selector.isOpen()) {
-      try {
-        selector.select(TICK_MILLISECONDS);
-      } catch (IOException e) {
-        errors++;
-      }
-
-      Iterator<SelectionKey> ready = selector.selectedKeys().iterator();
-
-      while (ready.hasNext()) {
-        SelectionKey key = ready.next();
-        ready.remove();
-
-        if (key.isValid() && key.isReadable() && key.channel() instanceof DatagramChannel channel && key.attachment() instanceof Integer port) {
-          readSome(channel, port);
-        }
-      }
-
-      long at = now.getAsLong();
-
-      if (at - tickedAt >= TICK_MILLISECONDS || at < tickedAt) {
-        tickedAt = at;
-
-        for (String line : core.tick(at)) {
-          log.accept(line);
-        }
-
-        if (errors > 0) {
-          log.accept("relay: " + errors + " socket errors in the last moments, and the relay goes on");
-          errors = 0;
-        }
-      }
+    while (going && running && selector.isOpen()) {
+      going = Fatal.turn("relay", this::oneTurn, log);
     }
 
-    // Stopping: the counts since the last line, so the last part of a minute isn't lost, and then every port closes
-    log.accept(core.countsLine(now.getAsLong()));
+    failed = !going;
+
+    // Stopping: the counts since the last line, so the last part of a minute isn't lost, and then every port closes, whatever happened
+    Fatal.turn("relay", () -> log.accept(core.countsLine(now.getAsLong())), log);
 
     for (DatagramChannel channel : channels.values()) {
       closeQuietly(channel);
     }
 
     closeQuietly(selector);
+  }
+
+  // One turn: wait up to a tick for packets, read them, and tick when it's time
+  private void oneTurn() {
+    try {
+      selector.select(TICK_MILLISECONDS);
+    } catch (IOException e) {
+      errors++;
+    }
+
+    Iterator<SelectionKey> ready = selector.selectedKeys().iterator();
+
+    while (ready.hasNext()) {
+      SelectionKey key = ready.next();
+      ready.remove();
+
+      if (key.isValid() && key.isReadable() && key.channel() instanceof DatagramChannel channel && key.attachment() instanceof Integer port) {
+        readSome(channel, port);
+      }
+    }
+
+    long at = now.getAsLong();
+
+    if (at - tickedAt >= TICK_MILLISECONDS || at < tickedAt) {
+      tickedAt = at;
+
+      for (String line : core.tick(at)) {
+        log.accept(line);
+      }
+
+      if (errors > 0) {
+        log.accept("relay: " + errors + " socket errors in the last moments, and the relay goes on");
+        errors = 0;
+      }
+    }
+  }
+
+  // Whether the relay stopped on an error nobody expected (Fatal), rather than because it was told to: then the server must stop too
+  public boolean failed() {
+    return failed;
   }
 
   // Up to MOST_PACKETS_A_TURN packets from one port, each handed to the core, and what it says sent
@@ -192,9 +212,14 @@ public final class RelaySockets {
 
   // Stops: the thread ends, and every port is closed
   public void stop() {
+    stopSoon();
+    join();
+  }
+
+  // Tells the relay to stop, and doesn't wait: for another thread (the list's, on its own failure), which mustn't wait on the relay's
+  public void stopSoon() {
     running = false;
     selector.wakeup();
-    join();
   }
 
   // Waits until the relay has stopped

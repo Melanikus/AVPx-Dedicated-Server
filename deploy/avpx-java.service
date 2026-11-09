@@ -17,6 +17,11 @@
 Description=AVPx Dedicated Server, the Java version (the game list and the relay)
 After=network-online.target
 Wants=network-online.target
+# Never give up starting it again. systemd's own default stops trying after 5 starts in 10 s and leaves the service dead. RestartSec=5,
+# below, already keeps it under that, but a server that stops itself on an error nobody expected (java/src/avpx/Fatal.java, the
+# independent review's V1-3) must always come back, so the limit is said here, plainly, as none. A server failing again and again then
+# starts once every 5 s, each time with a line in the journal saying why.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -28,6 +33,8 @@ WorkingDirectory=/opt/avpx/current
 # -XX:+DisableAttachMechanism: no other program on the machine can attach to the running Java and change what it does.
 # -Xmx256m: the most memory Java may use for its objects, well inside MemoryMax below, so the machine's limit is never what stops it.
 ExecStart=/opt/avpx-jdk/bin/java -XX:+ExitOnOutOfMemoryError -XX:+DisableAttachMechanism -Xmx256m -jar /opt/avpx/current/avpx-server.jar
+# on-failure: started again after any exit but 0 (Fatal's 1 and Java's out-of-memory exit among them) and after being killed by a signal.
+# 0 is a stop that was asked for (systemctl stop), and is left stopped.
 Restart=on-failure
 RestartSec=5
 

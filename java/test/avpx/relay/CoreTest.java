@@ -62,6 +62,17 @@ public final class CoreTest {
     return new RelayCore(CONTROL, PORTS, REGION, KEY, SeededRandom.of(3), limits, 0);
   }
 
+  // A relay with as many joiner ports as a test needs (27501 on), and the starting limits
+  private static RelayCore relayWithPorts(int count) {
+    int[] ports = new int[count];
+
+    for (int i = 0; i < count; i++) {
+      ports[i] = 27501 + i;
+    }
+
+    return new RelayCore(CONTROL, ports, REGION, KEY, SeededRandom.of(3), new RelayCore.Limits(), 0);
+  }
+
   private static List<Out> send(RelayCore r, int to, Who from, Message msg, long now) {
     return r.receive(to, from.address(), from.port(), Protocol.encode(msg), now);
   }
@@ -164,28 +175,31 @@ public final class CoreTest {
   }
 
   public static void register() {
-    test("a game's whole life: open, join, both hellos, READY, packets both ways", () -> {
+    test("a game's whole life: open, join, the joiner's hello, NEW_JOINER, the host's hello, READY, packets both ways", () -> {
       RelayCore r = relay();
       Opened game = openGame(r);
       ok(Protocol.isCode(game.code()) && game.token().length == 16, "a code and a token");
 
       List<Got> out = join(r, game.code());
-      same(out.size(), 2, "two packets out");
+      same(out.size(), 1, "one packet out: the host isn't told of a JOIN alone");
       Got toJoiner = out.get(0);
-      Got toHost = out.get(1);
       same(toJoiner.m().type(), Type.JOIN_PORT, "JOIN_PORT");
       ok(has(PORTS, toJoiner.m().port()), "one of the relay's ports");
       same(toJoiner.m().code(), game.code(), "the game's code");
       same(where(toJoiner), where(JOINER), "to the joiner");
+
+      // The joiner's hello claims its port, and only then is the host told
+      int port = toJoiner.m().port();
+      Got toHost = only(send(r, port, JOINER, Message.of(Type.JOINER_HELLO).secret(toJoiner.m().secret())));
       same(toHost.m().type(), Type.NEW_JOINER, "NEW_JOINER");
+      same(toHost.from(), CONTROL, "from the control port, where the host hears the relay");
       same(where(toHost), where(HOST), "to the host");
-      same(toHost.m().port(), toJoiner.m().port(), "the same port");
+      same(toHost.m().port(), port, "the same port");
       same(toHost.m().secret(), game.token(), "the note to the host carries its token, so the host knows it came from the relay");
 
-      int port = toJoiner.m().port();
-      same(send(r, port, HOST, Message.of(Type.HOST_HELLO).secret(game.token()).port(port)).size(), 0, "the host's hello alone: nothing yet");
-      Got ready = only(send(r, port, JOINER, Message.of(Type.JOINER_HELLO).secret(toJoiner.m().secret())));
-      same(ready.m().type(), Type.READY, "READY");
+      Got ready = only(send(r, port, HOST, Message.of(Type.HOST_HELLO).secret(game.token()).port(port)));
+      same(ready.m().type(), Type.READY, "READY, once the host has said hello too");
+      same(where(ready), where(JOINER), "to the joiner");
       same(ready.from(), port, "READY comes from the joiner's own port");
 
       byte[] up = latin1("a game packet from the joiner");
@@ -199,15 +213,74 @@ public final class CoreTest {
       same(forwardedDown.data(), down, "passed on unchanged");
     });
 
-    test("the host's hello can come second, and READY still goes to the joiner", () -> {
+    test("the host's hello can come first, and the joiner's then gets READY, with no NEW_JOINER", () -> {
       RelayCore r = relay();
       Opened game = openGame(r);
       Got toJoiner = join(r, game.code()).get(0);
       int port = toJoiner.m().port();
-      same(send(r, port, JOINER, Message.of(Type.JOINER_HELLO).secret(toJoiner.m().secret())).size(), 0, "the joiner's hello alone");
-      Got ready = only(send(r, port, HOST, Message.of(Type.HOST_HELLO).secret(game.token()).port(port)));
-      same(ready.m().type(), Type.READY, "READY");
+      same(send(r, port, HOST, Message.of(Type.HOST_HELLO).secret(game.token()).port(port)).size(), 0, "the host's hello alone: nothing");
+      Got ready = only(send(r, port, JOINER, Message.of(Type.JOINER_HELLO).secret(toJoiner.m().secret())));
+      same(ready.m().type(), Type.READY, "READY, and nothing to the host, which is there already");
       same(where(ready), where(JOINER), "to the joiner");
+    });
+
+    test("NEW_JOINER goes again, at most once a second, while the claimed port waits for its host", () -> {
+      RelayCore r = relay();
+      Opened game = openGame(r);
+      Got toJoiner = join(r, game.code()).get(0);
+      int port = toJoiner.m().port();
+      Message hello = Message.of(Type.JOINER_HELLO).secret(toJoiner.m().secret());
+      same(only(send(r, port, JOINER, hello, 0)).m().type(), Type.NEW_JOINER, "the first hello: the host is told");
+      same(send(r, port, JOINER, hello, 500).size(), 0, "half a second on: not again yet");
+      same(only(send(r, port, JOINER, hello, 1000)).m().type(), Type.NEW_JOINER, "a second on: again, in case the first was lost");
+      send(r, port, HOST, Message.of(Type.HOST_HELLO).secret(game.token()).port(port), 1200);
+      same(only(send(r, port, JOINER, hello, 2500)).m().type(), Type.READY, "once the host is there: READY, never NEW_JOINER");
+    });
+
+    test("the same JOIN again, from the same address and port, gets the same port and ticket, and never a second port", () -> {
+      RelayCore r = relay();
+      Opened game = openGame(r);
+      Got first = join(r, game.code(), JOINER, 0).get(0);
+      List<Got> again = join(r, game.code(), JOINER, 1000);
+      same(again.size(), 1, "one answer");
+      same(List.of(again.get(0).m().type(), again.get(0).m().port()), List.of(Type.JOIN_PORT, first.m().port()), "JOIN_PORT, the same port");
+      same(again.get(0).m().secret(), first.m().secret(), "and the same ticket");
+      same(r.free.size(), PORTS.length - 1, "one port taken, not two");
+
+      Got other = join(r, game.code(), who(JOINER.address(), JOINER.port() + 1), 1000).get(0);
+      notSame(other.m().port(), first.m().port(), "from another port of the same address, it's another joiner: another port");
+    });
+
+    test("a sender waits on at most 2 unclaimed ports; a third JOIN gets no answer, and the game's joins aren't spent", () -> {
+      RelayCore r = relayWithPorts(8);
+      Opened game = openGame(r);
+      Who sender = who("192.0.2.66", 7000);
+      same(join(r, game.code(), sender, 0).get(0).m().type(), Type.JOIN_PORT, "the first");
+      same(join(r, game.code(), who(sender.address(), 7001), 0).get(0).m().type(), Type.JOIN_PORT, "the second");
+      Got cookie = only(send(r, CONTROL, who(sender.address(), 7002), Message.of(Type.JOIN).code(game.code()), 0));
+      same(send(r, CONTROL, who(sender.address(), 7002), Message.of(Type.JOIN).secret(cookie.m().secret()).code(game.code()), 0).size(), 0,
+          "the third: dropped, unanswered, so the joiner's game asks again");
+      same(r.games.get(new String(game.code(), java.nio.charset.StandardCharsets.US_ASCII)).joinLimit.take(0), true,
+          "the game's join rate still has room");
+
+      r.tick(5000);
+      same(join(r, game.code(), who(sender.address(), 7002), 5000).get(0).m().type(), Type.JOIN_PORT, "once those two are freed, it gets in");
+    });
+
+    test("a sender holds at most 8 ports in all, claimed or not", () -> {
+      RelayCore r = relayWithPorts(12);
+      Opened one = openGame(r, HOST, 0);
+      Opened two = openGame(r, who("198.51.100.11", 40000), 0);
+      Who sender = who("192.0.2.66", 7000);
+
+      for (int i = 0; i < 8; i++) {
+        Got port = join(r, (i % 2 == 0 ? one : two).code(), who(sender.address(), 7000 + i), i * 1000L).get(0);
+        send(r, port.m().port(), who(sender.address(), 7000 + i), Message.of(Type.JOINER_HELLO).secret(port.m().secret()), i * 1000L);
+      }
+
+      Got ninth = join(r, one.code(), who(sender.address(), 7100), 9000).get(0);
+      same(List.of(ninth.m().type(), ninth.m().number()), List.of(Type.REFUSED, Why.BUSY), "the ninth is refused: busy");
+      same(join(r, one.code(), JOINER, 9000).get(0).m().type(), Type.JOIN_PORT, "another address still gets in");
     });
 
     test("a lost READY is sent again when the joiner says hello again", () -> {
@@ -277,13 +350,33 @@ public final class CoreTest {
       same(List.of(out.get(0).m().type(), out.get(0).m().number()), List.of(Type.REFUSED, Why.NO_SUCH_GAME), "no such game");
     });
 
-    test("a game takes at most its most joiners, and the relay at most its ports", () -> {
+    test("a game takes at most its most joiners, counting the claimed only, and the relay at most its ports", () -> {
       RelayCore r = relay(l -> l.mostJoinersPerGame = 2);
       Opened game = openGame(r);
-      same(join(r, game.code(), who("203.0.113.1", 1)).get(0).m().type(), Type.JOIN_PORT, "the first");
-      same(join(r, game.code(), who("203.0.113.2", 1)).get(0).m().type(), Type.JOIN_PORT, "the second");
+
+      for (int i = 1; i <= 2; i++) {
+        Who joiner = who("203.0.113." + i, 1);
+        Got port = join(r, game.code(), joiner).get(0);
+        same(port.m().type(), Type.JOIN_PORT, "joiner " + i);
+        send(r, port.m().port(), joiner, Message.of(Type.JOINER_HELLO).secret(port.m().secret()));
+      }
+
       Got full = join(r, game.code(), who("203.0.113.3", 1)).get(0);
-      same(List.of(full.m().type(), full.m().number()), List.of(Type.REFUSED, Why.GAME_FULL), "the third: the game is full");
+      same(List.of(full.m().type(), full.m().number()), List.of(Type.REFUSED, Why.GAME_FULL), "the third, once both have claimed: the game is full");
+
+      // Two given ports for one last place: the first to claim it has it, and the other's hello claims nothing
+      RelayCore race = relay(l -> l.mostJoinersPerGame = 1);
+      Opened g = openGame(race);
+      Who a = who("203.0.113.40", 1);
+      Who b = who("203.0.113.41", 1);
+      Got portA = join(race, g.code(), a).get(0);
+      Got portB = join(race, g.code(), b).get(0);
+      same(List.of(portA.m().type(), portB.m().type()), List.of(Type.JOIN_PORT, Type.JOIN_PORT), "both get a port while neither has claimed");
+      same(only(send(race, portA.m().port(), a, Message.of(Type.JOINER_HELLO).secret(portA.m().secret()))).m().type(), Type.NEW_JOINER,
+          "the first claims the place");
+      same(send(race, portB.m().port(), b, Message.of(Type.JOINER_HELLO).secret(portB.m().secret())).size(), 0,
+          "the second's hello claims nothing: the game is full");
+      same(race.slots.get(portB.m().port()).claimed, false, "its port stays unclaimed, to be freed");
 
       RelayCore r2 = relay();
       Opened g2 = openGame(r2);
@@ -495,14 +588,24 @@ public final class CoreTest {
       same(only(send(r, CONTROL, HOST, keep(c.game().token()))).m().number(), Why.NO_SUCH_GAME, "its token is no good now");
     });
 
-    test("a port waiting for its hellos is freed after 15 s, and an idle one after 30 s", () -> {
+    test("a port not claimed is freed after 5 s, one waiting for its host after 15 s, and an idle one after 30 s", () -> {
       RelayCore r = relay();
       Opened game = openGame(r);
       int port = join(r, game.code()).get(0).m().port();
-      r.tick(14999);
-      same(r.slots.get(port).state, Slot.State.PENDING, "still waiting at 14.999 s");
-      r.tick(15000);
-      same(r.slots.get(port).state, Slot.State.FREE, "freed at 15 s");
+      r.tick(4999);
+      same(r.slots.get(port).state, Slot.State.PENDING, "not claimed, still there at 4.999 s");
+      r.tick(5000);
+      same(r.slots.get(port).state, Slot.State.FREE, "freed at 5 s");
+
+      RelayCore claimed = relay();
+      Opened g = openGame(claimed);
+      Got toJoiner = join(claimed, g.code()).get(0);
+      send(claimed, toJoiner.m().port(), JOINER, Message.of(Type.JOINER_HELLO).secret(toJoiner.m().secret()), 100);
+      claimed.tick(14999);
+      same(claimed.slots.get(toJoiner.m().port()).state, Slot.State.PENDING, "claimed, waiting for the host, still there at 14.999 s");
+      claimed.tick(15000);
+      same(claimed.slots.get(toJoiner.m().port()).state, Slot.State.FREE, "freed 15 s after the JOIN");
+      same(claimed.portsPerSender.size() + claimed.unclaimedPerSender.size(), 0, "and the sender's counts with it");
 
       RelayCore r2 = relay();
       Connected c = connected(r2);
@@ -618,6 +721,56 @@ public final class CoreTest {
       throwsWith(() -> new RelayCore(27500, new int[] {27501}, REGION, null, SeededRandom.of(1), limits, 0), "pass key", "no pass key");
       throwsWith(() -> new RelayCore(27500, new int[] {27501}, REGION, bytes(16, 1), SeededRandom.of(1), limits, 0), "pass key",
           "a pass key of 16 bytes");
+    });
+
+    // The independent review's V1-1 (2026-11-09, AvP-docs/engine/review-server-Reviewer.md): anyone can read a game's code from the
+    // list and JOIN it, and a JOIN that never says hello must not hold a real player's place
+    test("joins that never say hello can't keep a real joiner out of a game", () -> {
+      RelayCore r = relayWithPorts(20);
+      Opened game = openGame(r);
+      Who flooder = who("192.0.2.66", 7000);
+
+      // 8 joins, one every half second, each from a port of its own: inside the game's join rate (4 a second, 8 at once) and the
+      // sender's (10 a second, 20 at once)
+      for (int i = 0; i < 8; i++) {
+        join(r, game.code(), who(flooder.address(), flooder.port() + i), i * 500L);
+      }
+
+      Got real = join(r, game.code(), JOINER, 4000).get(0);
+      same(real.m().type(), Type.JOIN_PORT, "the real joiner still gets a port, though the flooder asked for all 8 of the game's");
+    });
+
+    test("joins that never say hello can't take the relay's ports from everyone else", () -> {
+      RelayCore r = relayWithPorts(16);
+      Opened one = openGame(r, HOST, 0);
+      Opened two = openGame(r, who("198.51.100.11", 40000), 0);
+      Who flooder = who("192.0.2.66", 7000);
+
+      // 16 joins, the two games in turn, one every 0.3 s, each from a port of its own: inside every rate there is
+      for (int i = 0; i < 16; i++) {
+        join(r, (i % 2 == 0 ? one : two).code(), who(flooder.address(), flooder.port() + i), i * 300L);
+      }
+
+      Got real = join(r, one.code(), JOINER, 5000).get(0);
+      same(real.m().type(), Type.JOIN_PORT, "a real joiner still gets one of the relay's 16 ports");
+    });
+
+    // The review's V1-2: a stranger who knows a joiner's port sends hellos with wrong secrets, to use up the port's hellos
+    test("a stranger's flood of hellos with wrong secrets can't keep the real hellos out", () -> {
+      RelayCore r = relay();
+      Opened game = openGame(r);
+      Got toJoiner = join(r, game.code()).get(0);
+      int port = toJoiner.m().port();
+
+      for (int i = 0; i < 100; i++) {
+        send(r, port, STRANGER, Message.of(Type.HOST_HELLO).secret(bytes(16, i)).port(port), 0);
+        send(r, port, STRANGER, Message.of(Type.JOINER_HELLO).secret(bytes(16, i + 100)), 0);
+      }
+
+      send(r, port, HOST, Message.of(Type.HOST_HELLO).secret(game.token()).port(port), 0);
+      List<Out> answer = send(r, port, JOINER, Message.of(Type.JOINER_HELLO).secret(toJoiner.m().secret()), 0);
+      same(answer.size(), 1, "the joiner's hello is answered, though 200 wrong ones came first");
+      same(only(answer).m().type(), Type.READY, "with READY");
     });
   }
 }

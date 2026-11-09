@@ -40,6 +40,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
+import java.util.function.LongSupplier;
 import java.util.stream.Stream;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
@@ -159,6 +163,11 @@ public final class LiveTest {
   }
 
   private static Running listServer() throws Exception {
+    return listServer(line -> { }, System::currentTimeMillis, () -> { });
+  }
+
+  // The same, with where its lines go, its clock, and what it does if a timer of its own fails, given
+  private static Running listServer(Consumer<String> log, LongSupplier now, Runnable whenFailed) throws Exception {
     char[] password = password();
     KeyStore store = keyStore(password);
     PrivateKey key = (PrivateKey) store.getKey("avpx-test", password);
@@ -172,7 +181,7 @@ public final class LiveTest {
     Listings listings = new Listings(List.of(new Listings.Relay(REGION, "virginia.relay.example.net", CONTROL, KEY)), RandomBytes.secure(),
         System.currentTimeMillis());
     Settings.ListSettings settings = new Settings.ListSettings(LOOPBACK, 0, certFile.toString(), keyFile.toString(), List.of());
-    ListServer server = ListServer.start(settings, listings, line -> { }, System::currentTimeMillis);
+    ListServer server = ListServer.start(settings, listings, log, now, whenFailed);
 
     // The client trusts the test certificate, and only it
     KeyStore trusted = KeyStore.getInstance("PKCS12");
@@ -309,12 +318,15 @@ public final class LiveTest {
         Message joined = Protocol.decode(ask(joiner, CONTROL, Protocol.encode(Message.of(Type.JOIN).secret(joinCookie.secret())
             .code(opened.code()))));
         same(joined.type(), Type.JOIN_PORT, "a port of its own");
+
+        // The joiner's hello claims the port, and only then is the host told which (PROTOCOL.md section 2)
+        sendTo(joiner, joined.port(), Protocol.encode(Message.of(Type.JOINER_HELLO).secret(joined.secret())));
         Message newJoiner = Protocol.decode(next(host));
-        same(newJoiner.port(), joined.port(), "and the host is told which");
+        same(newJoiner.port(), joined.port(), "once the joiner has said hello, the host is told which port");
 
         sendTo(host, joined.port(), Protocol.encode(Message.of(Type.HOST_HELLO).secret(opened.secret()).port(joined.port())));
-        Message ready = Protocol.decode(ask(joiner, joined.port(), Protocol.encode(Message.of(Type.JOINER_HELLO).secret(joined.secret()))));
-        same(ready.type(), Type.READY, "READY");
+        Message ready = Protocol.decode(next(joiner));
+        same(ready.type(), Type.READY, "READY, to the joiner, once the host has said hello too");
 
         sendTo(joiner, joined.port(), latin1("an ENet packet"));
         Got passed = nextWithPort(host);
@@ -338,6 +350,80 @@ public final class LiveTest {
         matches(last, "^relay: in the last ", "its last line is its counts, given as it stopped");
         matches(last, "1 games opened, 0 closed, 0 ended unkept; 1 joins, 1 joiners ready, 0 refusals, 1 echoes;", "the game, its joiner and the echo");
         matches(last, "forwarded 2 packets \\(1 joiners to hosts, 1 hosts to joiners\\)", "and a packet each way");
+      }
+    });
+
+    // The review's V1-3: an error nobody expected, in a turn of the relay's loop, stops the relay and says so; before, it ended the
+    // relay's thread alone, with nobody told. Here the relay's clock throws from its second reading on, which is inside a turn.
+    liveTest("the relay stops, and says so, when a turn of its loop throws something nobody expected", () -> {
+      List<String> lines = new ArrayList<>();
+      AtomicInteger readings = new AtomicInteger();
+      RelaySockets relay = RelaySockets.start(LOOPBACK, core(PORTS), line -> {
+        synchronized (lines) {
+          lines.add(line);
+        }
+      }, () -> {
+        if (readings.incrementAndGet() >= 2) {
+          throw new IllegalStateException("words that must never be written: 198.51.100.10");
+        }
+
+        return System.currentTimeMillis();
+      });
+
+      for (int i = 0; i < 100 && !relay.failed(); i++) {
+        Thread.sleep(50);
+      }
+
+      relay.stop();
+      ok(relay.failed(), "it says it failed, so Main stops the server with 1, for systemd to start it again");
+
+      synchronized (lines) {
+        ok(lines.stream().anyMatch(l -> l.startsWith("relay: stopped by an error nobody expected, java.lang.IllegalStateException at ")),
+            "its line names the error's kind and where it came from");
+        ok(lines.stream().noneMatch(l -> l.contains("198.51.100.10")), "and never the error's words");
+      }
+
+      // Its ports were all closed as it stopped: they open again at once
+      RelaySockets again = RelaySockets.start(LOOPBACK, core(PORTS), line -> { }, System::currentTimeMillis);
+      again.stop();
+    });
+
+    // The same for the list: a timer whose task throws is never run again, and Java tells nobody. Here its clock throws once told to.
+    liveTest("the list's timers stop, say so and tell the server, once, when one throws something nobody expected", () -> {
+      List<String> lines = new ArrayList<>();
+      AtomicBoolean throwing = new AtomicBoolean();
+      AtomicInteger told = new AtomicInteger();
+      Running list = listServer(line -> {
+        synchronized (lines) {
+          lines.add(line);
+        }
+      }, () -> {
+        if (throwing.get()) {
+          throw new IllegalStateException("words that must never be written: 198.51.100.10");
+        }
+
+        return System.currentTimeMillis();
+      }, told::incrementAndGet);
+
+      try {
+        throwing.set(true);
+
+        // The list ticks once a second; then a second and a half more, to show nothing more is said or done
+        for (int i = 0; i < 100 && told.get() == 0; i++) {
+          Thread.sleep(50);
+        }
+
+        Thread.sleep(1500);
+        same(told.get(), 1, "the server is told, once");
+        ok(list.server().failed(), "the list says it failed");
+
+        synchronized (lines) {
+          same(lines.stream().filter(l -> l.startsWith("list: stopped by an error nobody expected, java.lang.IllegalStateException at ")).count(),
+              1L, "one line names the error's kind and where it came from");
+          ok(lines.stream().noneMatch(l -> l.contains("198.51.100.10")), "and none has the error's words");
+        }
+      } finally {
+        list.stop();
       }
     });
 
@@ -467,11 +553,12 @@ public final class LiveTest {
         Files.writeString(keyFile, pem("PRIVATE KEY", other.getEncoded()), StandardCharsets.US_ASCII);
         Listings listings = new Listings(List.of(), RandomBytes.secure(), System.currentTimeMillis());
         Settings.ListSettings settings = new Settings.ListSettings(LOOPBACK, 0, certFile.toString(), keyFile.toString(), List.of());
-        throwsWith(() -> ListServer.start(settings, listings, line -> { }, System::currentTimeMillis), "doesn't belong",
+        throwsWith(() -> ListServer.start(settings, listings, line -> { }, System::currentTimeMillis, () -> { }), "doesn't belong",
             "another key with this certificate");
 
         Files.writeString(keyFile, "-----BEGIN EC PRIVATE KEY-----\nAAAA\n-----END EC PRIVATE KEY-----\n", StandardCharsets.US_ASCII);
-        throwsWith(() -> ListServer.start(settings, listings, line -> { }, System::currentTimeMillis), "PKCS#8", "a key in an older form");
+        throwsWith(() -> ListServer.start(settings, listings, line -> { }, System::currentTimeMillis, () -> { }), "PKCS#8",
+            "a key in an older form");
       } finally {
         Files.deleteIfExists(certFile);
         Files.deleteIfExists(keyFile);

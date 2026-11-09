@@ -1,5 +1,6 @@
 package avpx.list;
 
+import avpx.Fatal;
 import avpx.Settings;
 import avpx.relay.AddressHasher;
 import avpx.relay.PerSender;
@@ -130,14 +131,17 @@ public final class ListServer {
   private final Semaphore slots = new Semaphore(MOST_CONNECTIONS);
   private final Set<Socket> live = ConcurrentHashMap.newKeySet();
   private final ScheduledExecutorService timers;
+  private final Runnable whenFailed;
   private Thread acceptor;
   private volatile boolean running = true;
+  private volatile boolean failed;
 
-  private ListServer(Listings listings, Consumer<String> log, LongSupplier now, ServerSocket server, Path certFile, Path keyFile,
-      Certificates.Loaded certificate) {
+  private ListServer(Listings listings, Consumer<String> log, LongSupplier now, Runnable whenFailed, ServerSocket server, Path certFile,
+      Path keyFile, Certificates.Loaded certificate) {
     this.listings = listings;
     this.log = log;
     this.now = now;
+    this.whenFailed = whenFailed;
     this.server = server;
     this.certFile = certFile;
     this.keyFile = keyFile;
@@ -149,8 +153,9 @@ public final class ListServer {
   }
 
   // Reads the certificate, opens the HTTPS port, and starts. settings: the list's settings (its address, port and certificate files).
-  // listings: what it serves. log: where its lines go. now: the time in milliseconds since 1970-01-01 UTC.
-  public static ListServer start(Settings.ListSettings settings, Listings listings, Consumer<String> log, LongSupplier now)
+  // listings: what it serves. log: where its lines go. now: the time in milliseconds since 1970-01-01 UTC. whenFailed: what to do if
+  // one of its timers stops on an error nobody expected (avpx/Fatal.java), once: Main stops the server, for systemd to start it again.
+  public static ListServer start(Settings.ListSettings settings, Listings listings, Consumer<String> log, LongSupplier now, Runnable whenFailed)
       throws CertificateProblem, IOException {
     Path certFile = Path.of(settings.certFile());
     Path keyFile = Path.of(settings.keyFile());
@@ -170,9 +175,11 @@ public final class ListServer {
       throw e;
     }
 
-    ListServer list = new ListServer(listings, log, now, server, certFile, keyFile, certificate);
-    list.timers.scheduleAtFixedRate(list::tick, TICK_MILLISECONDS, TICK_MILLISECONDS, TimeUnit.MILLISECONDS);
-    list.timers.scheduleAtFixedRate(list::lookAtCertificate, CERTIFICATE_LOOK_MILLISECONDS, CERTIFICATE_LOOK_MILLISECONDS,
+    ListServer list = new ListServer(listings, log, now, whenFailed, server, certFile, keyFile, certificate);
+
+    // A timer whose task throws is never run again, and Java tells nobody: so each run is one Fatal.turn, and a failure stops the server
+    list.timers.scheduleAtFixedRate(() -> list.guarded(list::tick), TICK_MILLISECONDS, TICK_MILLISECONDS, TimeUnit.MILLISECONDS);
+    list.timers.scheduleAtFixedRate(() -> list.guarded(list::lookAtCertificate), CERTIFICATE_LOOK_MILLISECONDS, CERTIFICATE_LOOK_MILLISECONDS,
         TimeUnit.MILLISECONDS);
     list.acceptor = new Thread(list::acceptAll, "list-accept");
     list.acceptor.start();
@@ -441,6 +448,23 @@ public final class ListServer {
 
   // ----- Once a second, and once an hour
 
+  // One run of a timer's task. Once one has failed, none runs again, and whenFailed is told the once.
+  private void guarded(Runnable task) {
+    if (failed) {
+      return;
+    }
+
+    if (!Fatal.turn("list", task, log)) {
+      failed = true;
+      whenFailed.run();
+    }
+  }
+
+  // Whether one of the list's timers stopped on an error nobody expected
+  public boolean failed() {
+    return failed;
+  }
+
   private void tick() {
     List<String> lines;
 
@@ -475,14 +499,16 @@ public final class ListServer {
     closeQuietly(server);
     timers.shutdownNow();
 
-    // The counts since the last line, so the last part of a minute isn't lost
-    String line;
+    // The counts since the last line, so the last part of a minute isn't lost; if even that throws, it's said, and the stop goes on
+    Fatal.turn("list", () -> {
+      String line;
 
-    synchronized (lock) {
-      line = listings.countsLine(now.getAsLong());
-    }
+      synchronized (lock) {
+        line = listings.countsLine(now.getAsLong());
+      }
 
-    log.accept(line);
+      log.accept(line);
+    }, log);
 
     for (Socket s : live) {
       closeQuietly(s);

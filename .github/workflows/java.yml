@@ -37,12 +37,22 @@ jobs:
           AVPX_LIVE: '1'
         run: sh java/build.sh
 
-      - name: The same code makes the same jar, byte for byte
+      # The deploy builds the jars again on the server's machine and needs the very same bytes, so this builds a copy in another folder on
+      # another filesystem (/dev/shm, held in memory, which lists folders in another order than the runner's disk) and compares
+      - name: The same code makes the same jars, byte for byte, on another filesystem too
         run: |
-          first=$(sha256sum java/build/avpx-server.jar java/build/avpx-smoke.jar | cut -d ' ' -f 1)
-          sh java/build.sh > /dev/null
-          second=$(sha256sum java/build/avpx-server.jar java/build/avpx-smoke.jar | cut -d ' ' -f 1)
-          echo "first build" $first "second build" $second
+          first=$(cd java/build && sha256sum avpx-server.jar avpx-smoke.jar)
+          copy=/dev/shm/avpx-same-jars
+          rm -rf "$copy"
+          mkdir -p "$copy"
+          cp -R java test-vectors deploy "$copy/"
+          rm -rf "$copy/java/build"
+          sh "$copy/java/build.sh" > /dev/null
+          second=$(cd "$copy/java/build" && sha256sum avpx-server.jar avpx-smoke.jar)
+          echo "built here:"
+          echo "$first"
+          echo "built again on /dev/shm:"
+          echo "$second"
           test "$first" = "$second"
 
       # CODING-STANDARD.md's rules, the Java side (tools/check-standard.js keeps the Node side): run from the repository's top folder

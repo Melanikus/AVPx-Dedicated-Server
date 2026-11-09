@@ -50,8 +50,18 @@ fi
 
 "$JAVA_HOME/bin/java" -cp build/test avpx.AllTests
 
-# Only then the jar, with every file's time set to one fixed date, so the same code always makes the same bytes
-"$JAVA_HOME/bin/jar" --create --date=2026-11-08T00:00:00Z --file build/avpx-server.jar --main-class avpx.Main -C build/server .
+# Only then the jars, made so the same code always makes the same bytes, on any machine: every file's time is one fixed date, and jar is
+# given the files one by one in one fixed order (sorted as bytes), never a folder to list, because a folder's listing order can differ
+# from one filesystem to another. deploy/remote-deploy.sh builds the jars again on the server's machine, and puts them in place only if
+# they're byte for byte the ones the checks built and tested.
+jar_files() {
+  (cd "$1" && find . -type f | LC_ALL=C sort | sed 's|^\./||') | while IFS= read -r f; do
+    printf '%s\n%s\n%s\n' "-C" "$1" "$f"
+  done
+}
+
+jar_files build/server > build/server-jar-files.txt
+"$JAVA_HOME/bin/jar" --create --date=2026-11-08T00:00:00Z --file build/avpx-server.jar --main-class avpx.Main @build/server-jar-files.txt
 
 # The smoke test, a jar of its own (java -jar avpx-smoke.jar): its classes, and the server's it reads installed settings with. It's what
 # deploy's health check runs, and what anyone can run to test a server on their own machine.
@@ -59,4 +69,5 @@ mkdir -p build/smoke
 cp -R build/server/avpx build/smoke/
 mkdir -p build/smoke/avpx/tools
 cp build/tools/avpx/tools/Smoke*.class build/smoke/avpx/tools/
-"$JAVA_HOME/bin/jar" --create --date=2026-11-08T00:00:00Z --file build/avpx-smoke.jar --main-class avpx.tools.Smoke -C build/smoke .
+jar_files build/smoke > build/smoke-jar-files.txt
+"$JAVA_HOME/bin/jar" --create --date=2026-11-08T00:00:00Z --file build/avpx-smoke.jar --main-class avpx.tools.Smoke @build/smoke-jar-files.txt

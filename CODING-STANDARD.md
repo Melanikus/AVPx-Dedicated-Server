@@ -15,7 +15,7 @@ A rule only a reviewer can check says so. When you add a rule, give it the next 
 **Checked by:** CheckStandard:
 - `module-info.java` names no module it needs, so javac itself can use nothing but `java.base`;
 - every import is Java's own (`java.`, `javax.`) or ours (`avpx.`);
-- nowhere in the repository is there a build file that fetches packages (Maven's, Gradle's), or any compiled code at all (`.jar`, `.class`, `.dll` and the rest).
+- nowhere in the repository is there a build file that fetches packages, or any compiled code at all (`.jar`, `.class`, `.dll` and the rest). The build files are Java's (Maven's `pom.xml`, Gradle's) and Node's (`package.json`, `package-lock.json`, `npm-shrinkwrap.json`, `yarn.lock`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`, and any `node_modules` folder). Node's are there because this server was Node's until 2026-11-08, so a Node tree can't creep back unseen.
 
 ## 3. No code made from text
 **Why:** text can come from the network, and code made from it could do anything.

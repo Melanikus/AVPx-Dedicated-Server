@@ -50,7 +50,9 @@ public final class MlKem {
   private static final int DK_HASH_AT = DK_EK_AT + ENCAPSULATION_KEY_BYTES;
   private static final int HASH_BYTES = 32;
 
-  private static final String KEM_NAME = "ML-KEM";
+  // Java's own name for the one parameter set version 2 uses ("ML-KEM-1024"), never the family's ("ML-KEM"): what Java makes under the
+  // family's name takes a key of any size (ML-KEM-512, -768 or -1024), and under this one, only ML-KEM-1024 (PrimitivesTest checks it)
+  private static final String KEM_NAME = NamedParameterSpec.ML_KEM_1024.getName();
 
   // A new key pair, its randomness from random. FIPS 203's key generation draws d, then z, 32 bytes each.
   public static KeyPair generate(SecureRandom random) {

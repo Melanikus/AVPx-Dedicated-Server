@@ -7,6 +7,7 @@ import avpx.crypto.P384;
 import avpx.crypto.Signatures;
 import avpx.list.Json;
 import avpx.testing.ScriptedRandom;
+import avpx.testing.SeededRandom;
 import java.io.IOException;
 import java.math.BigInteger;
 import java.nio.charset.StandardCharsets;
@@ -58,11 +59,16 @@ public final class CryptoV2Vectors {
     return HexFormat.of().formatHex(b);
   }
 
-  // An object of fields in the order given: name, value, name, value, ...
+  // An object of fields in the order given: name, value, name, value, ... A name left without its value is a mistake here, so it stops.
   private static Map<String, Object> fields(Object... nameValue) {
+    if (nameValue.length % 2 != 0) {
+      throw new IllegalArgumentException("fields: a name without its value");
+    }
+
     Map<String, Object> out = new LinkedHashMap<>();
 
-    for (int i = 0; i < nameValue.length; i += 2) {
+    // i + 1 < length, not i < length: each step reads a name and the value after it, so both must be there
+    for (int i = 0; i + 1 < nameValue.length; i += 2) {
       out.put((String) nameValue[i], nameValue[i + 1]);
     }
 
@@ -503,19 +509,19 @@ public final class CryptoV2Vectors {
     return out;
   }
 
+  // The bytes here go straight into Gcm.seal, and nothing of Java's draws on them, so they come from SeededRandom itself: plain bytes the
+  // tests can repeat. (ScriptedRandom is for where Java's own code must be handed a SecureRandom, and a SecureRandom that repeats is,
+  // rightly, what CodeQL calls a weak source of keys.) These are the very bytes ScriptedRandom.seeded(501) gave, draw for draw, when the
+  // file was first made, so the file is the same; CryptoV2VectorsTest would fail if it weren't.
   private static List<Object> aesGcm() {
     List<Object> out = new ArrayList<>();
-    ScriptedRandom r = ScriptedRandom.seeded(501);
+    SeededRandom r = SeededRandom.of(501);
 
     for (int size : new int[] {0, 64}) {
-      byte[] key = new byte[32];
-      byte[] nonce = new byte[12];
-      byte[] aad = new byte[24];
-      byte[] message = new byte[size];
-      r.nextBytes(key);
-      r.nextBytes(nonce);
-      r.nextBytes(aad);
-      r.nextBytes(message);
+      byte[] key = r.next(32);
+      byte[] nonce = r.next(12);
+      byte[] aad = r.next(24);
+      byte[] message = r.next(size);
       out.add(fields("key", hex(key), "nonce", hex(nonce), "aad", hex(aad), "message", hex(message), "sealed",
           hex(Gcm.seal(key, nonce, aad, message))));
     }

@@ -1358,6 +1358,35 @@ file: java/src/avpx/v2/SealedRelay.java
       if (false) {
 >>>
 
+# Keys of no bytes, and parameter sets by name (the CodeQL and Snyk fixes of 2026-11-09)
+=== an HMAC keyed with no bytes, not refused by our own words
+check: tests
+file: java/src/avpx/crypto/Hkdf.java
+<<< from
+    if (key.length == 0) {
+      throw new IllegalArgumentException(NO_KEY);
+    }
+<<< to
+>>>
+
+=== ML-DSA by the family's name, so a key of any ML-DSA set is taken
+check: tests
+file: java/src/avpx/crypto/Signatures.java
+<<< from
+  private static final String ML_DSA = NamedParameterSpec.ML_DSA_87.getName();
+<<< to
+  private static final String ML_DSA = "ML-DSA";
+>>>
+
+=== ML-KEM by the family's name, so a key of any ML-KEM size is taken
+check: tests
+file: java/src/avpx/crypto/MlKem.java
+<<< from
+  private static final String KEM_NAME = NamedParameterSpec.ML_KEM_1024.getName();
+<<< to
+  private static final String KEM_NAME = "ML-KEM";
+>>>
+
 # ----- Live rows owed from the Node version's (card #18): each one's live test must notice it
 === an answer that doesn't say Connection: close
 check: live

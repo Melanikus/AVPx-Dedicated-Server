@@ -269,11 +269,17 @@ jobs:
           category: java
           output: ${{ runner.temp }}/codeql
 
-      # Any finding at any severity fails the check (GATES.md): the results are counted from CodeQL's own file, not from its summary
+      # Any finding at any severity fails the check (GATES.md): the results are counted from CodeQL's own file, not from its summary.
+      # Each one is written out too (its rule, its file and line, its words, and for a finding about data, where that data came from), so
+      # this log alone says what to fix.
       - name: No findings at all
         run: |
           found=$(jq '[.runs[].results[]] | length' "$RUNNER_TEMP"/codeql/*.sarif)
           echo "CodeQL found $found"
+          jq -r '.runs[].results[]
+            | "\(.ruleId)  \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)  \(.message.text)",
+              (.codeFlows[]?.threadFlows[]?.locations[0].location.physicalLocation
+                | "    its data comes from \(.artifactLocation.uri):\(.region.startLine)")' "$RUNNER_TEMP"/codeql/*.sarif
           test "$found" = "0"
 
       # A blind spot fails the gate too: every .java file in java/ must be in what CodeQL read

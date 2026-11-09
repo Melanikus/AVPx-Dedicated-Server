@@ -18,6 +18,11 @@ import javax.crypto.spec.SecretKeySpec;
 // It's written here, over Java's own HMAC (javax.crypto.Mac), rather than through Java 25's KDF API, so one short piece of code we can
 // read does both the whole of HKDF and the Expand alone (the epoch keys, CRYPTO.md section 9), and takes the empty inputs version 2 uses
 // (Split's input is empty). HkdfTest holds it to RFC 5869's own vectors, and to Java 25's own "HKDF-SHA384", which must give the same bytes.
+//
+// What it refuses: a key (or salt) of no bytes. RFC 5869 allows "no salt", and reads it as a salt of all zeros, but version 2 never has
+// one: every salt it uses is the chaining key ck or the transcript h, 48 bytes each, and every other key is 32 bytes or more (CRYPTO.md
+// sections 5, 8 and 9). So a key of no bytes can only be a mistake somewhere before here, and keying an HMAC with it would quietly give
+// bytes anyone could make. It's refused, loudly, instead.
 public final class Hkdf {
   private Hkdf() {
   }
@@ -30,16 +35,22 @@ public final class Hkdf {
   // RFC 5869 allows at most 255 blocks
   private static final int MOST_BLOCKS = 255;
 
-  // HMAC-SHA-384 of data with key. An empty key is HMAC's all-zero key of the hash's block size, as RFC 2104 says.
+  // What a key of no bytes is refused with (HkdfTest and SymmetricKatTest check these words)
+  static final String NO_KEY = "an HMAC key of no bytes: version 2 never keys anything with nothing, so this is a mistake";
+
+  // HMAC-SHA-384 of data with key. A key of no bytes is refused (see the top of this file).
   public static byte[] hmac(byte[] key, byte[]... data) {
     return hmac(HMAC, key, data);
   }
 
   static byte[] hmac(String algorithm, byte[] key, byte[]... data) {
+    if (key.length == 0) {
+      throw new IllegalArgumentException(NO_KEY);
+    }
+
     try {
       Mac mac = Mac.getInstance(algorithm);
-      // SecretKeySpec refuses an empty key, so an empty one is given as a single 0 byte, which HMAC pads to the same all-zero block
-      mac.init(new SecretKeySpec(key.length == 0 ? new byte[1] : key, algorithm));
+      mac.init(new SecretKeySpec(key, algorithm));
 
       for (byte[] part : data) {
         mac.update(part);

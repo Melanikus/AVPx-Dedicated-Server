@@ -3,6 +3,7 @@ package avpx.crypto;
 import static avpx.testing.Tests.hex;
 import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.test;
+import static avpx.testing.Tests.throwsWith;
 
 import java.util.HexFormat;
 import javax.crypto.KDF;
@@ -24,7 +25,7 @@ public final class HkdfTest {
 
   public static void register() {
     // RFC 5869 appendix A (rfc5869.txt, sha256 7a40eb3835b35fc947eb12a2ed614db079d43b26e50dbc537c31fba16397089c, as PO fetched it)
-    test("HKDF by hand gives RFC 5869's own answers (its SHA-256 cases 1 to 3)", () -> {
+    test("HKDF by hand gives RFC 5869's own answers (its SHA-256 cases 1 and 2), and refuses case 3's missing salt by its words", () -> {
       same(hex(Hkdf.hmac("HmacSHA256", h("000102030405060708090a0b0c"), h("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"))),
           "077709362c2e32df0ddc3f0dc47bba6390b6c73bb50f9c3122ec844ad7c2b3e5", "case 1's PRK");
       same(hex(Hkdf.derive("HmacSHA256", 32, h("000102030405060708090a0b0c"), h("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"),
@@ -43,11 +44,15 @@ public final class HkdfTest {
           "b11e398dc80327a1c8e7f78c596a49344f012eda2d4efad8a050cc4c19afa97c59045a99cac7827271cb41c65e590e09"
               + "da3275600c2f09b8367793a9aca3db71cc30c58179ec3e87c14c01d5c1f3434f1d87", "case 2's OKM, longer than two blocks");
 
-      // Case 3: no salt and no info. An empty salt is HMAC's all-zero key, as RFC 5869 says.
-      same(hex(Hkdf.hmac("HmacSHA256", new byte[0], h("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"))),
-          "19ef24a32c717b167f33a91d6f648bdf96596776afdb6377ac434c1c293ccb04", "case 3's PRK, with no salt");
-      same(hex(Hkdf.derive("HmacSHA256", 32, new byte[0], h("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"), new byte[0], 42)),
-          "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8", "case 3's OKM, with no salt and no info");
+      // Case 3 has no salt, which RFC 5869 reads as a salt of all zeros. Version 2 never has no salt (the top of Hkdf.java says why),
+      // so ours refuses it, every way in: HMAC alone, the whole of HKDF, and Expand from a key of no bytes
+      throwsWith(() -> Hkdf.hmac("HmacSHA256", h(""), h("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b")), Hkdf.NO_KEY,
+          "case 3's PRK: no salt is refused");
+      throwsWith(() -> Hkdf.derive("HmacSHA256", 32, h(""), h("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"), h(""), 42), Hkdf.NO_KEY,
+          "case 3's OKM: no salt is refused");
+      throwsWith(() -> Hkdf.derive(h(""), h("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b"), h(""), 42), Hkdf.NO_KEY,
+          "HKDF-SHA-384 with no salt is refused too");
+      throwsWith(() -> Hkdf.expand(h(""), h(""), 42), Hkdf.NO_KEY, "Expand from a key of no bytes is refused");
     });
 
     test("Java 25 has HKDF-SHA384 (CRYPTO.md's [CHECK]), and it gives the same bytes as HKDF by hand", () -> {

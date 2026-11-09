@@ -32,7 +32,9 @@ public final class Signatures {
   public static final int ML_DSA_PUBLIC_BYTES = 2592;
   public static final int ML_DSA_BYTES = 4627;
   private static final String ECDSA = "SHA384withECDSAinP1363Format";
-  private static final String ML_DSA = "ML-DSA";
+  // Java's own name for the one parameter set version 2 uses ("ML-DSA-87"), never the family's ("ML-DSA"): what Java makes under the
+  // family's name takes a key of any set (ML-DSA-44, -65 or -87), and under this one, only ML-DSA-87 (PrimitivesTest checks it)
+  private static final String ML_DSA = NamedParameterSpec.ML_DSA_87.getName();
 
   // DER: SEQUENCE (2,610 bytes) { SEQUENCE { OID 2.16.840.1.101.3.4.3.19, ML-DSA-87 }, BIT STRING (2,593 bytes, no unused bits) { the key } }
   private static final byte[] ML_DSA_SPKI_PREFIX = HexFormat.of().parseHex("30820a32" + "300b0609608648016503040313" + "03820a2100");

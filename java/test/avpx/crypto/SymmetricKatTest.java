@@ -24,6 +24,17 @@ public final class SymmetricKatTest {
     return right ? null : what;
   }
 
+  // A case with no salt must be refused, by Hkdf's own words for it: version 2 never has no salt (the top of Hkdf.java says why), so ours
+  // refuses what RFC 5869 and Wycheproof call valid. null if it was, or what happened instead.
+  private static String refusedForNoSalt(Runnable body) {
+    try {
+      body.run();
+      return "no salt, and it wasn't refused";
+    } catch (IllegalArgumentException e) {
+      return unless(Hkdf.NO_KEY.equals(e.getMessage()), "no salt, refused for another reason: " + e.getMessage());
+    }
+  }
+
   public static void register() {
     test("AES-256-GCM, NIST CAVP's 375 encryptions: each seals to exactly its ciphertext and tag", () -> {
       String file = "aes-256-gcm/nist-cavp-encrypt.json";
@@ -55,22 +66,29 @@ public final class SymmetricKatTest {
       }), 66, "all 66");
     });
 
-    test("HKDF-SHA-384, Wycheproof's 83: each gives exactly its bytes, and a size past 255 times 48 is refused", () -> {
+    test("HKDF-SHA-384, Wycheproof's 83: each gives exactly its bytes, a size past 255 times 48 is refused, and so is no salt", () -> {
       String file = "hkdf-sha384/wycheproof.json";
+      int[] noSalt = {0};
       same(Kat.each(file, Kat.read(file), c -> {
         int size = (int) c.number("size");
+
+        if (c.bytes("salt").length == 0) {
+          noSalt[0]++;
+          return refusedForNoSalt(() -> Hkdf.derive(c.bytes("salt"), c.bytes("ikm"), c.bytes("info"), size));
+        }
 
         if (!c.valid()) {
           try {
             Hkdf.derive(c.bytes("salt"), c.bytes("ikm"), c.bytes("info"), size);
             return "a size of " + size + " wasn't refused";
           } catch (IllegalArgumentException e) {
-            return null;
+            return unless(e.getMessage().contains("at most 255 blocks"), "a size of " + size + " refused for another reason");
           }
         }
 
         return unless(Arrays.equals(Hkdf.derive(c.bytes("salt"), c.bytes("ikm"), c.bytes("info"), size), c.bytes("okm")), "other bytes");
       }), 83, "all 83");
+      same(noSalt[0], 22, "22 of them have no salt, every one refused");
     });
 
     test("HKDF-SHA-384, NIST ACVP's 100 (KDA, written as plain HKDF): the right okm comes out, and the wrong ones given aren't it", () -> {
@@ -81,8 +99,9 @@ public final class SymmetricKatTest {
       }), 100, "all 100");
     });
 
-    test("HKDF by hand, RFC 5869's 7 cases (SHA-256 and SHA-1, as it has no SHA-384): each PRK and each output exactly", () -> {
+    test("HKDF by hand, RFC 5869's 7 cases (SHA-256 and SHA-1, as it has no SHA-384): each PRK and output exactly; no salt refused", () -> {
       String file = "hkdf-sha384/rfc5869.json";
+      int[] noSalt = {0};
       same(Kat.each(file, Kat.read(file), c -> {
         String hash = c.text("hash");
         String alg = hash.equals("SHA-256") ? "HmacSHA256" : hash.equals("SHA-1") ? "HmacSHA1" : null;
@@ -92,11 +111,20 @@ public final class SymmetricKatTest {
           return "a hash this test doesn't know: " + hash;
         }
 
+        if (c.bytes("salt").length == 0) {
+          noSalt[0]++;
+          String prk = refusedForNoSalt(() -> Hkdf.hmac(alg, c.bytes("salt"), c.bytes("ikm")));
+          String okm = refusedForNoSalt(() -> Hkdf.derive(alg, bytes, c.bytes("salt"), c.bytes("ikm"), c.bytes("info"),
+              (int) c.number("size")));
+          return prk != null ? "PRK: " + prk : okm != null ? "OKM: " + okm : null;
+        }
+
         boolean prk = Arrays.equals(Hkdf.hmac(alg, c.bytes("salt"), c.bytes("ikm")), c.bytes("prk"));
         boolean okm = Arrays.equals(Hkdf.derive(alg, bytes, c.bytes("salt"), c.bytes("ikm"), c.bytes("info"), (int) c.number("size")),
             c.bytes("okm"));
         return unless(prk && okm, "PRK " + prk + ", OKM " + okm);
       }), 7, "all 7");
+      same(noSalt[0], 3, "3 of them (A.3, A.6 and A.7) have no salt, every one refused");
     });
 
     test("HMAC-SHA-384, Wycheproof's 174: every right tag comes out, cut to its size, and every wrong one doesn't", () -> {

@@ -6,12 +6,16 @@ import static avpx.testing.Tests.notSame;
 import static avpx.testing.Tests.ok;
 import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.test;
+import static avpx.testing.Tests.throwsWith;
 
 import avpx.testing.ScriptedRandom;
 import java.math.BigInteger;
+import java.security.GeneralSecurityException;
 import java.security.KeyPair;
+import java.security.KeyPairGenerator;
 import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.ECPublicKey;
+import java.security.spec.NamedParameterSpec;
 import java.util.Arrays;
 import java.util.HexFormat;
 
@@ -27,6 +31,13 @@ public final class PrimitivesTest {
     byte[] c = b.clone();
     c[bit / 8] ^= (byte) (1 << (bit % 8));
     return c;
+  }
+
+  // A key pair of a parameter set version 2 doesn't use (ML-KEM-512, ML-DSA-44), made by Java itself: what ours must refuse
+  private static KeyPair otherSet(NamedParameterSpec set) throws GeneralSecurityException {
+    KeyPairGenerator generator = KeyPairGenerator.getInstance(set.getName());
+    generator.initialize(set, ScriptedRandom.seeded(15));
+    return generator.generateKeyPair();
   }
 
   public static void register() {
@@ -99,6 +110,11 @@ public final class PrimitivesTest {
           "a ciphertext with a bit changed gives another secret (FIPS 203's implicit rejection), never this one");
       same(MlKem.decapsulate(kem.getPrivate(), Arrays.copyOf(made.ciphertext(), 1567)), null, "a ciphertext of 1,567 bytes");
       same(MlKem.decode(Arrays.copyOf(ek, 1567)), null, "an encapsulation key of 1,567 bytes");
+
+      // Only ML-KEM-1024: a key of a smaller set, made by Java itself, is refused before anything is encapsulated to it
+      KeyPair small = otherSet(NamedParameterSpec.ML_KEM_512);
+      throwsWith(() -> MlKem.encapsulate(small.getPublic(), ScriptedRandom.seeded(13)), "can't encapsulate with ML-KEM-1024",
+          "an ML-KEM-512 key is refused");
     });
 
     test("FIPS 203's encapsulation key check, at its edges: a 12-bit number up to 3,328 is taken, 3,329 and up refused, either half of a pair", () -> {
@@ -159,6 +175,11 @@ public final class PrimitivesTest {
       ok(!Signatures.mlDsaVerify(ml.getPublic(), message, flip(mlSig, 30)), "not with a bit of it changed");
       ok(!Signatures.mlDsaVerify(ml.getPublic(), message, Arrays.copyOf(mlSig, 4626)), "not at 4,626 bytes");
       same(Signatures.mlDsaDecode(Arrays.copyOf(mlPublic, 2591)), null, "a public key of 2,591 bytes");
+
+      // Only ML-DSA-87: a key of a smaller set, made by Java itself, can't sign here
+      KeyPair small = otherSet(NamedParameterSpec.ML_DSA_44);
+      throwsWith(() -> Signatures.mlDsaSign(small.getPrivate(), message, ScriptedRandom.seeded(14)), "can't sign with ML-DSA-87",
+          "an ML-DSA-44 key is refused");
     });
 
     test("every key Java gives out is in the raw form the wire uses, with nothing hidden in front", () -> {

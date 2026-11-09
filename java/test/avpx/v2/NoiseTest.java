@@ -10,6 +10,7 @@ import avpx.crypto.Hkdf;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.util.Arrays;
+import java.util.HexFormat;
 
 // The tests of Noise.java against CRYPTO.md 5.1's points, each worked out by hand here with Java's own SHA-384 and our HKDF (held to RFC
 // 5869 and to Java's own in HkdfTest): the start, MixHash, MixKey, the nonce (little-endian, on purpose), sealing with h as the AAD, and
@@ -29,6 +30,15 @@ public final class NoiseTest {
   }
 
   private static final byte[] NOTHING = new byte[0];
+
+  // The nonces the seals below must use, written out as their 12 bytes in hex: 4 zero bytes, then n as 8 bytes with the low byte first
+  // (CRYPTO.md section 5). So nonce 0 is all zeros, and nonce 1 has its 1 at byte 4.
+  private static final String NONCE_0 = "00000000" + "0000000000000000";
+  private static final String NONCE_1 = "00000000" + "0100000000000000";
+
+  private static byte[] nonce(String hex) {
+    return HexFormat.of().parseHex(hex);
+  }
 
   public static void register() {
     test("the start: h is SHA-384 of the protocol's name, and ck is h; MixHash is SHA-384 of h then the data", () -> {
@@ -63,7 +73,7 @@ public final class NoiseTest {
       // k isn't handed out, so it's seen by what it seals: the first seal is under k, nonce 0, with h as the AAD
       byte[] h = noise.h();
       byte[] sealed = noise.encryptAndHash(bytes(10, 7));
-      same(sealed, Gcm.seal(Arrays.copyOfRange(out, 48, 80), new byte[12], h, bytes(10, 7)), "sealed under k, nonce 0, h as AAD");
+      same(sealed, Gcm.seal(Arrays.copyOfRange(out, 48, 80), nonce(NONCE_0), h, bytes(10, 7)), "sealed under k, nonce 0, h as AAD");
       same(noise.h(), sha384(h, sealed), "and what's sent is mixed into h");
     });
 
@@ -96,15 +106,13 @@ public final class NoiseTest {
       byte[] k = Arrays.copyOfRange(Hkdf.derive(ck0, bytes(32, 1), NOTHING, 80), 48, 80);
       noise.encryptAndHash(NOTHING);
       byte[] h = noise.h();
-      byte[] nonce1 = new byte[12];
-      nonce1[4] = 1;
-      same(noise.encryptAndHash(NOTHING), Gcm.seal(k, nonce1, h, NOTHING), "the second seal: nonce 1");
+      same(noise.encryptAndHash(NOTHING), Gcm.seal(k, nonce(NONCE_1), h, NOTHING), "the second seal: nonce 1");
 
       byte[] ck1 = noise.ck();
       noise.mixKey(bytes(32, 2));
       byte[] k2 = Arrays.copyOfRange(Hkdf.derive(ck1, bytes(32, 2), NOTHING, 80), 48, 80);
       byte[] h2 = noise.h();
-      same(noise.encryptAndHash(NOTHING), Gcm.seal(k2, new byte[12], h2, NOTHING), "after a new MixKey: the new k, at nonce 0 again");
+      same(noise.encryptAndHash(NOTHING), Gcm.seal(k2, nonce(NONCE_0), h2, NOTHING), "after a new MixKey: the new k, at nonce 0 again");
     });
 
     test("with no k yet, encryptAndHash sends the text as it is, and decryptAndHash takes it so; with a k, a wrong tag is refused", () -> {
@@ -140,7 +148,7 @@ public final class NoiseTest {
       noise.wipe();
       same(noise.ck(), new byte[48], "ck is zero");
       same(noise.h(), new byte[48], "h is zero");
-      same(noise.encryptAndHash(NOTHING), Gcm.seal(new byte[32], new byte[12], new byte[48], NOTHING), "k is zero");
+      same(noise.encryptAndHash(NOTHING), Gcm.seal(new byte[32], nonce(NONCE_0), new byte[48], NOTHING), "k is zero");
       doesNotThrow(() -> Noise.wipe(null), "wiping nothing is fine");
     });
   }

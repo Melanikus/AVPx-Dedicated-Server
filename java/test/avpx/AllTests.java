@@ -35,6 +35,12 @@ public final class AllTests {
     avpx.crypto.HkdfTest.register();
     Tests.file("PrimitivesTest");
     avpx.crypto.PrimitivesTest.register();
+    Tests.file("SymmetricKatTest");
+    avpx.crypto.SymmetricKatTest.register();
+    Tests.file("P384KatTest");
+    avpx.crypto.P384KatTest.register();
+    Tests.file("PostQuantumKatTest");
+    avpx.crypto.PostQuantumKatTest.register();
     Tests.file("NoiseTest");
     avpx.v2.NoiseTest.register();
     Tests.file("FragmentsTest");

@@ -1135,3 +1135,13 @@ file: java/src/avpx/v2/Channel.java
 <<< to
       if (++failedTags > FAILED_TAGS) {
 >>>
+
+# Java 25 takes a long-form ML-KEM decapsulation key whose hash isn't its own key's, and refuses it only when it's used, by throwing
+=== an ML-KEM decapsulation key taken whose hash isn't its key's (FIPS 203 section 7.3's check)
+check: tests
+file: java/src/avpx/crypto/MlKem.java
+<<< from
+      if (!MessageDigest.isEqual(hash, Arrays.copyOfRange(dk, DK_HASH_AT, DK_HASH_AT + HASH_BYTES))) {
+<<< to
+      if (false) {
+>>>

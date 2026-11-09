@@ -4,10 +4,12 @@ import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.spec.NamedParameterSpec;
+import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 import java.util.HexFormat;
@@ -28,11 +30,23 @@ public final class MlKem {
   }
 
   public static final int ENCAPSULATION_KEY_BYTES = 1568;
+  public static final int DECAPSULATION_KEY_BYTES = 3168;
   public static final int CIPHERTEXT_BYTES = 1568;
   public static final int SECRET_BYTES = 32;
 
   // DER: SEQUENCE (1,586 bytes) { SEQUENCE { OID 2.16.840.1.101.3.4.4.3, ML-KEM-1024 }, BIT STRING (1,569 bytes, no unused bits) { the key } }
   private static final byte[] SPKI_PREFIX = HexFormat.of().parseHex("30820632" + "300b0609608648016503040403" + "0382062100");
+
+  // DER for a decapsulation key in its long form, as PKCS#8 holds it ("expandedKey", in the IETF's draft for ML-KEM in certificates):
+  // SEQUENCE (3,192 bytes) { INTEGER 0, SEQUENCE { OID ML-KEM-1024 }, OCTET STRING (3,172) { OCTET STRING (3,168) { the key } } }
+  private static final byte[] PKCS8_PREFIX = HexFormat.of().parseHex("30820c78" + "020100" + "300b0609608648016503040403" + "04820c64"
+      + "04820c60");
+
+  // Where a decapsulation key holds its encapsulation key, and that key's SHA3-256 hash (FIPS 203 section 7.1: dk is the secret
+  // polynomials, 1,536 bytes; then ek, 1,568; then H(ek), 32; then z, 32)
+  private static final int DK_EK_AT = 1536;
+  private static final int DK_HASH_AT = DK_EK_AT + ENCAPSULATION_KEY_BYTES;
+  private static final int HASH_BYTES = 32;
 
   private static final String KEM_NAME = "ML-KEM";
 
@@ -95,6 +109,29 @@ public final class MlKem {
     }
 
     return true;
+  }
+
+  // A decapsulation key in its long form, 3,168 raw bytes (as a relay's settings or a game's sealed store hold it, CRYPTO.md section
+  // 12), or null if it isn't a good one. FIPS 203 section 7.3's check is made here: the hash it holds must be its own encapsulation
+  // key's. Java 25 takes a key that fails the check, and refuses it only when it's used, by throwing; so it's checked as it comes in.
+  public static PrivateKey decodePrivate(byte[] dk) {
+    if (dk == null || dk.length != DECAPSULATION_KEY_BYTES) {
+      return null;
+    }
+
+    try {
+      byte[] hash = MessageDigest.getInstance("SHA3-256").digest(Arrays.copyOfRange(dk, DK_EK_AT, DK_HASH_AT));
+
+      if (!MessageDigest.isEqual(hash, Arrays.copyOfRange(dk, DK_HASH_AT, DK_HASH_AT + HASH_BYTES))) {
+        return null;
+      }
+
+      byte[] der = Arrays.copyOf(PKCS8_PREFIX, PKCS8_PREFIX.length + DECAPSULATION_KEY_BYTES);
+      System.arraycopy(dk, 0, der, PKCS8_PREFIX.length, DECAPSULATION_KEY_BYTES);
+      return KeyFactory.getInstance(KEM_NAME).generatePrivate(new PKCS8EncodedKeySpec(der));
+    } catch (GeneralSecurityException e) {
+      return null;
+    }
   }
 
   // What encapsulation gives: the ciphertext to send, and the secret, which stays here

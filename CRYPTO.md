@@ -60,21 +60,23 @@ No third-party crypto on the servers (AVP Tao 1). Each platform's own:
 
 | Platform | P-384, ECDSA, AES-GCM, SHA-384, HKDF | ML-KEM-1024, ML-DSA-87 |
 |---|---|---|
-| Java 25 (LTS) | `KeyAgreement "ECDH"`, `Signature "SHA384withECDSA"`, `Cipher "AES/GCM/NoPadding"`; HKDF through the KDF API, JEP 510 **[CHECK: openjdk.org/jeps/510, final in JDK 25]** | ML-KEM, JEP 496, and ML-DSA, JEP 497, through `javax.crypto.KEM` (JEP 452) and `Signature` **[CHECK: openjdk.org/jeps/496 and /497, in JDK 24 and later]** |
-| Node.js 24 (LTS) | `node:crypto`: `diffieHellman` on P-384 keys, `sign`/`verify`, `createCipheriv('aes-256-gcm')`, `hkdfSync('sha384')` | `crypto.encapsulate`/`decapsulate` for ML-KEM, and `sign`/`verify` with ML-DSA keys, on OpenSSL 3.5 **[CHECK: nodejs.org/api/crypto.html, the "Added in" version of each, believed to be 24.6 to 24.7]** |
-| The game, Windows CNG (bcrypt.dll) | `BCRYPT_ECDH_P384_ALGORITHM`, `BCRYPT_ECDSA_P384_ALGORITHM`, `BCRYPT_AES_ALGORITHM` with `BCRYPT_CHAIN_MODE_GCM`, `BCRYPT_SHA384_ALGORITHM` with the HMAC flag. These have been in Windows since Windows 7 | `BCRYPT_MLKEM_ALGORITHM` and `BCRYPT_MLDSA_ALGORITHM` **[CHECK: learn.microsoft.com, CNG's ML-KEM and ML-DSA pages, believed to be generally available on Windows 11 24H2 and later and Windows Server 2025 from late 2025, and not on Windows 10]** |
+| Java 25 (LTS) | `KeyAgreement "ECDH"`, `Signature "SHA384withECDSA"`, `Cipher "AES/GCM/NoPadding"`; HKDF through the KDF API, JEP 510, final in JDK 25. **[CHECK: the JEP's example is HKDF-SHA256. Confirm HKDF-SHA384 is among JDK 25's KDF algorithm names; if not, write HKDF by hand over HMAC-SHA384, `javax.crypto.Mac`, in java.base]** | ML-KEM, JEP 496, and ML-DSA, JEP 497, both in JDK 24, through `javax.crypto.KEM` (JEP 452) and `Signature` |
+| Node.js 24 (LTS) | `node:crypto`: `diffieHellman` on P-384 keys, `sign`/`verify`, `createCipheriv('aes-256-gcm')`, `hkdfSync('sha384')` | ML-DSA keys from v24.6.0, ML-KEM from v24.7.0, both on OpenSSL 3.5 (the KeyObject history in nodejs.org/api/crypto.html). **[CHECK: `crypto.encapsulate`'s own "Added in" line, once.]** Version 2's code sets `engines` to `>=24.7.0` |
+| The game, Windows CNG (bcrypt.dll) | `BCRYPT_ECDH_P384_ALGORITHM`, `BCRYPT_ECDSA_P384_ALGORITHM`, `BCRYPT_AES_ALGORITHM` with `BCRYPT_CHAIN_MODE_GCM`, `BCRYPT_SHA384_ALGORITHM` with the HMAC flag. These have been in Windows since Windows 7 | ML-KEM and ML-DSA have been **generally available since the November 2025 update, on Windows 11 24H2 and 25H2** (at least the 2025-10 update KB5067036, per Microsoft's AD CS document), **and Windows Server 2025. Not on Windows 10.** Handles: `BCRYPT_MLKEM_ALG_HANDLE` (0x481) and `BCRYPT_MLDSA_ALG_HANDLE` (0x471), with the parameter set chosen through `BCryptSetProperty(BCRYPT_PARAMETER_SET_NAME, BCRYPT_MLKEM_PARAMETER_SET_1024 ...)`. Sources: Microsoft's Tech Community post "Post-Quantum Cryptography APIs Now Generally Available on Microsoft Platforms", and the AD CS document for the update number. Microsoft's sample page still says "prerelease"; that's out of date |
+
+The platform facts in this table were read in the official documents by PO on 2026-11-08. The two marks left are each to be confirmed once, in code, before the code relies on them.
 
 **[DECIDE] What the game does where Windows lacks ML-KEM or ML-DSA.** Neither choice falls back to classical-only. A fallback is an attack path, so there isn't one.
-- **(a) CNG only.** Online play needs a Windows that has them. Others get a plain refusal: "Online play needs Windows 11 24H2 or later." This adds no code, but Windows 10 players can't play online.
+- **(a) CNG only.** Online play needs a Windows that has them. Others get a plain refusal: "Online play needs Windows 11 24H2 or later, with the October 2025 update or newer." This adds no code, but players on Windows 10, or on Windows 11 before 24H2, can't play online.
 - **(b) The post-quantum half built from source into the game,** from the PQ Code Package's `mlkem-native` and `mldsa-native` (C; Apache-2.0, ISC or MIT; parts machine-proved). It's scanned and take-out tested like ENet; CNG still does the classical half and AES-GCM. One code path on every Windows, and no dependence on the OS version for decades (AVP Tao 2). It adds about 10,000 to 20,000 lines of C to review.
-- **I recommend (b)**: it keeps every player and one code path, and the extra code is reviewable C under a permissive licence. Both are secure, but their risks differ, so the choice is the user's.
+- **I recommend (b)**: it keeps every player and one code path, and the extra code is reviewable C under a permissive licence. Both are secure, but their risks differ, so the choice is the user's. PO put it to the user on 2026-11-08, and the answer goes here.
 
 ## 4. The keys: who holds what
 
 | Key | Kind | Where it lives | What it does |
 |---|---|---|---|
 | **Root** | ECDSA P-384 plus ML-DSA-87 | offline, on the user's own machine, encrypted; never on a server or in CI | signs the keys below, each with an end date |
-| **Release key** | ECDSA plus ML-DSA | GitHub's `release` environment, as a secret, used by one job with no third-party actions | signs each release's manifest (section 12) |
+| **Release key** | ECDSA plus ML-DSA | offline, on the user's own machine: **the user signs each release by hand** (decided 2026-11-08) | signs each release's manifest (section 12) |
 | **Directory key** | ECDSA plus ML-DSA | offline, beside the root | signs the relays directory (section 12) |
 | **List key** | ECDSA plus ML-DSA | on the list's machine | signs each answer of `GET /v1/games` |
 | **A relay's static key** | ECDH P-384 plus ML-KEM-1024 | on that relay's machine | proves the relay, in handshake A |
@@ -92,7 +94,7 @@ No third-party crypto on the servers (AVP Tao 1). Each platform's own:
 - The signed directory carries a list of revoked key fingerprints. The game refuses anything signed by one of them.
 - A root is revoked only by a game update that pins the next root alone.
 
-**[DECIDE] The release key as a CI secret:** this follows PO's brief, and it's acceptable only because a stolen release key can be revoked with no game update (the root is offline). Any code that runs in that job can read the secret, so the job runs nothing but our own signing script, and needs the user's approval each time. The safer choice is for the user to sign each release by hand, on their own machine, with the key offline.
+**Decided 2026-11-08: the user signs each release by hand,** on their own machine, with the release key offline. A CI secret was the first brief: any code that runs in that job can read it. The release workflow builds the files and the unsigned `manifest.txt`. The user checks it, signs it, and attaches `manifest.sig`, and only then is the release published.
 
 ## 5. Building blocks every handshake uses
 
@@ -208,7 +210,7 @@ This runs on the joiner's relay port after READY, from game to game. The relay f
   - That's **mutual authentication, classical and post-quantum, before any game byte**.
 
 **The check code:**
-- Both screens show **6 digits from `HKDF(h, "AVPX check code v2")`**, the same on both only if no one is in the middle.
+- Both screens show **6 digits from `HKDF(h, "AVPX check code v2")`**, the same on both only if no one is in the middle. **It's always shown on the join screen** (decided 2026-11-08).
 - Two players who read them to each other (voice, chat) catch even a list that lied about the fingerprint.
 - It's 20 bits, so one try in a million fools them, and a failed try is seen.
 
@@ -400,6 +402,6 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 
 ## 19. For the user to decide
 
-1. **The game's post-quantum half: CNG only (a), or built from source (b)** (section 3). I recommend (b).
-2. **The release key: a CI secret (as briefed), or the user signs each release by hand** (section 4). I recommend by hand, with the CI secret only if releases must happen without the user.
-3. **The check code: always shown, or only when asked.** I recommend always shown on the join screen: it costs nothing and is the last line against a lying list.
+1. **The game's post-quantum half: CNG only (a), or built from source (b)** (section 3). I recommend (b). **Open:** PO put it to the user on 2026-11-08.
+2. **The release key: signed by hand.** Decided 2026-11-08 (PO, under Tao 1: the secure choice is taken, and the user told).
+3. **The check code: always shown on the join screen.** Decided 2026-11-08, the same way.

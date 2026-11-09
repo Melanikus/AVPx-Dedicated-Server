@@ -46,7 +46,7 @@ import javax.net.ssl.SSLSocket;
 //   4. Its head (Http.java) must have come within HEADERS_MILLISECONDS of the connection's start, the TLS handshake included, and its
 //      body, and the answer going out, within BODY_MILLISECONDS after that. A timer closes the connection at each deadline, whatever it's
 //      doing, so a sender who trickles a byte at a time is cut off.
-//   5. The request is held to the per-address limits (5 a second, 20 at once; the two GETs 1 a second, 5 at once) and everyone's (500 a
+//   5. The request is held to the per-address limits (5 a second, 20 at once; the three GETs 1 a second, 5 at once) and everyone's (500 a
 //      second, 1,000 at once), and then Routes.java answers it, under the one lock that keeps the listings to one thread at a time.
 //   6. One request a connection: every answer says Connection: close, and the connection is closed after it.
 // Every answer is JSON, with headers that tell a browser to treat it as nothing but data, and HSTS.
@@ -331,7 +331,8 @@ public final class ListServer {
 
   private void answer(Http.Head head, SSLSocket tls, InputStream in, OutputStream out, String address) throws IOException {
     long at = now.getAsLong();
-    boolean isList = head.method().equals("GET") && (head.path().equals("/v1/games") || head.path().equals("/v1/relays"));
+    boolean isList = head.method().equals("GET")
+        && (head.path().equals("/v1/games") || head.path().equals("/v1/relays") || head.path().equals("/v1/relay-keys"));
     boolean allowed;
 
     synchronized (lock) {

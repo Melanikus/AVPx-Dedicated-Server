@@ -2,6 +2,7 @@ package avpx.tools;
 
 import avpx.crypto.MlKem;
 import avpx.crypto.P384;
+import avpx.v2.RelayFingerprint;
 import java.security.KeyPair;
 import java.security.SecureRandom;
 import java.security.interfaces.ECPrivateKey;
@@ -13,11 +14,16 @@ import java.util.HexFormat;
 //
 //   java -cp java/build/tools:java/build/server avpx.tools.MakeRelayKeys       (after build.sh; on Windows, ; in place of :)
 //
-// It prints two things:
+// Run it ON the relay's own machine, so the secret is never anywhere else. It prints three things:
 // - "staticKeys", SECRET: it goes in that relay's /etc/avpx/settings.json and nowhere else, a file only root and the server's user can
 //   read (deploy/README.md). Anyone who has it can be that relay.
-// - the public keys, which go in the signed directory, so a game knows the relay before it says anything.
-// It takes nothing from its command line and writes no file, so the secret is only where it's put. Each run makes new keys.
+// - the PUBLIC keys, "p384" and "mlkem", for that relay's entry in list.relays on the list's machine, if the list is on another one
+//   (Settings.java). The list's own relay needs no entry: the list takes them from its staticKeys. GET /v1/relay-keys gives them to games.
+//   When the signed directory exists (CRYPTO.md section 12), they go in that instead.
+// - the FINGERPRINT, 32 hex digits (RelayFingerprint.java, CRYPTO.md section 12.1), for the game's -dev setting relaykey=<region>:<it>.
+//   It's public, and short enough to read aloud: the game uses that relay only if the keys the list gives match it.
+// It takes nothing from its command line and writes no file, so the secret is only where it's put. Each run makes new keys, and so a new
+// fingerprint: every game's setting for that relay changes with them.
 public final class MakeRelayKeys {
   private MakeRelayKeys() {
   }
@@ -54,8 +60,12 @@ public final class MakeRelayKeys {
     System.out.println("  \"mlkemSeed\": \"" + hex.formatHex(seed) + "\"");
     System.out.println("}");
     System.out.println();
-    System.out.println("PUBLIC: for the signed directory");
-    System.out.println("p384Public  " + hex.formatHex(point));
-    System.out.println("mlkemPublic " + hex.formatHex(MlKem.encode(kem.getPublic())));
+    byte[] kemPublic = MlKem.encode(kem.getPublic());
+    System.out.println("PUBLIC: for this relay's entry in list.relays, on the list's machine if it's another one");
+    System.out.println("\"p384\": \"" + hex.formatHex(point) + "\",");
+    System.out.println("\"mlkem\": \"" + hex.formatHex(kemPublic) + "\"");
+    System.out.println();
+    System.out.println("FINGERPRINT: public, for the game's -dev setting relaykey=<this relay's region>:<the fingerprint>");
+    System.out.println(RelayFingerprint.of(point, kemPublic));
   }
 }

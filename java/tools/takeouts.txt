@@ -1700,3 +1700,168 @@ file: java/src/avpx/list/Routes.java
           }
 <<< to
 >>>
+
+# ----- GET /v1/relay-keys, a version 2 relay's public keys from the list (CRYPTO.md section 12.1), added 2026-11-09
+
+=== relay-keys takes any region text
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+        if (!Pass.isRegion(region)) {
+<<< to
+        if (region.isEmpty()) {
+>>>
+
+=== relay-keys takes a query with more after the region
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+<<< to
+        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()).split("&")[0] : "";
+>>>
+
+=== relay-keys takes a body
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+        Requests.checkNoBody(body);
+        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+<<< to
+        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+>>>
+
+=== relay-keys answers any method
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+      if (path.equals("/v1/relay-keys")) {
+        if (!method.equals("GET")) {
+          return error(405, "no such call on this path");
+        }
+<<< to
+      if (path.equals("/v1/relay-keys")) {
+>>>
+
+=== relay-keys reads a version 1 relay's keys, which it hasn't
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (relay == null || relay.p384() == null || relay.mlkem() == null) {
+<<< to
+    if (relay == null) {
+>>>
+
+=== relay-keys gives the pass key for the P-384 key
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    shown.put("p384", hex.formatHex(relay.p384()));
+<<< to
+    shown.put("p384", hex.formatHex(relay.passKey()));
+>>>
+
+=== relay keys given aren't counted
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    counts.keysGiven++;
+<<< to
+>>>
+
+=== relay-keys isn't held to the GETs' rate
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+        && (head.path().equals("/v1/games") || head.path().equals("/v1/relays") || head.path().equals("/v1/relay-keys"));
+<<< to
+        && (head.path().equals("/v1/games") || head.path().equals("/v1/relays"));
+>>>
+
+=== the list's own relay may write its public keys again
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+      if (own && (r.containsKey("p384") || r.containsKey("mlkem"))) {
+        throw new Refused(where + " is this machine's own relay, so it leaves p384 and mlkem out (with protocol 2 they come from "
+            + "staticKeys above)");
+      }
+<<< to
+>>>
+
+=== the list's own relay has no keys on protocol 2
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+      byte[][] itsPublic = own ? (ownKeys == null ? new byte[][] {null, null} : new byte[][] {ownKeys.p384Public().clone(),
+          ownKeys.kemPublic().clone()}) : publicKeys(r, where);
+<<< to
+      byte[][] itsPublic = own ? new byte[][] {null, null} : publicKeys(r, where);
+>>>
+
+=== a relay's P-384 key isn't checked as a point on the curve
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (P384.decode(p384) == null) {
+      throw new Refused(where + ".p384 must be a P-384 public key: 04, then x and y, a point on the curve");
+    }
+<<< to
+>>>
+
+=== a relay's ML-KEM key isn't held to FIPS 203's check
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (MlKem.decode(kem) == null) {
+      throw new Refused(where + ".mlkem must be an ML-KEM-1024 encapsulation key that passes FIPS 203's check");
+    }
+<<< to
+>>>
+
+=== one relay key without the other isn't said plainly
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (!hasP384 || !hasKem) {
+      throw new Refused(where + " must give both p384 and mlkem (a version 2 relay), or neither (a version 1 relay)");
+    }
+<<< to
+>>>
+
+=== the settings file's size limit too small for 16 version 2 relays
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+  private static final int MOST_SETTINGS_BYTES = 64 * 1024;
+<<< to
+  private static final int MOST_SETTINGS_BYTES = 48 * 1024;
+>>>
+
+=== the settings file's size limit too big
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+  private static final int MOST_SETTINGS_BYTES = 64 * 1024;
+<<< to
+  private static final int MOST_SETTINGS_BYTES = 1024 * 1024;
+>>>
+
+=== a relay's fingerprint without its words
+check: tests
+file: java/src/avpx/v2/RelayFingerprint.java
+<<< from
+      sha.update(WORDS);
+<<< to
+>>>
+
+=== a relay's fingerprint from keys of any size
+check: tests
+file: java/src/avpx/v2/RelayFingerprint.java
+<<< from
+    if (p384Public == null || p384Public.length != P384.PUBLIC_BYTES || kemPublic == null
+        || kemPublic.length != MlKem.ENCAPSULATION_KEY_BYTES) {
+      throw new IllegalArgumentException("RelayFingerprint: the keys are 97 and 1,568 bytes");
+    }
+<<< to
+>>>

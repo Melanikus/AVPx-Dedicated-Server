@@ -384,6 +384,59 @@ public final class ListTest {
       ok(text.length() <= Routes.MOST_RELAYS_BYTES, "under 4 KB");
     });
 
+    test("GET /v1/relay-keys gives a version 2 relay's two public keys and nothing else; 404 for a version 1 relay or an unknown region",
+        () -> {
+      byte[] p384 = bytes(97, 4);
+      byte[] kem = bytes(1568, 9);
+      List<Listings.Relay> relays = new ArrayList<>(RELAYS);
+      relays.set(1, new Listings.Relay("paris", "paris.relay.example.net", 27500, KEYS.get("paris"), p384, kem));
+      Listings l = listings(relays);
+      Answer answer = call(l, "GET", null, "region=paris", NOW, "/v1/relay-keys");
+      same(answer.status(), 200, "paris is a version 2 relay");
+      Map<String, Object> want = new LinkedHashMap<>();
+      want.put("region", "paris");
+      want.put("p384", hex(p384));
+      want.put("mlkem", hex(kem));
+      same(answer.body(), want, "its region and its two keys, in hex, small letters");
+      ok(!Json.write(answer.body()).contains(hex(KEYS.get("paris"))), "never its pass key");
+      same(call(l, "GET", null, "region=virginia", NOW, "/v1/relay-keys").status(), 404, "virginia is a version 1 relay: no keys");
+      same(call(l, "GET", null, "region=tokyo", NOW, "/v1/relay-keys").status(), 404, "a region the list doesn't know");
+      ok(!Json.write(call(l, "GET", null, "region=tokyo", NOW, "/v1/relay-keys").body()).contains("tokyo"),
+          "and its refusal doesn't say back what was asked");
+      List<String> lines = l.tick(at(60000));
+      matches(lines.get(0), "relay keys given 1 times, and 3 times not found", "the counts line counts them");
+      ok(!lines.get(0).contains("paris") && !lines.get(0).contains(hex(p384)), "with no region and no key");
+
+      // The worst case: the longest region, and the two keys
+      List<Listings.Relay> longest = List.of(new Listings.Relay("r".repeat(16), "h.example.net", 27500, KEYS.get("paris"), p384, kem));
+      String text = Json.write(call(listings(longest), "GET", null, "region=" + "r".repeat(16), NOW, "/v1/relay-keys").body());
+      same(text.length(), 3380, "the worst case Routes.java gives");
+      ok(text.length() <= Routes.MOST_RELAY_KEYS_BYTES, "under 4 KB");
+    });
+
+    test("GET /v1/relay-keys's query is exactly region= and a region, with no body, and GET is its only call", () -> {
+      List<Listings.Relay> relays = new ArrayList<>(RELAYS);
+      relays.set(1, new Listings.Relay("paris", "paris.relay.example.net", 27500, KEYS.get("paris"), bytes(97, 4), bytes(1568, 9)));
+      Listings l = listings(relays);
+
+      for (String q : List.of("", "region=", "paris", "region=Paris", "region=paris&x=1", "x=1&region=paris", "region=paris&region=paris",
+          "region= paris", "region=paris ", "region=%70aris", "region=par is", "region=" + "r".repeat(17), "Region=paris", "region==paris",
+          "region=paris#", "region=paris/", "region=pa\nris")) {
+        same(call(l, "GET", null, q, NOW, "/v1/relay-keys").status(), 400, "query \"" + q + "\"");
+      }
+
+      same(call(l, "GET", null, "region=paris", NOW, "/v1/relay-keys").status(), 200, "the one form");
+      same(call(l, "GET", latin1("x"), "region=paris", NOW, "/v1/relay-keys").status(), 400, "with a body");
+
+      for (String method : List.of("POST", "PUT", "DELETE", "HEAD", "PATCH")) {
+        same(call(l, method, null, "region=paris", NOW, "/v1/relay-keys").status(), 405, method);
+      }
+
+      same(call(l, "GET", null, "region=paris", NOW, "/v1/relay-keys/").status(), 404, "/v1/relay-keys/");
+      same(call(l, "GET", null, "region=paris", NOW, "/v1/relay-key").status(), 404, "/v1/relay-key");
+      same(call(l, "GET", null, "region=paris", NOW, "/v2/relay-keys").status(), 404, "/v2/relay-keys");
+    });
+
     test("the list never gives an address, an owner key or a pass", () -> {
       Listings l = listings();
       Map<String, Object> posted = game();
@@ -505,7 +558,7 @@ public final class ListTest {
       same(call(l, "GET", latin1("x"), "", NOW, "/v1/relays").status(), 400, "GET /v1/relays with a body");
     });
 
-    test("only the five calls are there", () -> {
+    test("only the six calls are there", () -> {
       Listings l = listings();
       same(call(l, "GET", null, "version=1", NOW, "/v1/games/").status(), 404, "/v1/games/");
       same(call(l, "GET", null, "version=1", NOW, "/v2/games").status(), 404, "/v2/games");

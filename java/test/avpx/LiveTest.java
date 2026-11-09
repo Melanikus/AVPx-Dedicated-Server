@@ -541,6 +541,24 @@ public final class LiveTest {
       }
     });
 
+    // GET /v1/relay-keys is held to the same rate as the list's other two GETs (ListServer.java, isList). This list's relay is a version 1
+    // relay, so the ones answered are 404s: it's the 429s that matter here.
+    liveTest("the list's server holds one address to its rate for relay keys too", () -> {
+      Running list = listServer();
+
+      try {
+        List<Integer> statuses = new ArrayList<>();
+
+        for (int i = 0; i < 8; i++) {
+          statuses.add(request(list, "GET", "/v1/relay-keys?region=" + REGION).status());
+        }
+
+        ok(statuses.contains(429), "some of 8 quick relay-keys reads are refused: " + statuses);
+      } finally {
+        list.stop();
+      }
+    });
+
     liveTest("a request's head is at most 8 KB: just under, it's answered; over, it's refused with 431 before anything else", () -> {
       Running list = listServer();
 

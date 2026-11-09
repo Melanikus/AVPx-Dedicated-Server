@@ -3,6 +3,7 @@ package avpx.list;
 import avpx.list.Requests.Ending;
 import avpx.list.Requests.Posted;
 import avpx.list.Requests.Refusal;
+import avpx.relay.Pass;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -11,8 +12,11 @@ import java.util.Map;
 // What the list does with each request, with no network of its own: a request in, the answer out. Written 2026-11-08 by Melanikus for
 // AVPx Dedicated Server, from list/routes.js.
 //
-// The list's five calls (PROTOCOL.md section 4):
+// The list's six calls (PROTOCOL.md section 4):
 //   GET    /v1/relays           the relays a game can use: 200 {relays}, never a key
+//   GET    /v1/relay-keys       with ?region= and a region, and nothing else (400): that version 2 relay's two static PUBLIC keys,
+//                               200 {region, p384, mlkem}; 404 for a region the list doesn't know or a version 1 relay. The game holds
+//                               them to a fingerprint it already has before it sends that relay anything (CRYPTO.md section 12.1)
 //   POST   /v1/games            put a game on the list, with its relay's pass: 201 {owner}, 403 a pass not good, 409 listed already,
 //                               503 the list is full
 //   PUT    /v1/games            renew it, and change what it says, with its owner key and a fresh pass: 204, 403, 404 not listed
@@ -40,6 +44,13 @@ public final class Routes {
   // The most an answer to GET /v1/relays can be: 16 relays (Settings.java allows no more), each with the longest region and host name,
   // come to 1,868 bytes. ListTest.java checks that too.
   public static final int MOST_RELAYS_BYTES = 4 * 1024;
+
+  // The most an answer to GET /v1/relay-keys can be: the longest region (16 characters) and the two keys (194 and 3,136 hex digits) come
+  // to 3,380 bytes. ListTest.java checks that too.
+  public static final int MOST_RELAY_KEYS_BYTES = 4 * 1024;
+
+  // GET /v1/relay-keys's one query: "region=" and a region (Pass.isRegion says what one is), with nothing before or after
+  private static final String REGION_QUERY = "region=";
 
   // An answer: its status, and its body as JSON's objects (Json.write writes it), or null for none
   public record Answer(int status, Map<String, Object> body) {
@@ -70,6 +81,27 @@ public final class Routes {
         }
 
         return answer(200, "relays", listings.relayList());
+      }
+
+      if (path.equals("/v1/relay-keys")) {
+        if (!method.equals("GET")) {
+          return error(405, "no such call on this path");
+        }
+
+        Requests.checkNoBody(body);
+        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+
+        if (!Pass.isRegion(region)) {
+          throw new Refusal(400, "GET /v1/relay-keys's query is region= and a region, and nothing else");
+        }
+
+        Map<String, Object> keys = listings.relayKeys(region);
+
+        if (keys == null) {
+          return error(404, "the list has no version 2 relay in that region");
+        }
+
+        return new Answer(200, keys);
       }
 
       if (!path.equals("/v1/games")) {

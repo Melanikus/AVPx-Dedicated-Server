@@ -3,12 +3,14 @@ package avpx.v2;
 import static avpx.testing.Tests.ok;
 import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.test;
+import static avpx.testing.Tests.throwsWith;
 
 import avpx.crypto.MlKem;
 import avpx.crypto.P384;
 import avpx.list.Json;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -147,6 +149,24 @@ public final class CryptoV2VectorsTest {
       same(HandshakeB.checkCode(bytes(b.get("transcript"))), b.get("checkCode"), "B's check code, from its transcript");
       same(HandshakeB.fingerprint(bytes(object(b.get("host")).get("p384Public")), bytes(object(b.get("host")).get("mlkemPublic"))),
           bytes(object(b.get("host")).get("fingerprint")), "the host's fingerprint, from its two public keys");
+    });
+
+    test("a relay's fingerprint (CRYPTO.md 12.1) is the one a hash made outside Java gives, and only from keys of the right sizes", () -> {
+      Map<String, Object> top = Json.readObject(Files.readAllBytes(CryptoV2Vectors.FILE), DEPTH);
+      Map<String, Object> relay = object(object(top.get("handshakeA")).get("relayStatic"));
+      byte[] p384 = bytes(relay.get("p384Public"));
+      byte[] kem = bytes(relay.get("mlkemPublic"));
+      // Made with Git for Windows' sha384sum and OpenSSL, from the bytes "AVPX relay keys v2" then the two keys from the file (2026-11-09):
+      //   { printf 'AVPX relay keys v2'; printf '%s%s' "$p384Public" "$mlkemPublic" | xxd -r -p; } | sha384sum | cut -c1-32
+      same(RelayFingerprint.of(p384, kem), "fc352802066e547c261e37fe63f11486", "the vectors' relay's fingerprint");
+      byte[] other = p384.clone();
+      other[96] ^= 1;
+      ok(!RelayFingerprint.of(other, kem).equals(RelayFingerprint.of(p384, kem)), "a key with one bit changed has another fingerprint");
+      ok(!RelayFingerprint.of(p384, kem).equals(HexFormat.of().formatHex(HandshakeB.fingerprint(p384, kem))),
+          "and it isn't a player's fingerprint of the same keys: the words in front keep the two apart");
+      throwsWith(() -> RelayFingerprint.of(Arrays.copyOf(p384, 96), kem), "97 and 1,568 bytes", "a P-384 key of 96 bytes");
+      throwsWith(() -> RelayFingerprint.of(p384, Arrays.copyOf(kem, 1569)), "97 and 1,568 bytes", "an ML-KEM key of 1,569 bytes");
+      throwsWith(() -> RelayFingerprint.of(null, kem), "97 and 1,568 bytes", "no P-384 key");
     });
   }
 }

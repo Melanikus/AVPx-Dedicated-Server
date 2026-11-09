@@ -123,10 +123,11 @@ Every call is HTTPS with TLS 1.2 or newer, and the server sends HSTS. The server
 | Call | Body | Answer |
 |---|---|---|
 | `GET /v1/relays` | none | `200 {"relays": [{"region", "host", "port"}]}`, at most 16 relays |
-| `POST /v1/games` | `{"region", "code", "pass", "passTime", "name", "level", "mode", "gameStyle", "levelNumber", "coopLobby", "players", "maxPlayers", "version", "hostMs"}` | `201 {"owner"}`; `403` for a pass that isn't good; `409` if that game is listed already; `503` if the list is full |
-| `PUT /v1/games` | `{"owner"}` and all of POST's fields | `204`, no body; `403` for a pass that isn't good, or the wrong owner; `404` if that game isn't listed |
+| `POST /v1/games` | `{"region", "code", "pass", "passTime", "name", "level", "mode", "gameStyle", "levelNumber", "coopLobby", "players", "maxPlayers", "version", "fingerprint", "hostMs"}`, with `fingerprint` for a version-2 game and only for one | `201 {"owner"}`; `403` for a pass that isn't good; `409` if that game is listed already; `503` if the list is full |
+| `PUT /v1/games` | `{"owner"}` and all of POST's fields | `204`, no body; `403` for a pass that isn't good, the wrong owner, or a fingerprint other than the one it was listed with; `404` if that game isn't listed |
 | `DELETE /v1/games` | `{"region", "code", "owner"}` | `204`, no body; `403` for the wrong owner; `404` if that game isn't listed. The room itself stays until its host closes it, or stops keeping it. |
-| `GET /v1/games?version=N` | none | `200 {"games": [{"region", "code", "name", "level", "mode", "gameStyle", "levelNumber", "coopLobby", "players", "maxPlayers", "version", "hostMs", "seconds"}]}`, at most 100 games, newest first |
+| `GET /v1/games?version=N` | none | `200 {"games": [{"region", "code", "name", "level", "mode", "gameStyle", "levelNumber", "coopLobby", "players", "maxPlayers", "version", "fingerprint", "hostMs", "seconds"}]}`, with `fingerprint` exactly on a version-2 game's row; at most 100 games, newest first |
+| `GET /v1/games?version=N&code=C` | none | the same, with only the games of that version whose code is `C`, one a region at most: how a game finds a code someone typed. `200` with no games if there are none |
 
 A game is known to the list by its region and code together: two relays could, rarely, make the same code.
 
@@ -147,12 +148,13 @@ Any other status, and every `{"error"}` answer, means the call didn't work. The 
 - **levelNumber:** 0 to 99 for a stock level, 100 for a custom one, which the game then finds by `level`.
 - **coopLobby:** the game's co-op lobby state (coop_lobby.h), 0 to 255. With `gameStyle`, `levelNumber` and `level`, it's how a joiner's game picks the level it will load, which on a LAN comes from the session search.
 - **players and maxPlayers:** whole numbers, 1 to 8, with players no more than maxPlayers.
-- **version:** a whole number, 1 to 65535, the game's network version.
+- **version:** a whole number, 1 to 65535, the game's network version. A **version-2 game** is one whose network version is the first that speaks handshake B (CRYPTO.md section 8) or a newer one. The list's code names that first version once (`FIRST_V2_VERSION`, Requests.java), and the game names the same number. A game asks only for games of its own version, so an older game never sees a version-2 row.
+- **fingerprint:** 32 hex digits, small letters: the fingerprint of the host's identity for this run (CRYPTO.md section 8), which a joiner checks in handshake B. A version-2 game must give it, and an older game can't (`400`). It stays the same for the listing's life: a host that starts again makes a new listing. Nothing secret.
 - **hostMs:** the host's round trip to its relay, in milliseconds, 1 to 9999; 0 if it wasn't measured (section 2, Round trips).
 - **seconds:** how long the game has been listed, 0 to 31,536,000 (a year); a game listed longer still says a year.
 
 **What a reader can hold the answer to:**
-- **Its size:** an answer to `GET /v1/games` is at most 48 KB. The worst case, 100 games with every text at its longest and made of the characters JSON writes as two, and every number at its longest, is 41,111 bytes. An answer to `GET /v1/relays` is at most 4 KB (worst case, 16 relays: 1,868 bytes). A reader can refuse anything bigger.
+- **Its size:** an answer to `GET /v1/games` is at most 48 KB. The worst case, 100 version-2 games (each with a fingerprint) with every text at its longest and made of the characters JSON writes as two, and every number at its longest, is 46,011 bytes; `&code=` answers less. An answer to `GET /v1/relays` is at most 4 KB (worst case, 16 relays: 1,868 bytes). A reader can refuse anything bigger.
 - **Its escapes:** every text is printable ASCII, and for those JSON writes only two escapes, `\"` and `\\`. A reader can refuse any other escape (`\u`, `\n`, `\/` and the rest). The server's tests check both of these.
 
 **Heartbeat and expiry:** a listing lives 45 s after its last good `POST` or `PUT`. A host `PUT`s every 15 s with its newest pass. A pass is good for 60 s, so a listing outlives its room by at most 105 s, and a joiner who tries it meanwhile gets `REFUSED` (reason 1).

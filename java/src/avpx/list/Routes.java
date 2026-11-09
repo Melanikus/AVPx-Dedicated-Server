@@ -17,7 +17,8 @@ import java.util.Map;
 //                               503 the list is full
 //   PUT    /v1/games            renew it, and change what it says, with its owner key and a fresh pass: 204, 403, 404 not listed
 //   DELETE /v1/games            take it down, with its owner key: 204, 403, 404 not listed. The room stays until its host ends it.
-//   GET    /v1/games?version=N  the games of that network version: 200 {games}, at most MOST_GAMES, the newest first
+//   GET    /v1/games?version=N  the games of that network version: 200 {games}, at most MOST_GAMES, the newest first. With &code= and
+//                               8 code letters after it, only that code's games, one a region at most: a code someone typed
 // Anything else is 404 (no such path) or 405 (no such call on it). Listings.java holds the games and checks the passes.
 //
 // The list never holds an address, and gives back nothing a request sent except what a host chose to list.
@@ -32,8 +33,8 @@ public final class Routes {
   public static final long MOST_SECONDS = 31536000;
 
   // The most an answer to GET /v1/games can be: 100 games with every text field at its longest, every character one JSON writes as two
-  // (" and \), and every number at its longest, come to 41,111 bytes. A game can refuse anything bigger. ListTest.java checks the worst
-  // case fits.
+  // (" and \), every number at its longest, and a fingerprint (a version-2 game's), come to 46,011 bytes. A game can refuse anything
+  // bigger. ListTest.java checks the worst case fits.
   public static final int MOST_LIST_BYTES = 48 * 1024;
 
   // The most an answer to GET /v1/relays can be: 16 relays (Settings.java allows no more), each with the longest region and host name,
@@ -77,10 +78,10 @@ public final class Routes {
 
       if (method.equals("GET")) {
         Requests.checkNoBody(body);
-        int version = Requests.parseListQuery(query);
+        Requests.ListQuery asked = Requests.parseListQuery(query);
         List<Object> games = new ArrayList<>();
 
-        for (Listings.Shown shown : listings.games(version, now, MOST_GAMES)) {
+        for (Listings.Shown shown : listings.games(asked.version(), asked.code(), now, MOST_GAMES)) {
           Requests.Listing g = shown.listing();
           Map<String, Object> game = new LinkedHashMap<>();
           game.put("region", g.region());
@@ -94,6 +95,12 @@ public final class Routes {
           game.put("players", g.players());
           game.put("maxPlayers", g.maxPlayers());
           game.put("version", g.version());
+
+          // Only a version-2 game has one, so an older game's reader, which refuses a field it doesn't know, never sees one
+          if (g.fingerprint() != null) {
+            game.put("fingerprint", g.fingerprint());
+          }
+
           game.put("hostMs", g.hostMs());
           game.put("seconds", Math.min(MOST_SECONDS, Math.max(0, Math.floorDiv(now - shown.listedAt(), 1000))));
           games.add(game);

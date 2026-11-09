@@ -34,14 +34,55 @@ jobs:
             https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64
           echo "$KEY  $RUNNER_TEMP/osv-scanner" | sha256sum --check --strict
           chmod +x "$RUNNER_TEMP/osv-scanner"
+      - uses: ./.github/actions/node
       - name: Scan
+        # WHY AN EXIT OF 128 CAN PASS HERE, AND ONLY HERE:
+        # OSV-Scanner v2.7.0 exits 128 when it found no packages at all ("No package sources found"). This server has no packages, on
+        # purpose (CODING-STANDARD.md rule 2), so 128 is the right answer for it. The first run said exactly that (run 42544687705):
+        # "Scanned .../package-lock.json file and found 0 packages", then exit 128.
+        # But a 128 could also mean it never found the lock file, which would be a scan that read nothing. So 128 passes only when all three
+        # are true:
+        #   1. the scanner says it scanned package-lock.json and found 0 packages;
+        #   2. our own check agrees: package-lock.json lists no package, and package.json has no dependencies of any kind;
+        #   3. the scanner's exit was exactly 128.
+        # Exit 0 passes. Any other exit (1 is "vulnerabilities found"), or a 128 without both 1 and 2, fails.
+        #
+        # GitHub runs this script with "bash -e", which stops at the first command that fails. The scan is meant to end with 128 here, so
+        # -e is turned off around it (set +e), or the step would stop before these checks could run. That's what made the first run fail.
         run: |
           set -uo pipefail
-          "$RUNNER_TEMP/osv-scanner" scan source --lockfile package-lock.json 2>&1 | tee osv-output.txt
-          status=${PIPESTATUS[0]}
-          grep -q 'package-lock.json' osv-output.txt || { echo 'the scan did not say it read package-lock.json'; exit 1; }
-          # 0 is "no vulnerabilities". 128 is "no packages found", which is right for a lock file with none, and only then
-          if [ "$status" -eq 0 ]; then exit 0; fi
-          if [ "$status" -eq 128 ] && grep -q 'found 0 packages' osv-output.txt; then exit 0; fi
-          echo "OSV-Scanner ended with $status"
-          exit 1
+          set +e
+          "$RUNNER_TEMP/osv-scanner" scan source --lockfile package-lock.json > osv-output.txt 2>&1
+          status=$?
+          set -e
+          cat osv-output.txt
+
+          if [ "$status" -eq 0 ]; then
+            echo "OSV-Scanner: no vulnerabilities"
+            exit 0
+          fi
+
+          if [ "$status" -ne 128 ]; then
+            echo "OSV-Scanner ended with $status, which fails this check"
+            exit 1
+          fi
+
+          grep -Eq '^[[:space:]]*Scanned .*package-lock\.json file and found 0 packages([^0-9]|$)' osv-output.txt || {
+            echo 'OSV-Scanner ended with 128 without saying it scanned package-lock.json and found 0 packages, so it may have read nothing'
+            exit 1
+          }
+
+          node -e '
+            const fs = require("fs");
+            const lock = JSON.parse(fs.readFileSync("package-lock.json", "utf8"));
+            const pkg = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            const listed = Object.keys(lock.packages || {}).filter((k) => k !== "");
+            const kinds = ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies", "bundledDependencies", "bundleDependencies"];
+            const declared = kinds.filter((k) => pkg[k] && Object.keys(pkg[k]).length);
+            if (listed.length || (lock.dependencies && Object.keys(lock.dependencies).length) || declared.length) {
+              console.log("package-lock.json or package.json names packages, so a scan that found 0 is wrong");
+              process.exit(1);
+            }
+            console.log("our own check agrees: no packages at all");
+          '
+          echo "OSV-Scanner: 128 with 0 packages read from package-lock.json, and none there: the right answer for a server with no packages"

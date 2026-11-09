@@ -303,13 +303,14 @@ public final class ListTest {
       same(list(l, at(200), 8).size(), 1, "version 8 has only its own");
     });
 
-    test("the largest list answer is 41,111 bytes, under 48 KB; it uses only the escapes \\\" and \\\\, and says a year at most", () -> {
+    test("the largest list answer is 46,011 bytes, under 48 KB; it uses only the escapes \\\" and \\\\, and says a year at most", () -> {
       Listings l = listings();
 
+      // Version 65535 is a version-2 game's (FIRST_V2_VERSION is at most that), so each row has a fingerprint too
       for (int i = 0; i < 120; i++) {
         Map<String, Object> worst = game("region", "longest-region-1", "code", codeOf(i), "name", QUOTE.repeat(32), "level",
             BACKSLASH.repeat(39), "mode", QUOTE.repeat(32), "gameStyle", 255, "levelNumber", 100, "coopLobby", 255, "players", 8,
-            "maxPlayers", 8, "version", 65535, "hostMs", 9999);
+            "maxPlayers", 8, "version", 65535, "hostMs", 9999, "fingerprint", "f".repeat(32));
         same(call(l, "POST", worst).status(), 201, "game " + i);
       }
 
@@ -323,7 +324,7 @@ public final class ListTest {
       Answer answer = call(l, "GET", null, "version=65535", later);
       String text = Json.write(answer.body());
       same(Json.list(answer.body().get("games")).size(), 100, "100 games");
-      same(text.length(), 41111, "the worst case PROTOCOL.md section 4 gives");
+      same(text.length(), 46011, "the worst case PROTOCOL.md section 4 gives");
       ok(text.length() <= Routes.MOST_LIST_BYTES, "under 48 KB");
 
       for (Object g : Json.list(answer.body().get("games"))) {
@@ -561,6 +562,73 @@ public final class ListTest {
       ok(!line.contains("ABCD2345") && !line.contains("Ripley"), "with no code or name");
       same(l.tick(at(61000)).size(), 0, "and the next line comes a minute after this one");
       matches(l.tick(at(62000)).get(0), "^list: in the last 60 s: 0 games listed,", "counting only what came after");
+    });
+
+    test("a version-2 game gives its fingerprint and keeps it for the listing's life, and an older game can't give one", () -> {
+      Listings l = listings();
+      int v2 = Requests.FIRST_V2_VERSION;
+      int older = v2 - 1;
+      String fingerprint = "0123456789abcdef0123456789abcdef";
+
+      same(call(l, "POST", game("version", v2)).status(), 400, "a version-2 game without one");
+      same(call(l, "POST", game("version", older, "fingerprint", fingerprint)).status(), 400, "an older game with one");
+
+      for (Object bad : List.of("0123456789ABCDEF0123456789ABCDEF", "0123456789abcdef0123456789abcde", "0123456789abcdef0123456789abcdef0",
+          "0123456789abcdef0123456789abcdeg", "", 7L)) {
+        same(call(l, "POST", game("version", v2, "fingerprint", bad)).status(), 400, "fingerprint " + bad);
+      }
+
+      Map<String, Object> posted = game("version", v2, "fingerprint", fingerprint);
+      String owner = ownerOf(call(l, "POST", posted));
+      List<Map<String, Object>> v2Games = list(l, NOW, v2);
+      same(v2Games.size(), 1, "it's listed");
+      same(v2Games.get(0).get("fingerprint"), fingerprint, "with its fingerprint");
+
+      Map<String, Object> older1 = game("version", older, "code", "WXYZ6789");
+      same(call(l, "POST", older1).status(), 201, "an older game with none is listed");
+      ok(!list(l, NOW, older).get(0).containsKey("fingerprint"), "and its row has no fingerprint field at all");
+
+      same(call(l, "PUT", owned(owner, with(posted, "players", 2))).status(), 204, "a PUT with the same fingerprint");
+      same(call(l, "PUT", owned(owner, with(posted, "fingerprint", "f".repeat(32)))).status(), 403, "a PUT with another");
+      Map<String, Object> without = new LinkedHashMap<>(posted);
+      without.remove("fingerprint");
+      same(call(l, "PUT", owned(owner, without)).status(), 400, "a PUT without one");
+      same(call(l, "PUT", owned(owner, with(without, "version", older))).status(), 403, "a PUT that changes it to an older version, without one");
+      same(list(l, NOW, v2).get(0).get("fingerprint"), fingerprint, "it still has the one it was listed with");
+    });
+
+    test("&code= gives only that code's games of that version, from every region, and nothing if there are none", () -> {
+      Listings l = listings();
+      same(call(l, "POST", game("code", "ABCD2345")).status(), 201, "virginia's ABCD2345");
+      same(call(l, "POST", game("region", "paris", "code", "ABCD2345")).status(), 201, "paris's ABCD2345");
+      same(call(l, "POST", game("code", "WXYZ6789")).status(), 201, "another code");
+      same(call(l, "POST", game("region", "paris", "code", "ABCD2345", "version", 8)).status(), 409, "the same game again, of another version");
+
+      Answer both = call(l, "GET", null, "version=7&code=ABCD2345", NOW);
+      same(both.status(), 200, "a code's games");
+      List<Object> found = Json.list(both.body().get("games"));
+      same(found.size(), 2, "both regions' games with that code");
+
+      for (Object g : found) {
+        same(Json.object(g).get("code"), "ABCD2345", "only that code");
+      }
+
+      Answer none = call(l, "GET", null, "version=7&code=QRST2345", NOW);
+      same(none.status(), 200, "a code nobody listed is no error");
+      same(Json.list(none.body().get("games")).size(), 0, "just no games");
+      same(Json.list(call(l, "GET", null, "version=8&code=ABCD2345", NOW).body().get("games")).size(), 0, "nor of another version");
+
+      for (String q : List.of("version=7&code=", "version=7&code=abcd2345", "version=7&code=ABCD234", "version=7&code=ABCD23456",
+          "version=7&code=ABCD2340", "version=7&code=ABCD2345&x=1", "version=7&code=ABCD2345&code=ABCD2345", "code=ABCD2345",
+          "code=ABCD2345&version=7")) {
+        same(call(l, "GET", null, q, NOW).status(), 400, "query \"" + q + "\"");
+      }
+    });
+
+    // While FIRST_V2_VERSION is the placeholder, this fails, so the list can't be merged with it. See Requests.java: whoever sets the
+    // real number takes this test out in the same change.
+    test("the first version-2 network version is the real one, not the placeholder", () -> {
+      ok(Requests.FIRST_V2_VERSION != 65535, "Requests.FIRST_V2_VERSION is still the placeholder: ask Secondary for the real number");
     });
   }
 

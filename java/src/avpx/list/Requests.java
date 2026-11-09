@@ -20,7 +20,8 @@ import java.util.regex.Pattern;
 // - a name or mode is 1 to 32 printable ASCII characters (0x20 to 0x7E), and a level's name 1 to 39, so nothing in it can be a line break,
 //   a control character or anything a screen or a log could take for something else;
 // - a number is a whole number in its range, never text, a fraction or something huge;
-// - a pass and an owner key are exactly 32 hex digits, a code exactly 8 code letters, a region a region name (Pass.java).
+// - a pass, an owner key and a fingerprint are exactly 32 hex digits, a code exactly 8 code letters, a region a region name (Pass.java);
+// - a fingerprint comes with a game of network version FIRST_V2_VERSION or newer, and with no other.
 // Nothing here writes anything anywhere.
 public final class Requests {
   private Requests() {
@@ -36,11 +37,22 @@ public final class Requests {
   static final int MOST_COOP_LOBBY = 255;            // coop_lobby.h's states
   static final int MOST_HOST_MILLISECONDS = 9999;    // 0 means the host didn't measure it
 
+  // The first network version whose games speak handshake B (CRYPTO.md section 8), where a joiner checks the host is the one the list
+  // named. A game of this version or a newer one must give its fingerprint, and one of an older version can't: it couldn't use one, and
+  // an older game's reader refuses a field it doesn't know. The game names the same number.
+  // PLACEHOLDER: the real number comes from Secondary with the v2 game side's pull request (a used network version is never used again).
+  // ListTest's "the first version-2 network version is the real one" fails while this is the placeholder, so it can't be merged by
+  // mistake. Whoever sets the number takes that test out in the same change.
+  public static final int FIRST_V2_VERSION = 65535;
+
   // A body is one object with nothing nested in it
   private static final int BODY_DEPTH = 1;
 
   private static final Pattern HEX_16_BYTES = Pattern.compile("[0-9a-f]{32}");
-  private static final Pattern LIST_QUERY = Pattern.compile("version=([1-9][0-9]{0,4})");
+
+  // version=N, and for a code someone typed, &code= and its 8 code letters. The code is matched loosely here and checked by checkCode,
+  // so a code has one rule everywhere.
+  private static final Pattern LIST_QUERY = Pattern.compile("version=([1-9][0-9]{0,4})(?:&code=([^&]*))?");
 
   // A reason a request is refused, with the HTTP status it gets. The words go back to the asker, so they never hold anything it sent.
   public static final class Refusal extends Exception {
@@ -57,9 +69,14 @@ public final class Requests {
     }
   }
 
-  // What a game's listing shows, as a POST or PUT sent it, every field checked
+  // What a game's listing shows, as a POST or PUT sent it, every field checked. fingerprint is the host identity's fingerprint for this
+  // run, as 32 hex digits (CRYPTO.md section 8), on a game of version FIRST_V2_VERSION or newer, and null on an older one.
   public record Listing(String region, String code, long passTime, String name, String level, String mode, int gameStyle,
-      int levelNumber, int coopLobby, int players, int maxPlayers, int version, int hostMs) {
+      int levelNumber, int coopLobby, int players, int maxPlayers, int version, int hostMs, String fingerprint) {
+  }
+
+  // What a GET /v1/games asks for: the games of one network version, and only those with this code, or all of them if code is null
+  public record ListQuery(int version, String code) {
   }
 
   // What a POST or PUT may put on the list: the owner key (a PUT's only, null for a POST), the pass, and the listing. Only the pass's
@@ -84,8 +101,13 @@ public final class Requests {
     return value instanceof Long n && n >= least && n <= most;
   }
 
-  // The body of a POST, PUT or DELETE, from its bytes: one JSON object with exactly the fields named in `fields`, all of them there
+  // The body of a POST, PUT or DELETE, from its bytes: one JSON object with exactly the fields named in `fields`, all of them there,
+  // and also `optional` if that isn't null and the body has it
   static Map<String, Object> parseBody(byte[] bytes, List<String> fields) throws Refusal {
+    return parseBody(bytes, fields, null);
+  }
+
+  static Map<String, Object> parseBody(byte[] bytes, List<String> fields, String optional) throws Refusal {
     if (bytes == null || bytes.length == 0 || bytes.length > MOST_BODY_BYTES) {
       throw new Refusal(400, "the body must be JSON, 1 to 1024 bytes");
     }
@@ -99,11 +121,23 @@ public final class Requests {
       throw new Refusal(400, "the body must be one JSON object, as PROTOCOL.md section 4 writes it: " + e.getMessage());
     }
 
-    if (value.size() != fields.size() || !value.keySet().containsAll(fields)) {
-      throw new Refusal(400, "the body must have exactly these fields: " + String.join(", ", fields));
+    int expected = fields.size() + (optional != null && value.containsKey(optional) ? 1 : 0);
+
+    if (value.size() != expected || !value.keySet().containsAll(fields)) {
+      throw new Refusal(400, "the body must have exactly these fields: " + String.join(", ", fields)
+          + (optional != null ? ", and " + optional + " where PROTOCOL.md section 4 says" : ""));
     }
 
     return value;
+  }
+
+  // A host identity's fingerprint: 32 hex digits, small letters, kept as that text
+  static String checkFingerprint(Object value) throws Refusal {
+    if (!(value instanceof String text) || !HEX_16_BYTES.matcher(text).matches()) {
+      throw new Refusal(400, "fingerprint must be 32 hex digits, small letters");
+    }
+
+    return text;
   }
 
   // 16 bytes written as 32 hex digits, small letters (a pass, or an owner key), as bytes
@@ -145,9 +179,9 @@ public final class Requests {
       List<String> fields = new ArrayList<>();
       fields.add("owner");
       fields.addAll(LISTING_FIELDS);
-      v = parseBody(bytes, fields);
+      v = parseBody(bytes, fields, "fingerprint");
     } else {
-      v = parseBody(bytes, LISTING_FIELDS);
+      v = parseBody(bytes, LISTING_FIELDS, "fingerprint");
     }
 
     byte[] owner = withOwner ? parseHex16(v.get("owner"), "owner") : null;
@@ -186,9 +220,24 @@ public final class Requests {
       throw new Refusal(400, "hostMs must be a whole number, 0 to 9999");
     }
 
+    // A fingerprint goes with a game that speaks handshake B, and only with one: a joiner of that version refuses a host it can't check,
+    // and an older game couldn't use one
+    boolean speaksHandshakeB = whole(v, "version") >= FIRST_V2_VERSION;
+    String fingerprint = null;
+
+    if (v.containsKey("fingerprint")) {
+      if (!speaksHandshakeB) {
+        throw new Refusal(400, "fingerprint is only for a game of network version " + FIRST_V2_VERSION + " or newer");
+      }
+
+      fingerprint = checkFingerprint(v.get("fingerprint"));
+    } else if (speaksHandshakeB) {
+      throw new Refusal(400, "a game of network version " + FIRST_V2_VERSION + " or newer must give its fingerprint");
+    }
+
     Listing listing = new Listing(region, code, (Long) v.get("passTime"), (String) v.get("name"), (String) v.get("level"),
         (String) v.get("mode"), whole(v, "gameStyle"), whole(v, "levelNumber"), whole(v, "coopLobby"), whole(v, "players"),
-        whole(v, "maxPlayers"), whole(v, "version"), whole(v, "hostMs"));
+        whole(v, "maxPlayers"), whole(v, "version"), whole(v, "hostMs"), fingerprint);
     return new Posted(owner, pass, listing);
   }
 
@@ -205,15 +254,17 @@ public final class Requests {
     }
   }
 
-  // The one thing a GET's query may say: version=N, the game's network version, 1 to 65535. Anything else in it is refused.
-  public static int parseListQuery(String query) throws Refusal {
+  // What a GET's query may say: version=N, the game's network version, 1 to 65535, and after it, for a code someone typed, &code= and
+  // its 8 code letters. Anything else in it is refused.
+  public static ListQuery parseListQuery(String query) throws Refusal {
     Matcher match = LIST_QUERY.matcher(query == null ? "" : query);
     long version = match.matches() ? Json.digitsValue(match.group(1), MOST_VERSION) : -1;
 
     if (version < 1) {
-      throw new Refusal(400, "the query must be version=N, N from 1 to 65535");
+      throw new Refusal(400, "the query must be version=N, N from 1 to 65535, and may go on with &code= and 8 code letters");
     }
 
-    return (int) version;
+    String code = match.group(2) == null ? null : checkCode(match.group(2));
+    return new ListQuery((int) version, code);
   }
 }

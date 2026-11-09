@@ -49,7 +49,8 @@ import javax.net.ssl.TrustManagerFactory;
 // With --installed it reads the server's own settings, /etc/avpx/settings.json, as the server does: the ports, the region, the relays the
 // list should name, and the certificate file. It trusts only that certificate, checks it is for this machine's own relay host in the
 // settings (or the DNS name --name gives), and leaves out the 6 log checks (its log is the journal). Its one game is listed, and taken
-// down, under network version 65535, which no game uses, so no player ever sees it.
+// down, under network version 65535, which no game uses, so no player ever sees it. That's at or past the first version-2 network
+// version, whatever number that is, so the listing comes with a fingerprint (a made-up one: nobody joins it by handshake B).
 //
 // A RELAY-ONLY MACHINE (a later region's: its settings have no list, deploy/settings.relay-only.example.json) gets the relay's checks
 // only: the control port answering, a whole game through the relay's ports, and the pass in HOST_OPENED being this relay's own, for its
@@ -75,6 +76,8 @@ public final class Smoke {
   private static final String HOST = "127.0.0.1";
   // The network version its game is listed under: one no game uses, so a player never sees it
   private static final int VERSION = 65535;
+  // The fingerprint its listing gives, as a version-2 game's must (PROTOCOL.md section 4). Made up, and plainly so
+  private static final String FINGERPRINT = "00112233445566778899aabbccddeeff";
   private static final Path INSTALLED_SETTINGS = Path.of("/etc/avpx/settings.json");
   private static final Pattern DNS_NAME = Pattern.compile("[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*");
 
@@ -347,7 +350,8 @@ public final class Smoke {
   private static String listing(String owner, String code, String pass, long passTime, int players) {
     return "{" + (owner == null ? "" : "\"owner\":\"" + owner + "\",") + "\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"pass\":\"" + pass
         + "\",\"passTime\":" + passTime + ",\"name\":\"Smoke test\",\"level\":\"Genshd1\",\"mode\":\"Coop\",\"gameStyle\":3,\"levelNumber\":12,"
-        + "\"coopLobby\":0,\"players\":" + players + ",\"maxPlayers\":4,\"version\":" + VERSION + ",\"hostMs\":" + hostMs + "}";
+        + "\"coopLobby\":0,\"players\":" + players + ",\"maxPlayers\":4,\"version\":" + VERSION + ",\"fingerprint\":\"" + FINGERPRINT
+        + "\",\"hostMs\":" + hostMs + "}";
   }
 
   // How many games a GET /v1/games answer holds, counted from its text
@@ -430,8 +434,9 @@ public final class Smoke {
         owner = ownerFound.matches() ? ownerFound.group(1) : "";
         Reply shown = api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null);
         check(games(shown) == 1 && shown.body().contains("\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"name\":\"Smoke test\"")
-            && shown.body().contains("\"levelNumber\":12") && !shown.body().contains(owner) && !shown.body().contains(pass),
-            "the listing shows, with no owner key or pass in it");
+            && shown.body().contains("\"levelNumber\":12") && shown.body().contains("\"version\":" + VERSION + ",\"fingerprint\":\"" + FINGERPRINT + "\"")
+            && !shown.body().contains(owner) && !shown.body().contains(pass),
+            "the listing shows, with its fingerprint and no owner key or pass in it");
       } else {
         // No list here to check the pass, so it's checked by hand: this relay's own, for its region
         check(Arrays.equals(opened.pass(), passFor(passKey, c.region(), code, opened.passTime())),

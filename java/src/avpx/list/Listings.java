@@ -13,6 +13,7 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 // What the list holds: the games hosts have listed, each checked with its relay's pass. Written 2026-11-08 by Melanikus for AVPx Dedicated
 // Server, from list/listings.js.
@@ -164,6 +165,12 @@ public final class Listings {
       throw new Refusal(403, "that is not the owner key of that listing");
     }
 
+    // A listing's host is the same for its whole life: a game that starts again makes a new listing. So a PUT can't change the
+    // fingerprint a joiner is told to check, nor give one to a listing that had none, nor take it away (a change of version would).
+    if (!Objects.equals(listing.fingerprint(), old.shown.fingerprint())) {
+      throw new Refusal(403, "that is not the fingerprint that game was listed with");
+    }
+
     old.shown = listing;
     old.renewedAt = now;
     counts.renewed++;
@@ -190,12 +197,14 @@ public final class Listings {
   record Shown(Listing listing, long listedAt) {
   }
 
-  // The live listings of one network version, the newest first, at most `most`
-  List<Shown> games(int version, long now, int most) {
+  // The live listings of one network version, and if code isn't null only those with that code (one a region at most), the newest
+  // first, at most `most`
+  List<Shown> games(int version, String code, long now, int most) {
     List<Entry> live = new ArrayList<>();
 
     for (Entry entry : byGame.values()) {
-      if (entry.shown.version() == version && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
+      if (entry.shown.version() == version && (code == null || entry.shown.code().equals(code))
+          && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
         live.add(entry);
       }
     }

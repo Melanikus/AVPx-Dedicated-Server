@@ -414,7 +414,7 @@ file: java/src/avpx/list/Requests.java
 check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
-    if (value.size() != fields.size() || !value.keySet().containsAll(fields)) {
+    if (value.size() != expected || !value.keySet().containsAll(fields)) {
 <<< to
     if (!value.keySet().containsAll(fields)) {
 >>>
@@ -460,7 +460,7 @@ check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
     if (version < 1) {
-      throw new Refusal(400, "the query must be version=N, N from 1 to 65535");
+      throw new Refusal(400, "the query must be version=N, N from 1 to 65535, and may go on with &code= and 8 code letters");
     }
 <<< to
     if (version < 0) {
@@ -515,9 +515,9 @@ file: java/src/avpx/list/Listings.java
       throw new Refusal(403, "that is not the owner key of that listing");
     }
 
-    old.shown = listing;
+    // A listing's host is the same for its whole life: a game that starts again makes a new listing. So a PUT can't change the
 <<< to
-    old.shown = listing;
+    // A listing's host is the same for its whole life: a game that starts again makes a new listing. So a PUT can't change the
 >>>
 
 === anyone may take a listing down
@@ -546,9 +546,10 @@ file: java/src/avpx/list/Listings.java
 check: tests
 file: java/src/avpx/list/Listings.java
 <<< from
-      if (entry.shown.version() == version && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
+      if (entry.shown.version() == version && (code == null || entry.shown.code().equals(code))
+          && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
 <<< to
-      if (entry.shown.version() == version) {
+      if (entry.shown.version() == version && (code == null || entry.shown.code().equals(code))) {
 >>>
 
 === no cap on listings
@@ -616,9 +617,9 @@ file: java/src/avpx/list/Routes.java
 check: tests
 file: java/src/avpx/list/Routes.java
 <<< from
-        for (Listings.Shown shown : listings.games(version, now, MOST_GAMES)) {
+        for (Listings.Shown shown : listings.games(asked.version(), asked.code(), now, MOST_GAMES)) {
 <<< to
-        for (Listings.Shown shown : listings.games(version, now, Integer.MAX_VALUE)) {
+        for (Listings.Shown shown : listings.games(asked.version(), asked.code(), now, Integer.MAX_VALUE)) {
 >>>
 
 === a GET /v1/games with a body
@@ -1444,4 +1445,70 @@ file: java/src/avpx/relay/RelaySockets.java
           closeQuietly(channel);
           continue;
         }
+>>>
+
+# ----- The list's fingerprint and &code= (version-2 games; Requests.java, Listings.java, Routes.java)
+
+=== a version-2 game is listed without its fingerprint
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    } else if (speaksHandshakeB) {
+      throw new Refusal(400, "a game of network version " + FIRST_V2_VERSION + " or newer must give its fingerprint");
+    }
+<<< to
+    }
+>>>
+
+=== an older game may give a fingerprint
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+      if (!speaksHandshakeB) {
+        throw new Refusal(400, "fingerprint is only for a game of network version " + FIRST_V2_VERSION + " or newer");
+      }
+<<< to
+>>>
+
+=== a fingerprint of any shape
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    if (!(value instanceof String text) || !HEX_16_BYTES.matcher(text).matches()) {
+      throw new Refusal(400, "fingerprint must be 32 hex digits, small letters");
+    }
+
+    return text;
+<<< to
+    return String.valueOf(value);
+>>>
+
+=== a PUT may change the fingerprint
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (!Objects.equals(listing.fingerprint(), old.shown.fingerprint())) {
+      throw new Refusal(403, "that is not the fingerprint that game was listed with");
+    }
+<<< to
+>>>
+
+=== &code= gives every code's games
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+      if (entry.shown.version() == version && (code == null || entry.shown.code().equals(code))
+          && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
+<<< to
+      if (entry.shown.version() == version && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
+>>>
+
+=== a version-2 game's row leaves its fingerprint out
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+          if (g.fingerprint() != null) {
+            game.put("fingerprint", g.fingerprint());
+          }
+<<< to
 >>>

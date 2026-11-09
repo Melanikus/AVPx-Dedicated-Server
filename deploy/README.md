@@ -46,11 +46,12 @@ This is the machine for SERVER-BLOCKERS.md's item 5: a first deploy to a machine
    ```
    apt update && apt full-upgrade -y && apt install -y unattended-upgrades git curl gpg
    ```
-3. **The firewall on the machine itself,** the same as Lightsail's. Put your IP in place of `YOUR.IP`:
+3. **The firewall on the machine itself:** everything in refused, but SSH.
    ```
-   ufw default deny incoming && ufw default allow outgoing && ufw allow from YOUR.IP to any port 22 proto tcp && ufw --force enable
+   ufw default deny incoming && ufw default allow outgoing && ufw allow 22/tcp && ufw --force enable
    ```
-   Lightsail's browser terminal reaches the machine through AWS's own addresses, so if it stops connecting after this, also run `ufw allow 22/tcp`. Lightsail's firewall from step B still holds SSH to your address. (Not yet checked on a real machine.)
+   - It lets SSH in from anywhere, and leaves narrowing that down to Lightsail's firewall from step B (your IP, plus Lightsail's browser terminal). The browser terminal connects from AWS's own addresses, so narrowing it here too would lock it out.
+   - Everything else, the server's ports included, stays shut twice over: in Lightsail and here.
 4. **Two users with no rights, which can't log in:**
    ```
    useradd --system --no-create-home --shell /usr/sbin/nologin avpx

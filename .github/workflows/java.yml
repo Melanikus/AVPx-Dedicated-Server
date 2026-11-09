@@ -1,0 +1,95 @@
+# The Java server's checks (java/): its tests, the same jar from the same code, and CodeQL. Written 2026-11-08 by Melanikus for AVPx
+# Dedicated Server.
+#
+# Every check here fails the change if it fails (GATES.md). Every action is pinned to a full commit hash, with its version in a comment
+# (CODING-STANDARD.md rule 7), and the JDK is fetched and checked by java/tools/get-jdk.sh, never by an action.
+name: Java
+
+on:
+  pull_request:
+  push:
+    branches: [main, java]
+
+# Nothing here may write to the repository. CodeQL alone may write its findings, in its own job.
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    name: Java tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The pinned JDK, checked by its signature, its sha256 and its version before it runs
+        run: |
+          sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
+          echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
+
+      # The live tests open sockets on 127.0.0.1 only, and must all run here: with AVPX_LIVE=1 a live test that doesn't run fails
+      - name: Build, and run every test, the live ones too
+        env:
+          AVPX_LIVE: '1'
+        run: sh java/build.sh
+
+      - name: The same code makes the same jar, byte for byte
+        run: |
+          first=$(sha256sum java/build/avpx-server.jar | cut -d ' ' -f 1)
+          sh java/build.sh > /dev/null
+          second=$(sha256sum java/build/avpx-server.jar | cut -d ' ' -f 1)
+          echo "first build $first, second build $second"
+          test "$first" = "$second"
+
+  codeql:
+    name: CodeQL (Java)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The pinned JDK, checked as above
+        run: |
+          sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
+          echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
+
+      - uses: github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        with:
+          languages: java-kotlin
+          build-mode: manual
+          queries: security-and-quality
+
+      # CodeQL reads the code as javac compiles it: build.sh compiles every .java file in java/, the server's and the tests'
+      - name: Build, so CodeQL sees every file compiled
+        run: sh java/build.sh
+
+      - uses: github/codeql-action/analyze@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        with:
+          category: java
+          output: ${{ runner.temp }}/codeql
+
+      # Any finding at any severity fails the check (GATES.md): the results are counted from CodeQL's own file, not from its summary
+      - name: No findings at all
+        run: |
+          found=$(jq '[.runs[].results[]] | length' "$RUNNER_TEMP"/codeql/*.sarif)
+          echo "CodeQL found $found"
+          test "$found" = "0"
+
+      # A blind spot fails the gate too: every .java file in java/ must be in what CodeQL read
+      - name: CodeQL read every Java file
+        run: |
+          tracked=$(git ls-files 'java/*.java' | wc -l)
+          echo "$tracked Java files are tracked"
+          test "$tracked" -gt 0
+          for f in $(git ls-files 'java/*.java'); do
+            jq -e --arg f "$f" '[.runs[].artifacts[]?.location.uri] | any(. == $f)' "$RUNNER_TEMP"/codeql/*.sarif > /dev/null \
+              || jq -e --arg f "$f" '[.runs[].invocations[]?.toolExecutionNotifications[]?.locations[]?.physicalLocation.artifactLocation.uri] | any(. == $f)' "$RUNNER_TEMP"/codeql/*.sarif > /dev/null \
+              || { echo "CodeQL didn't read $f"; exit 1; }
+          done

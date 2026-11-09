@@ -40,3 +40,5 @@ jobs:
           persist-credentials: false
       - name: remote-deploy.sh, every case and its take-outs
         run: sh deploy/test-remote-deploy.sh
+      - name: The SSM document is what remote-deploy.sh makes
+        run: sh deploy/make-ssm-document.sh --check

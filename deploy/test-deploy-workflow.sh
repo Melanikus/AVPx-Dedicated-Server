@@ -9,7 +9,8 @@
 #   3. its first job runs the blockers check, in the form that refuses (no --list), and every later job needs the one before;
 #   4. only the deploy job may ask for an identity token (id-token: write, once in the file), and that job waits for "production";
 #   5. no action but checkout, and no secret: the role, machine and region come from variables;
-#   6. every check any other workflow defines is in REQUIRED, so a commit must have passed it; a check added later can't be forgotten.
+#   6. every other workflow is in REQUIRED, by its file, so a commit must have passed it, and a workflow added later can't be forgotten;
+#      and the deploy's own jobs are named "Deploy: ...", so none can stand in for a required one.
 set -eu
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -44,15 +45,14 @@ grep -q '^  contents: read$' "$file" || no 'the workflow as a whole may only rea
 if grep -E '^\s*-?\s*uses:' "$file" | grep -v 'uses: actions/checkout@' | grep -q .; then no 'no action but actions/checkout'; fi
 if grep -q 'secrets\.' "$file"; then no 'no secret is read'; fi
 
-# 6. Every check of every other workflow is required
-required=$(grep -E "^  REQUIRED: '" "$file" | sed "s/^  REQUIRED: '//; s/'\$//")
+# 6. Every other workflow is required, by its file; and the deploy's own jobs are all named "Deploy: ...", so none can stand in for one
+required=$(grep -E "^  REQUIRED: '" "$file" | sed "s/^  REQUIRED: '//; s/'$//")
 [ -n "$required" ] || no 'REQUIRED is there'
 for other in "$flows"/*.yml; do
   [ "$other" = "$file" ] && continue
-  grep -E '^    name: ' "$other" | sed 's/^    name: //' | while IFS= read -r name; do
-    case "|$required|" in *"|$name|"*) ;; *) echo "FAIL  the check \"$name\" ($(basename "$other")) is in REQUIRED"; exit 1 ;; esac
-  done || bad=$((bad + 1))
+  case " $required " in *" $(basename "$other") "*) ;; *) no "the workflow $(basename "$other") is in REQUIRED" ;; esac
 done
+if grep -E '^    name: ' "$file" | grep -v "^    name: 'Deploy: " | grep -q .; then no 'every job of deploy.yml is named "Deploy: ..."'; fi
 
 if [ "$bad" -ne 0 ]; then
   echo "$bad rules of deploy.yml don't hold"

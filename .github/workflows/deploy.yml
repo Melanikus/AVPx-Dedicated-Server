@@ -4,7 +4,9 @@
 # It's started by hand only (Actions, "Deploy", Run workflow), with the commit to deploy. Each job needs the one before, and the first
 # that fails stops it all:
 #   1. Server blockers: refuses while SERVER-BLOCKERS.md lists anything (sh deploy/check-blockers.sh). So today it always refuses.
-#   2. Gates: the commit is on main, and every check named in REQUIRED below passed on it.
+#   2. Gates: the commit is on main, and the latest run of every workflow named in REQUIRED, for a push of that very commit to main,
+#      ended in success. Runs are matched by their workflow's file, never by a check's name, so nothing else (another app's check, or
+#      this workflow's own jobs, all named "Deploy: ...") can stand in for one.
 #   3. Build: the two jars built from that commit with the pinned JDK (the server and its smoke test), and one SHA-256 of both, which
 #      goes to the machine. The machine builds them again from the same source and puts them in place only if they're byte for byte the
 #      same (deploy/remote-deploy.sh).
@@ -15,7 +17,9 @@
 #
 # The role, the machine and the region come from the repository's variables (not secrets: none of them gives access by itself), and
 # each is held to its shape; until they're set, the deploy job refuses. No action but checkout is used: the identity token is fetched
-# with curl from GitHub's own endpoint, and AWS is reached with the runner's own aws command line tool, both from GitHub's runner image.
+# with curl from GitHub's own endpoint into a file only this job can read, and the runner's own aws command line tool trades it for the
+# role itself (AWS_WEB_IDENTITY_TOKEN_FILE), so no key passes through the script. curl, jq, gh and aws come from GitHub's runner image,
+# unpinned: pinning and checking the AWS CLI (its zip is signed) is owed, as a card of its own.
 name: Deploy
 
 on:
@@ -41,12 +45,12 @@ concurrency:
 
 env:
   COMMIT: ${{ inputs.commit }}
-  # The checks a commit must have passed, by name, all of them (GATES.md)
-  REQUIRED: 'Java tests|The JDK is the newest Temurin 25|Smoke test, 38 checks, against the running server|Java take-outs|CodeQL (Java)|Snyk|Server blockers|Deploy scripts'
+  # The workflows whose latest run for the commit must have succeeded, by file, all of them (GATES.md): every one but this file
+  REQUIRED: 'java.yml blockers.yml snyk.yml'
 
 jobs:
   blockers:
-    name: Server blockers
+    name: 'Deploy: blockers'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -61,33 +65,32 @@ jobs:
         run: sh deploy/check-blockers.sh
 
   gates:
-    name: Gates
+    name: 'Deploy: gates'
     needs: blockers
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read
-      checks: read
+      actions: read
     steps:
-      - name: The commit is on main, and passed every required check
+      - name: The commit is on main, and the latest run of every required workflow for it succeeded
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           where=$(gh api "repos/$GITHUB_REPOSITORY/compare/$COMMIT...main" --jq .status)
           case "$where" in ahead|identical) echo "the commit is on main" ;; *) echo "the commit isn't on main ($where)"; exit 1 ;; esac
-          gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT/check-runs?per_page=100" --jq '.check_runs[] | "\(.name)\t\(.conclusion)"' > runs.txt
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$COMMIT&event=push&branch=main&per_page=100" > runs.json
           missing=0
-          old_ifs=$IFS
-          IFS='|'
-          for name in $REQUIRED; do
-            if grep -qxF "$(printf '%s\tsuccess' "$name")" runs.txt; then echo "passed: $name"; else echo "NOT PASSED: $name"; missing=1; fi
+          for flow in $REQUIRED; do
+            ended=$(jq -r --arg path ".github/workflows/$flow" --arg sha "$COMMIT" \
+              '[.workflow_runs[] | select(.path == $path and .head_sha == $sha)] | sort_by(.run_number, .run_attempt) | last | .conclusion // "no run"' runs.json)
+            if [ "$ended" = success ]; then echo "succeeded: $flow"; else echo "NOT SUCCEEDED: $flow ($ended)"; missing=1; fi
           done
-          IFS=$old_ifs
-          [ "$missing" -eq 0 ] || { echo 'the commit has not passed every required check'; exit 1; }
+          [ "$missing" -eq 0 ] || { echo 'the commit has not passed every required workflow'; exit 1; }
 
   build:
-    name: Build
+    name: 'Deploy: build'
     needs: gates
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -111,7 +114,7 @@ jobs:
           echo "jars=$jars" >> "$GITHUB_OUTPUT"
 
   deploy:
-    name: Deploy
+    name: 'Deploy: send'
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 45
@@ -144,20 +147,14 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: |
           set -eu
-          # GitHub's identity token for this job, for AWS (audience sts.amazonaws.com)
-          token=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
-          echo "::add-mask::$token"
-          # Traded for the role, for 15 minutes at most; the keys stay in this step only, and are masked in the log
-          creds=$(aws sts assume-role-with-web-identity --region "$REGION" --role-arn "$ROLE" --role-session-name "avpx-deploy-$GITHUB_RUN_ID" \
-            --web-identity-token "$token" --duration-seconds 900 --output json)
-          AWS_ACCESS_KEY_ID=$(printf '%s' "$creds" | jq -r .Credentials.AccessKeyId)
-          AWS_SECRET_ACCESS_KEY=$(printf '%s' "$creds" | jq -r .Credentials.SecretAccessKey)
-          AWS_SESSION_TOKEN=$(printf '%s' "$creds" | jq -r .Credentials.SessionToken)
-          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
-          echo "::add-mask::$AWS_SESSION_TOKEN"
-          export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
-          unset creds token
+          # GitHub's identity token for this job, for AWS (audience sts.amazonaws.com), into a file only this job's user can read, removed
+          # at the end. The aws tool trades it for the role itself, so no key ever passes through this script or its log.
+          umask 077
+          token_file="$RUNNER_TEMP/aws-web-identity"
+          trap 'rm -f "$token_file"' EXIT
+          curl --fail --silent --show-error --proto '=https' --tlsv1.2 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value > "$token_file"
+          export AWS_WEB_IDENTITY_TOKEN_FILE="$token_file" AWS_ROLE_ARN="$ROLE" AWS_ROLE_SESSION_NAME="avpx-deploy-$GITHUB_RUN_ID" AWS_REGION="$REGION"
           id=$(aws ssm send-command --region "$REGION" --document-name avpx-deploy --instance-ids "$MACHINE" \
             --parameters "commit=$COMMIT,jarsSha256=$JARS" --comment "AVPx deploy of $COMMIT" --query Command.CommandId --output text)
           echo "sent: command $id"

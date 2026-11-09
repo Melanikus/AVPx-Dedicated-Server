@@ -70,8 +70,8 @@ jobs:
           test "$pinned" = "$newest"
 
   # The smoke test (java/tools/Smoke.java, 38 checks from outside the process, the game's way) against the running server, with a
-  # certificate and settings of its own. Until the Node version was taken out, the same 38 checks ran against it too, and passed against
-  # both: the two spoke the same wire.
+  # certificate and settings of its own. Before the Node version was taken out, the java branch's runs of this job ran the same 38
+  # checks against the Node server too, to show the two spoke the same wire (this merged only once they had).
   smoke:
     name: Smoke test, 38 checks, against the running server
     runs-on: ubuntu-24.04

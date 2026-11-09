@@ -1,6 +1,6 @@
 # How AVPx keeps games secret, sealed and fair (protocol version 2, a design)
 
-Written 2026-11-08 by Melanikus. **This is a design, not code.** Nothing here is built yet. The game (Fifth), the Java server (Primary) and the list page (Fourth) build from it, after a fresh reviewer has read it. PROTOCOL.md stays the plain version 1 that the first test runs use. Version 2 is a new deployment: there's no mixing of the two and no negotiation.
+Written 2026-11-08 by Melanikus. **This is the design the code is built from.** Parts of it are built: the Java server's whole version 2 relay (handshake A, the sealed control channel, handshake B passed through, sealed game datagrams passed through), and on the game's side handshakes A and B, the sealed channel and sealed game datagrams, with handshake A not yet wired into the game's networking. Section 12's signed files aren't built yet (section 12.1 says what stands in for the relays directory meanwhile). The game (Fifth, Primary), the Java server (Primary) and the list page (Fourth) build from it, and a fresh reviewer reads it. PROTOCOL.md describes version 1's messages, which the first test runs use. From network version 115 on, it also carries version 2's list fields (each game's fingerprint in `GET /v1/games`, each relay's static keys in `GET /v1/relay-keys`), kept apart by the game's network version. A relay speaks one version only: relays never mix the two, and there's no negotiation.
 
 **How to read the marks:** **[CHECK]** means a fact from memory, not yet checked against the document named beside it. Every [CHECK] is confirmed, and the mark taken out, before any code is written on it. **[DECIDE]** marks a choice that belongs to the user (section 19).
 
@@ -60,7 +60,7 @@ No third-party crypto on the servers (AVP Tao 1). Each platform's own:
 
 | Platform | P-384, ECDSA, AES-GCM, SHA-384, HKDF | ML-KEM-1024, ML-DSA-87 |
 |---|---|---|
-| Java 25 (LTS) | `KeyAgreement "ECDH"`, `Signature "SHA384withECDSA"`, `Cipher "AES/GCM/NoPadding"`; HKDF through the KDF API, JEP 510, final in JDK 25. **[CHECK: the JEP's example is HKDF-SHA256. Confirm HKDF-SHA384 is among JDK 25's KDF algorithm names; if not, write HKDF by hand over HMAC-SHA384, `javax.crypto.Mac`, in java.base]** | ML-KEM, JEP 496, and ML-DSA, JEP 497, both in JDK 24, through `javax.crypto.KEM` (JEP 452) and `Signature` |
+| Java 25 (LTS) | `KeyAgreement "ECDH"`, `Signature "SHA384withECDSA"`, `Cipher "AES/GCM/NoPadding"`; HKDF over HMAC-SHA384 (`javax.crypto.Mac`, in java.base), written out in the server's Hkdf.java so one short piece of code does both the whole of HKDF and the Expand alone. **Confirmed 2026-11-09 by Primary, in code:** `"HKDF-SHA384"` is one of JDK 25's KDF names (JEP 510, final in JDK 25), and HkdfTest holds Hkdf.java to it byte for byte, and to RFC 5869's own vectors | ML-KEM, JEP 496, and ML-DSA, JEP 497, both in JDK 24, through `javax.crypto.KEM` (JEP 452) and `Signature` |
 | The game, Windows CNG (bcrypt.dll) | `BCRYPT_ECDH_P384_ALGORITHM`, `BCRYPT_ECDSA_P384_ALGORITHM`, `BCRYPT_AES_ALGORITHM` with `BCRYPT_CHAIN_MODE_GCM`, `BCRYPT_SHA384_ALGORITHM` with the HMAC flag. These have been in Windows since Windows 7 | ML-KEM and ML-DSA have been **generally available since the November 2025 update, on Windows 11 24H2 and 25H2** (at least the 2025-10 update KB5067036, per Microsoft's AD CS document), **and Windows Server 2025. Not on Windows 10.** Handles: `BCRYPT_MLKEM_ALG_HANDLE` (0x481) and `BCRYPT_MLDSA_ALG_HANDLE` (0x471), with the parameter set chosen through `BCryptSetProperty(BCRYPT_PARAMETER_SET_NAME, BCRYPT_MLKEM_PARAMETER_SET_1024 ...)`. Sources: Microsoft's Tech Community post "Post-Quantum Cryptography APIs Now Generally Available on Microsoft Platforms", and the AD CS document for the update number. Microsoft's sample page still says "prerelease"; that's out of date |
 
 The platform facts in this table were read in the official documents by PO on 2026-11-08. The two marks left are each to be confirmed once, in code, before the code relies on them.
@@ -357,6 +357,10 @@ This runs on the joiner's relay port after READY, from game to game. The relay f
 
 **Losses:** the same rule as handshake A. The joiner resends B1 and B3 on the same schedule. The host keeps its B2 and B4 for 10 s and sends them again byte for byte. **B5 can't be stood in for,** unlike A3, because it holds `nJ`, which the host needs for the check code. So the joiner sends B5 again on the same schedule until the host's first sealed datagram comes in, which the host sends only once B5 has checked.
 
+**How often a host starts B** (added 2026-11-09, from Primary's read of the game's wiring): each B the host starts costs it a B2's work (an ML-KEM encapsulation and two P-384 agreements), and a B that fails frees its place. So a port the relay has named (`NEW_JOINER`) starts at most 3 handshakes until it's named again, and a host starts at most 4 a second from all its joiners' ports together. One joiner can't make the host's game stutter by starting B over and over.
+
+**A known limit** (added 2026-11-09): the host takes the first whole B1 that comes for a joiner's port, and drops a later, different one. Someone who can put the relay's address and that port on a datagram to the host's own NAT mapping (a forged source, which also needs the host's public address and port) could get a well-formed B1 in first, so the real joiner's B times out ("the host doesn't answer"), and the joiner can try again. They can't finish B: B2 goes through the relay to the joiner the relay has bound. So it's a join denied, never a join taken. Someone on the path between them could deny it anyway, by dropping the packets.
+
 ## 9. Sealed game traffic (every ENet datagram)
 
 After the handshake (B4 checked on the joiner's side, B5 on the host's), every datagram the game's ENet sends goes as:
@@ -446,6 +450,14 @@ So a hijacked DNS name or certificate can't feed the game false relays.
 
 **The list's answers:** `GET /v2/games` answers are signed by the list key, with the time. The game refuses an answer more than 60 s old, or one with a bad signature. That protects the host fingerprints the joiner trusts (section 8). The list's own machine could still lie, so the check code (section 8) remains the last line.
 
+### 12.1 Until the relays directory exists: each relay's keys from the list, held to a fingerprint (the interim, decided 2026-11-09)
+
+The relays directory above isn't built yet. Until it is, a game gets a relay's two static public keys this way, and no other:
+- **The list gives them, one relay at a time:** `GET /v1/relay-keys?region=<region>` answers `{"region", "p384", "mlkem"}`. `p384` is the relay's static P-384 key, 194 hex digits (the 97-byte point, 0x04 then X and Y); `mlkem` is its static ML-KEM-1024 encapsulation key, 3,136 hex digits (1,568 bytes); small letters both. The query has one form: `region=` and nothing else, or `400`. A region the list doesn't know, or a version 1 relay (one with no static keys), is `404`. Asking is limited per address as `GET /v1/relays` is, the answer is at most 4 KB (its worst case is in a test), and the list's log keeps counts only, never who asked for what. PROTOCOL.md section 4 gets its row when the list's code serves it. `GET /v1/relays` stays as it is: the picker needs no keys, since a version 2 relay is timed by A0 and A0' (5.1 point 11), and only the relay a game will use needs its keys, for A1.
+- **The game holds them to a fingerprint it already has.** A relay's fingerprint is the first 16 bytes of `SHA-384("AVPX relay keys v2" || the p384 bytes || the mlkem bytes)`, written as 32 hex digits. The game's settings, under `-dev` only, name one for each region it may use: `relaykey=<region>:<fingerprint>`. The game checks the keys against it before A1. Keys that don't give it, or a region with none named, and that relay isn't used at all: nothing is sent to it, there's no going back to version 1 for it, and no going on without the check.
+- **Why the fingerprint, and not the keys, in the setting:** 3,330 hex digits are a settings line nobody can check by eye; 32 can be read aloud. The way to the list is HTTPS that Windows checks (the game's relay_list.cpp), with no pin of its own, so a certificate wrongly given out for the list's name would get past it. The fingerprint is what makes the keys this relay's, even then, and even if the list's machine lies.
+- **When the directory lands,** it takes the setting's place. A relay's fingerprint is made the same way, so the same setting can be checked against it.
+
 ## 13. The properties the user asked for, how each is met, and what tries to break it
 
 | # | Property | How it's met | What tries to break it |
@@ -529,6 +541,8 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 | A handshake being put together | 4 KB, 2 s; one per address and port, 16 at once per address, 1,000 in all |
 | Handshakes started, one address and port | 2 a second, 4 at once |
 | Handshakes started, everyone | 200 a second, 400 at once |
+| Handshakes B a host starts, one port the relay named | 3, then none until the relay names it again (section 8) |
+| Handshakes B a host starts, all its ports | 4 a second (section 8) |
 | Retries | after 0.5, 1, 2 and 4 s, then give up |
 | A finished answer kept, to send again | 10 s |
 | A sealed control message | exactly 104 bytes |
@@ -543,6 +557,7 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 | Failed tags before a session ends | 65,536 |
 | Coin reveal | 5 s |
 | A list answer's age | 60 s |
+| A relay's keys from the list (`GET /v1/relay-keys`) | at most 4 KB (section 12.1) |
 | A directory's life | 30 days |
 | Certificates | root to release and directory keys: 1 year; directory to list key: 90 days |
 
@@ -560,8 +575,6 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 
 1. **The game's post-quantum half: built from source,** so Windows 10 plays. Decided by the user on 2026-11-08 (section 3, 3.1 and 3.2): one code path everywhere, with CNG never used for ML-KEM or ML-DSA.
 
-All three are decided, and section 3.1's pins are in. What's left before code:
-- the two [CHECK] marks in section 3's table: HKDF-SHA384 among JDK 25's KDF names, and `crypto.encapsulate`'s own "Added in" line. Each is confirmed once, in code;
-- the reviewer's reading of the whole of both libraries at their pinned commits, each file's SPDX line included.
+All three are decided, and section 3.1's pins are in. Section 3's table has no [CHECK] marks left (2026-11-09): HKDF-SHA384 is confirmed in code (HkdfTest), and `crypto.encapsulate`'s went with the Node.js row when the server became Java only (de3b66f). What's left is the reviewer's reading of the whole of both libraries at their pinned commits, each file's SPDX line included.
 2. **The release key: signed by hand.** Decided 2026-11-08 (PO, under Tao 1: the secure choice is taken, and the user told).
 3. **The check code: always shown on the join screen.** Decided 2026-11-08, the same way.

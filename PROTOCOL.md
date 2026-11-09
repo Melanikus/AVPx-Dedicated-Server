@@ -174,6 +174,62 @@ Any other status, and every `{"error"}` answer, means the call didn't work. The 
 
   Anything else gets `400`.
 
+### Asking to play: access requests (version 2)
+
+A version 2 relay takes approved players only (CRYPTO.md section 6). A player asks to be approved from the game, by pressing
+**Request access**. Nothing is ever sent without that press. The owner approves by the access code the player gives him (below).
+Agreed 2026-11-09 by Fourth (the game), Primary (the server) and Third.
+
+| Call | Body | Answer |
+|---|---|---|
+| `POST /v1/access-requests` | `{"v": 1, "name", "key"}` | `200 {"v": 1, "fp", "state"}`; `400 {"v": 1, "error"}` with `name`, `key` or `shape`; `429` with `busy`; `503` with `closed` |
+
+**Fields:**
+- **v:** the layout's version, 1.
+- **name:** what the player chose; the game fills in their profile's name, which they can change. 1 to 15 bytes, each 32 to 126 but
+  not `"` or `\` (so the name never needs an escape), and no space at either end. The list shows it only to the owner.
+- **key:** the player's identity, its public halves only, exactly as the game keeps them: the P-384 key (97 bytes, 0x04 then X then
+  Y), then the ML-KEM-1024 encapsulation key (1,568). These are 1,665 bytes, written in standard base64 with no line breaks: always
+  exactly 2,220 characters, with no `=`.
+- **fp:** the fingerprint the list worked out from `key` (CRYPTO.md section 8), 32 hex digits, small letters. The list never takes a
+  fingerprint it's given. The game checks the answer's `fp` is its own, and treats it as no answer if not: that catches a list and a
+  game that work it out differently.
+- **state:** `waiting`, `approved`, `refused` or `revoked`.
+
+**What the list checks,** before it keeps anything:
+- exactly these fields, and every size;
+- the P-384 key on the curve and not the point at infinity;
+- the ML-KEM key passing FIPS 203's encapsulation key check.
+
+**What the list keeps,** for each key: its fingerprint, name, key, state and when it was first asked. No address is kept, and the log
+has counts only, never a name, key or fingerprint. One program writes the store: the list itself. The owner's approvals reach it as
+decision files, which it reads as hostile input like any request.
+
+**Asking again** is the same call, from **Check again**. There's no other call, so nobody can look up another player's state by their
+fingerprint:
+- a key already waiting or approved isn't a new request: the list keeps the name it had first, and answers with the state;
+- a key refused or revoked stays so. To ask again, the player makes a new identity.
+
+**The states move only so:** waiting to approved or refused, approved to revoked. A waiting request is forgotten after 30 days.
+
+**The access code**, shown in the game and never sent: the fingerprint's first 80 bits, read as one number with the highest byte first,
+cut into sixteen 5-bit pieces from the top, each written as a letter of `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` (section 2's code letters),
+in four groups of four with dashes between, like `ABCD-EF23-4567-89GH`. The player gives it to the owner directly, by a way the owner
+knows is them. The owner's approval takes the code, in either case, with dashes and spaces left out, and refuses unless exactly one
+waiting request has it.
+
+**Why the code, and not the list's answer, is what protects a request:** the list's HTTPS is checked by Windows, with no pin of the
+game's own (CRYPTO.md section 12.1). A certificate wrongly given out for the list's name could let someone in the middle put another
+key in a request, and answer the game as the list would. But that key makes another code, so the code the player gives the owner
+matches no waiting request of it, and it's never approved.
+
+**The limits** (section 5 says how they're kept):
+- this call's body is at most 4,096 bytes, and its answer at most 512; every other call keeps the 1,024-byte limit;
+- one request a minute from one address, and 10 an hour;
+- at most 1,000 requests waiting;
+- **`busy`:** a limit was reached, so try again later;
+- **`closed`:** the list takes no requests at all (its settings give it no store).
+
 ## 5. The abuse limits
 
 Every number is a starting point, written in one place in the code, and changed only with a reason here.

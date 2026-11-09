@@ -1,6 +1,7 @@
 {
   "about": [
     "The take-out rows tools/takeouts.js runs: each breaks one thing in a copy, and the check it names must fail. Written 2026-11-08 by Melanikus for AVPx Dedicated Server.",
+    "Made by tools/make-takeouts.js: change the rows there and run it. test/takeouts-file.test.js fails if this file and that one differ.",
     "A row is { name, check: \"tests\" or \"standard\", file, from, to }. \"from\" is in its file exactly once; a \"from\" of \"\" makes a new file whose text is \"to\".",
     "list/https.js and relay/sockets.js have no rows: their limits are tested only by test/live.test.js, which opens sockets, and take-outs run the tests without AVPX_LIVE. That is owed: rows run with the live tests, in the Tests check on GitHub.",
     "The HTTP rules in list/https.js (one request a connection, Transfer-Encoding refused, 431) are checked by test/live.test.js only, so they have no rows yet either."
@@ -544,6 +545,13 @@
       "file": "log.js",
       "from": ".replace(/[\\r\\n]/g, ' ')",
       "to": ""
+    },
+    {
+      "name": "a row added to tools/takeouts.json by hand",
+      "check": "tests",
+      "file": "tools/takeouts.json",
+      "from": "\"rows\": [",
+      "to": "\"rows\": [\n    { \"name\": \"by hand\", \"check\": \"tests\", \"file\": \"x\", \"from\": \"a\", \"to\": \"b\" },"
     },
     {
       "name": "console. in the relay",

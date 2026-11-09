@@ -1,0 +1,64 @@
+# The server as a systemd service on Ubuntu LTS. Written 2026-11-08 by Melanikus for AVPx Dedicated Server.
+#
+# It runs as its own user, avpx, which owns nothing but its settings, and can't log in. The only right it's given beyond an ordinary
+# user's is to listen on a port below 1024 (443, for HTTPS). Everything else a service can be kept from is kept from it: it can't
+# raise its rights, can't write anywhere on the machine, can't see other users' files or other processes, and starts again by itself if
+# it stops. Its log goes to the system journal (journalctl -u avpx), which holds no addresses: the server never writes one.
+#
+# Install: copy to /etc/systemd/system/avpx.service, then `systemctl daemon-reload` and `systemctl enable --now avpx`. deploy/README.md
+# has every step.
+
+[Unit]
+Description=AVPx Dedicated Server (the game list and the relay)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=avpx
+Group=avpx
+WorkingDirectory=/opt/avpx/current
+ExecStart=/opt/node/bin/node /opt/avpx/current/main.js /etc/avpx/settings.json
+Restart=on-failure
+RestartSec=5
+
+# The one right beyond an ordinary user's: to listen on 443
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+
+# What it may see and touch: nothing it doesn't need
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RemoveIPC=yes
+UMask=0077
+RestrictAddressFamilies=AF_INET AF_UNIX
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+# Not here, on purpose: ProcSubset=pid (Node reads /proc/cpuinfo), MemoryDenyWriteExecute (Node's JavaScript compiler writes code it runs),
+# and ~@resources (not proven safe for Node). Each can be added once the machine shows Node starts with it.
+
+# Its settings and certificate are read only; it writes nothing on the disk (its log goes to the journal)
+ReadOnlyPaths=/etc/avpx /opt/avpx /opt/node
+
+# Limits on what it can use, so a fault can't take the machine
+LimitNOFILE=8192
+MemoryMax=512M
+TasksMax=64
+
+[Install]
+WantedBy=multi-user.target

@@ -1445,3 +1445,17 @@ file: java/src/avpx/relay/RelaySockets.java
           continue;
         }
 >>>
+
+# ----- Version 2's ML-DSA has the empty context only (the Reviewer's V2-2; CRYPTO.md 5.1 point 16 and section 12)
+
+=== Signatures.java gives ML-DSA a parameter
+check: tests
+file: java/src/avpx/crypto/Signatures.java
+<<< from
+      Signature s = Signature.getInstance(ML_DSA);
+      s.initVerify(key);
+<<< to
+      Signature s = Signature.getInstance(ML_DSA);
+      s.initVerify(key);
+      s.setParameter(null);
+>>>

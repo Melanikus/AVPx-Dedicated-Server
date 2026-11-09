@@ -26,6 +26,8 @@ Written 2026-11-09 by Melanikus, at the owner's word: "20 years from now, we won
 
 ## 3. Your own server
 
+**This is also how anyone runs a server for their friends, today as much as in 20 years:** the same steps, the same keys of your own, and your own servers.cfg line to give them. You approve your friends yourself (section 4), and nobody else is asked.
+
 Follow deploy/README.md for the machine: the users (`avpx` runs the server, `avpx-build` builds it, neither can log in), the folders, the firewall, the service. Then make everything that is yours. **Never use a key from this repository, from a backup of ours, or from anyone else: make your own on your own machine.**
 
 1. **The list's certificate key.** The list is reached over HTTPS, and the game trusts it by the key of its certificate (its SPKI), not by any company that signs certificates. [BETA.2: deploy/README.md's certificate step.]

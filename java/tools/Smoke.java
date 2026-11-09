@@ -29,6 +29,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import javax.crypto.Mac;
+import javax.crypto.spec.SecretKeySpec;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -49,11 +51,17 @@ import javax.net.ssl.TrustManagerFactory;
 // settings (or the DNS name --name gives), and leaves out the 6 log checks (its log is the journal). Its one game is listed, and taken
 // down, under network version 65535, which no game uses, so no player ever sees it.
 //
+// A RELAY-ONLY MACHINE (a later region's: its settings have no list, deploy/settings.relay-only.example.json) gets the relay's checks
+// only: the control port answering, a whole game through the relay's ports, and the pass in HOST_OPENED being this relay's own, for its
+// region, made again here with the pass key in its settings (PROTOCOL.md section 3). The list's checks over HTTPS can't run there, and
+// the output says so at its end, so a relay-only run never reads as a full one. It exits 0 only if every check that ran passed.
+//
 // SAFE TO RUN ANYWHERE: it sends only to 127.0.0.1, and binds only there, so it can test only a server on the same machine and can never be
 // pointed at anyone else's. HTTPS trusts only list-test.pem, and checks the certificate is for "localhost" (the name the relays' list gives).
 //
-// INDEPENDENT OF THE SERVER: it uses none of the server's code. Its messages are written by hand from PROTOCOL.md section 2, and the
-// list's answers are compared as exact text, so a fault in the server's own encoder or JSON can't hide itself here.
+// INDEPENDENT OF THE SERVER: it uses none of the server's code but its settings reader (for --installed). Its messages are written by
+// hand from PROTOCOL.md section 2, a pass is made by hand from section 3, and the list's answers are compared as exact text, so a fault
+// in the server's own encoder or JSON can't hide itself here.
 //
 // Without --installed, it expects the server started with the settings CI uses: region "virginia", the list on 8443, the control port
 // 27500, relay ports 27501 to 27564, a relay whose host is "localhost", and the log in server.log (java.yml's smoke job).
@@ -78,6 +86,9 @@ public final class Smoke {
       "{\"relays\":[{\"region\":\"virginia\",\"host\":\"localhost\",\"port\":27500}]}", Path.of("list-test.pem"), Path.of("server.log"));
 
   private static Config c = CI;
+
+  // A relay-only machine's pass key, from its settings, to make its passes again by hand (null otherwise: the list checks those)
+  private static byte[] passKey;
 
   // The relay's message types, by their numbers (PROTOCOL.md section 2)
   private static final int ECHO = 14;
@@ -359,37 +370,14 @@ public final class Smoke {
       c = installed(words);
     }
 
+    boolean withList = c.certificate() != null;
     boolean withLog = c.log() != null && !words.contains("--without-log");
-    SSLContext tls = trustingOnly(c.certificate());
+    SSLContext tls = withList ? trustingOnly(c.certificate()) : null;
 
-    // Wait for the server: up to 15 s
-    Reply relays = null;
-
-    for (int i = 0; i < 75 && relays == null; i++) {
-      Reply r = api(tls, "GET", "/v1/relays", (byte[]) null);
-
-      if (r.status() == 200) {
-        relays = r;
-      } else {
-        pause(200);
-      }
-    }
-
-    check(relays != null, "the list answers over HTTPS");
-
-    if (relays == null) {
+    if (withList ? !listAnswers(tls) : !relayAnswers()) {
       finish();
       return;
     }
-
-    Reply noCa = api(SSLContext.getDefault(), "GET", "/v1/relays", (byte[]) null);
-    check(noCa.status() == 0 && noCa.error().matches("(?s).*(SSLHandshake|PKIX|certif).*"),
-        "without the test certificate, the client refuses the server", noCa.error());
-    check(relays.body().equals(c.relaysText()), "GET /v1/relays", relays.body());
-    check(relays.headers().containsKey("strict-transport-security") && "nosniff".equals(relays.headers().get("x-content-type-options")),
-        "HSTS and nosniff headers");
-    Reply empty = api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null);
-    check(empty.status() == 200 && games(empty) == 0, "GET /v1/games, empty at first");
 
     try (DatagramSocket host = udp(); DatagramSocket joiner = udp(); DatagramSocket stranger = udp()) {
       // Echo: 3 times, 100 ms apart, as the host's game would
@@ -420,16 +408,22 @@ public final class Smoke {
       byte[] token = opened.secret();
       String code = opened.code();
       String pass = HexFormat.of().formatHex(opened.pass());
+      String owner = "";
 
-      // The host lists it
-      Reply posted = api(tls, "POST", "/v1/games", listing(null, code, pass, opened.passTime(), 1));
-      Matcher ownerFound = OWNER.matcher(posted.body());
-      check(posted.status() == 201 && ownerFound.matches(), "POST /v1/games with the pass: 201 and an owner key");
-      String owner = ownerFound.matches() ? ownerFound.group(1) : "";
-      Reply shown = api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null);
-      check(games(shown) == 1 && shown.body().contains("\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"name\":\"Smoke test\"")
-          && shown.body().contains("\"levelNumber\":12") && !shown.body().contains(owner) && !shown.body().contains(pass),
-          "the listing shows, with no owner key or pass in it");
+      if (withList) {
+        // The host lists it
+        Reply posted = api(tls, "POST", "/v1/games", listing(null, code, pass, opened.passTime(), 1));
+        Matcher ownerFound = OWNER.matcher(posted.body());
+        check(posted.status() == 201 && ownerFound.matches(), "POST /v1/games with the pass: 201 and an owner key");
+        owner = ownerFound.matches() ? ownerFound.group(1) : "";
+        Reply shown = api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null);
+        check(games(shown) == 1 && shown.body().contains("\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"name\":\"Smoke test\"")
+            && shown.body().contains("\"levelNumber\":12") && !shown.body().contains(owner) && !shown.body().contains(pass),
+            "the listing shows, with no owner key or pass in it");
+      } else {
+        // No list here to check the pass, so it's checked by hand: this relay's own, for its region
+        check(Arrays.equals(opened.pass(), passFor(code, opened.passTime())), "the pass is this relay's own, for region " + c.region());
+      }
 
       // A joiner joins
       Read c2 = readOrNothing(ask(joiner, c.control(), msg(JOIN, null, code, 0, 0)));
@@ -499,8 +493,11 @@ public final class Smoke {
       Read kept = readOrNothing(ask(host, c.control(), msg(HOST_KEEP, token, null, 0, 0)));
       check(kept.type() == HOST_KEPT && kept.number() == 1 && !allZero(kept.pass()), "HOST_KEPT: 1 joiner, and a fresh pass");
       String freshPass = HexFormat.of().formatHex(kept.pass());
-      Reply put = api(tls, "PUT", "/v1/games", listing(owner, code, freshPass, kept.passTime(), 2));
-      check(put.status() == 204, "PUT with the owner key and the fresh pass: 204");
+
+      if (withList) {
+        Reply put = api(tls, "PUT", "/v1/games", listing(owner, code, freshPass, kept.passTime(), 2));
+        check(put.status() == 204, "PUT with the owner key and the fresh pass: 204");
+      }
 
       // Hostile packets, from a third socket
       byte[] tooLong = new byte[65];
@@ -524,24 +521,27 @@ public final class Smoke {
       send(stranger, port, "a stranger on the joiner's port".getBytes(StandardCharsets.US_ASCII));
       check(next(host, 500) == null && next(joiner, 300) == null, "a stranger's packet on the joiner's port reaches nobody");
 
-      // Hostile HTTPS
-      check(api(tls, "POST", "/v1/games", listing(null, "ZZZZ2222", HexFormat.of().formatHex(random(16)), opened.passTime(), 1)).status() == 403,
-          "POST with a forged pass: 403");
-      byte[] spaces = new byte[2048];
-      Arrays.fill(spaces, (byte) 0x20);
-      check(api(tls, "POST", "/v1/games", spaces).status() == 413, "a 2 KB body: 413");
-      check(api(tls, "POST", "/v1/games", "{\"region\":").status() == 400, "a body that isn't JSON: 400");
-      check(api(tls, "PUT", "/v1/games", listing("f".repeat(32), code, freshPass, kept.passTime(), 1)).status() == 403,
-          "PUT with the wrong owner key: 403");
-      pause(1100);
-      check(api(tls, "GET", "/v1/games?version=" + VERSION + "?x", (byte[]) null).status() == 400, "a query with a second ?: 400");
+      if (withList) {
+        // Hostile HTTPS
+        check(api(tls, "POST", "/v1/games", listing(null, "ZZZZ2222", HexFormat.of().formatHex(random(16)), opened.passTime(), 1)).status() == 403,
+            "POST with a forged pass: 403");
+        byte[] spaces = new byte[2048];
+        Arrays.fill(spaces, (byte) 0x20);
+        check(api(tls, "POST", "/v1/games", spaces).status() == 413, "a 2 KB body: 413");
+        check(api(tls, "POST", "/v1/games", "{\"region\":").status() == 400, "a body that isn't JSON: 400");
+        check(api(tls, "PUT", "/v1/games", listing("f".repeat(32), code, freshPass, kept.passTime(), 1)).status() == 403,
+            "PUT with the wrong owner key: 403");
+        pause(1100);
+        check(api(tls, "GET", "/v1/games?version=" + VERSION + "?x", (byte[]) null).status() == 400, "a query with a second ?: 400");
 
-      // The end of the game
-      pause(1100);
-      check(api(tls, "DELETE", "/v1/games", "{\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"owner\":\"" + owner + "\"}").status() == 204,
-          "DELETE with the owner key: 204");
-      pause(1100);
-      check(games(api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null)) == 0, "the listing is gone");
+        // The end of the game
+        pause(1100);
+        check(api(tls, "DELETE", "/v1/games", "{\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"owner\":\"" + owner + "\"}").status() == 204,
+            "DELETE with the owner key: 204");
+        pause(1100);
+        check(games(api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null)) == 0, "the listing is gone");
+      }
+
       send(host, c.control(), msg(HOST_CLOSE, token, null, 0, 0));
       pause(100);
       Read c3 = readOrNothing(ask(joiner, c.control(), msg(JOIN, null, code, 0, 0)));
@@ -554,16 +554,90 @@ public final class Smoke {
       }
     }
 
+    if (!withList) {
+      System.out.println("NOT RUN  the list's checks over HTTPS, and the log's: this machine's settings have no list (a relay-only machine)."
+          + " This is a run of the relay's checks only.");
+    }
+
     finish();
+  }
+
+  // Waits for the list, up to 15 s, then its first checks over HTTPS; false if it never answered
+  private static boolean listAnswers(SSLContext tls) throws Exception {
+    Reply relays = null;
+
+    for (int i = 0; i < 75 && relays == null; i++) {
+      Reply r = api(tls, "GET", "/v1/relays", (byte[]) null);
+
+      if (r.status() == 200) {
+        relays = r;
+      } else {
+        pause(200);
+      }
+    }
+
+    check(relays != null, "the list answers over HTTPS");
+
+    if (relays == null) {
+      return false;
+    }
+
+    Reply noCa = api(SSLContext.getDefault(), "GET", "/v1/relays", (byte[]) null);
+    check(noCa.status() == 0 && noCa.error().matches("(?s).*(SSLHandshake|PKIX|certif).*"),
+        "without the test certificate, the client refuses the server", noCa.error());
+    check(relays.body().equals(c.relaysText()), "GET /v1/relays", relays.body());
+    check(relays.headers().containsKey("strict-transport-security") && "nosniff".equals(relays.headers().get("x-content-type-options")),
+        "HSTS and nosniff headers");
+    Reply empty = api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null);
+    check(empty.status() == 200 && games(empty) == 0, "GET /v1/games, empty at first");
+    return true;
+  }
+
+  // A relay-only machine: waits for its control port to answer an ECHO, up to 15 s; false if it never did
+  private static boolean relayAnswers() throws Exception {
+    boolean answered = false;
+
+    try (DatagramSocket probe = udp()) {
+      long until = System.nanoTime() + 15_000_000_000L;
+
+      while (!answered && System.nanoTime() < until) {
+        byte[] mine = random(16);
+        Read m = readOrNothing(ask(probe, c.control(), msg(ECHO, mine, null, 0, 0)));
+        answered = m.type() == ECHO_BACK && Arrays.equals(m.secret(), mine);
+      }
+    }
+
+    check(answered, "the relay answers on its control port");
+    return answered;
+  }
+
+  // A pass, made by hand as PROTOCOL.md section 3 says: HMAC-SHA-256, with the relay's pass key, of "AVPX-PASS-1", the region, a 0 byte,
+  // the room's code and the pass time (8 bytes, little-endian), cut to 16 bytes
+  private static byte[] passFor(String code, long passTime) throws Exception {
+    Mac mac = Mac.getInstance("HmacSHA256");
+    mac.init(new SecretKeySpec(passKey, "HmacSHA256"));
+    mac.update("AVPX-PASS-1".getBytes(StandardCharsets.US_ASCII));
+    mac.update(c.region().getBytes(StandardCharsets.US_ASCII));
+    mac.update((byte) 0);
+    mac.update(code.getBytes(StandardCharsets.US_ASCII));
+
+    for (int i = 0; i < 8; i++) {
+      mac.update((byte) (passTime >>> (8 * i)));
+    }
+
+    return Arrays.copyOf(mac.doFinal(), 16);
   }
 
   // The config of the server installed on this machine, from its own settings, read as the server reads them
   private static Config installed(List<String> words) throws Exception {
     Settings settings = Settings.read(INSTALLED_SETTINGS);
     Settings.ListSettings list = settings.list();
+    int[] ports = settings.relayPorts();
 
+    // A relay-only machine: the relay's checks only (see the top), with its pass key to check its passes by hand
     if (list == null) {
-      throw new IllegalStateException("this machine's settings have no list, and the smoke test needs one: it lists a game");
+      passKey = settings.passKey();
+      return new Config(null, 0, settings.controlPort(), ports[0], ports[ports.length - 1], settings.region(), null, null, null);
     }
 
     String name = null;
@@ -590,7 +664,6 @@ public final class Smoke {
       }
     }
 
-    int[] ports = settings.relayPorts();
     return new Config(name, list.port(), settings.controlPort(), ports[0], ports[ports.length - 1], settings.region(), relays.toString(),
         Path.of(list.certFile()), null);
   }

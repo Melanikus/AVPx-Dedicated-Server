@@ -1357,3 +1357,62 @@ file: java/src/avpx/v2/SealedRelay.java
 <<< to
       if (false) {
 >>>
+
+# ----- Live rows owed from the Node version's (card #18): each one's live test must notice it
+=== an answer that doesn't say Connection: close
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+    h.put("Connection", "close");
+<<< to
+>>>
+
+=== a request's head allowed to 64 KB, not 8 KB
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+  static final int MOST_HEAD_BYTES = 8 * 1024;
+<<< to
+  static final int MOST_HEAD_BYTES = 64 * 1024;
+>>>
+
+=== an answer with no nosniff header
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+    h.put("X-Content-Type-Options", "nosniff");
+<<< to
+>>>
+
+=== no rate limit on the list: never a 429
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+      allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at)) && everyone.take(at);
+<<< to
+      allowed = true;
+>>>
+
+=== a joiner's packets sent on from the control port, not from its own relay port
+check: live
+file: java/src/avpx/relay/RelaySockets.java
+<<< from
+    DatagramChannel channel = channels.get(out.from());
+<<< to
+    DatagramChannel channel = channels.get(core.controlPort());
+>>>
+
+=== a port that can't be opened left out, and the relay started anyway
+check: live
+file: java/src/avpx/relay/RelaySockets.java
+<<< from
+        channel.bind(new InetSocketAddress(listenOn, port));
+<<< to
+        try {
+          channel.bind(new InetSocketAddress(listenOn, port));
+        } catch (IOException taken) {
+          channels.remove(port);
+          closeQuietly(channel);
+          continue;
+        }
+>>>

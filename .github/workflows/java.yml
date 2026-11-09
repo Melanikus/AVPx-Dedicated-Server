@@ -168,6 +168,29 @@ jobs:
           cat node-server.out
           exit "$status"
 
+      # A relay-only machine (a later region's: its settings have no list) gets the relay's checks only, through --installed as the deploy's
+      # health check runs it. The run must pass every check that ran, and must say the list's didn't, so it never reads as a full pass.
+      - name: A relay-only Java server, and Smoke --installed against it
+        run: |
+          dir="$RUNNER_TEMP/smoke-relay-only"
+          mkdir -p "$dir"
+          key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+          printf '{ "region": "saopaulo", "passKey": "%s", "relayAddress": "127.0.0.1", "controlPort": 27500, "relayPorts": "27501-27564" }\n' \
+            "$key" > "$dir/settings.json"
+          sudo install -m 0644 "$dir/settings.json" /etc/avpx/settings.json
+          cd "$dir"
+          "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-server.jar" > server.out 2>&1 &
+          server=$!
+          status=0
+          "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" --installed > smoke.out 2>&1 || status=$?
+          kill "$server"
+          wait "$server" || true
+          cat smoke.out
+          echo "----- what the relay-only server wrote to its screen"
+          cat server.out
+          grep -q '^NOT RUN  the list' smoke.out || { echo "the relay-only run didn't say the list's checks were left out"; exit 1; }
+          exit "$status"
+
   takeouts:
     name: Java take-outs
     runs-on: ubuntu-24.04

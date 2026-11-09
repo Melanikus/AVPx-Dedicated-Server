@@ -93,6 +93,16 @@ public final class LiveTest {
 
   // The next packet s gets, or null if none comes within a second
   private static byte[] next(DatagramSocket s) throws IOException {
+    Got got = nextWithPort(s);
+    return got == null ? null : got.data();
+  }
+
+  // A packet, and the port it came from
+  private record Got(byte[] data, int fromPort) {
+  }
+
+  // The next packet s gets, with the port it came from, or null if none comes within a second
+  private static Got nextWithPort(DatagramSocket s) throws IOException {
     DatagramPacket packet = new DatagramPacket(new byte[2048], 2048);
 
     try {
@@ -103,7 +113,7 @@ public final class LiveTest {
 
     byte[] out = new byte[packet.getLength()];
     System.arraycopy(packet.getData(), 0, out, 0, packet.getLength());
-    return out;
+    return new Got(out, packet.getPort());
   }
 
   private static void sendTo(DatagramSocket s, int port, byte[] data) throws IOException {
@@ -315,7 +325,9 @@ public final class LiveTest {
         same(ready.type(), Type.READY, "READY");
 
         sendTo(joiner, joined.port(), latin1("an ENet packet"));
-        same(text(next(host)), "an ENet packet", "the joiner's packet reaches the host, unchanged");
+        Got passed = nextWithPort(host);
+        same(passed == null ? null : text(passed.data()), "an ENet packet", "the joiner's packet reaches the host, unchanged");
+        same(passed.fromPort(), joined.port(), "from the joiner's own relay port, so the host sees each joiner as a peer of its own");
         same(ask(host, joined.port(), latin1("and its answer")), null, "the host's answer goes to the joiner, not back to the host");
       } finally {
         relay.stop();
@@ -432,6 +444,17 @@ public final class LiveTest {
         }
 
         ok(statuses.contains(429), "some of 8 quick list reads are refused: " + statuses);
+      } finally {
+        list.stop();
+      }
+    });
+
+    liveTest("a request's head is at most 8 KB: just under, it's answered; over, it's refused with 431 before anything else", () -> {
+      Running list = listServer();
+
+      try {
+        same(request(list, "GET", "/v1/relays", null, Map.of("X-Pad", "a".repeat(7000))).status(), 200, "a head of about 7 KB");
+        same(request(list, "GET", "/v1/relays", null, Map.of("X-Pad", "a".repeat(9000))).status(), 431, "a head of about 9 KB");
       } finally {
         list.stop();
       }

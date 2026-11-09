@@ -214,7 +214,7 @@ These follow the Noise framework, revision 34 (noiseprotocol.org). The post-quan
 - **MixKey(secret):** `ck, k = HKDF-SHA-384(salt = ck, input = secret)`, giving 48 then 32 bytes; `n = 0`.
 - **EncryptAndHash(text):** `c = AES-256-GCM(k, nonce(n), aad = h, text)`; then `MixHash(c)`; `n += 1`. With no `k` yet, `c = text`.
 - **DecryptAndHash** is the same backwards. A tag that fails ends the handshake.
-- **Split():** two 32-byte keys and two 12-byte IVs, one of each per direction, from `HKDF-SHA-384(salt = ck, input = empty, info = "AVPX split v2")`.
+- **Split():** two 48-byte secrets and two 12-byte IVs, one of each per direction, from `HKDF-SHA-384(salt = ck, input = empty, info = "AVPX split v2")`. A secret is never a key itself: every key for sealing is made from it (section 9).
 - **nonce(n):** the 12-byte IV XOR (4 zero bytes, then `n` as 8 bytes little-endian).
 
 **Tokens.** A Noise pattern is a list of these, done in order:
@@ -251,12 +251,13 @@ The ECDH results and the ML-KEM secrets go into the same chain one after another
 Every implementation must make the same bytes. Where Noise leaves a choice, or where this differs from Noise, it's written here.
 1. **MixKey's HKDF:** HKDF-SHA-384 (RFC 5869) with salt `ck`, input the secret, and **empty info**, giving 80 bytes: the new `ck` (48), then `k` (32). That's exactly Noise's two-output HKDF.
 2. **The handshake's nonce,** before Split: the IV is 12 zero bytes, so the nonce is 4 zero bytes, then `n` as 8 bytes **little-endian**. **Noise itself writes `n` big-endian for AES-GCM; this differs on purpose, the same as section 9's sealed datagrams. Don't "fix" it.**
-3. **Split's 88 bytes,** from HKDF-SHA-384(salt `ck`, input empty, info "AVPX split v2"), in this order: the key initiator-to-responder (32), the key responder-to-initiator (32), the IV initiator-to-responder (12), the IV responder-to-initiator (12).
+3. **Split's 120 bytes,** from HKDF-SHA-384(salt `ck`, input empty, info "AVPX split v2"), in this order: the secret initiator-to-responder (48), the secret responder-to-initiator (48), the IV initiator-to-responder (12), the IV responder-to-initiator (12).
+   - **Changed 2026-11-09, before any tester's build** (Secondary's reads of the game's and the server's code, finding 2.1 of each). Split gave two 32-byte keys, and epoch 0 sealed with that key while every later epoch's key was made from it: one key with two jobs, an AES-GCM key and an HKDF key. There's no known attack, but key separation rules it out, and it costs nothing to avoid. A secret is now only ever an HKDF key, and it's 48 bytes, the hash's own length, as RFC 5869 asks of a pseudorandom key (it was 32: HMAC takes that safely, but it showed the key wasn't made for the job). The Java server, the game and every sealed vector change together.
 4. **Handshake A's prologue:** the region's name in ASCII, then one 0 byte (one MixHash).
 5. **Handshake A's pre-message `<- s`,** as Noise IK has it: after the prologue, MixHash(the relay's static P-384 key, 97 bytes), then MixHash(its static ML-KEM-1024 encapsulation key, 1,568 bytes). The prologue holds no keys, so nothing is hashed twice.
 6. **The `e` token:** the initiator does MixHash(its ephemeral P-384 key, 97), then MixHash(its ephemeral ML-KEM encapsulation key, 1,568), two calls. A responder does the first only. A1's bytes, in order: e's P-384 key (97), e's encapsulation key (1,568), the ciphertext to the relay's static key (1,568), the game's static keys sealed (1,665 + 16), the tag (16): 4,930 in all (`kA1Bytes`). A2's: e's P-384 key (97), the ciphertext to the game's ephemeral key (1,568), the ciphertext to the game's static key (1,568), the session id sealed (8 + 16): 3,257 (`kA2Bytes`).
 7. **ECDH's output** is the shared point's x coordinate, 48 bytes, as Java's and CNG's ECDH give it. **Every P-384 key received is checked to be on the curve, and not the point at infinity, before it's used.**
-8. **Epochs** (section 9) **apply to the sealed control channel too.** Epoch 0's key is Split's key itself. Epoch e, from 1, is HKDF-Expand(Split's key for that direction, "AVPX epoch v2" || e as 4 bytes little-endian, 32). The IV stays Split's. The counters start at 0 in each direction.
+8. **Epochs** (section 9) **apply to the sealed control channel too.** Epoch e's key, from 0, is HKDF-Expand(Split's secret for that direction, "AVPX epoch v2" || e as 4 bytes little-endian, 32). Epoch 0 is made the same way as every other: no epoch seals with the secret itself. The IV stays Split's. The counters start at 0 in each direction.
 9. **A0 (COOKIE_ASK) and A3 headers:**
    - A0 is fragment 0 of 1, length 0, offset 0, cookie 0.
    - A3 is fragment 0 of 1, length 16, offset 0, and carries the cookie again, checked with no memory as for A1, so a forged A3 costs nothing. The relay finds A3's handshake by its id, and checks it came from A1's address and port.
@@ -462,16 +463,21 @@ After the handshake (B4 checked on the joiner's side, B5 on the host's), every d
 
 - **The overhead is 28 bytes,** so ENet's 1,400-byte packets become 1,428 bytes, under the relay's 1,500. Bytes 0-11 are the AAD, and the nonce comes from the counter.
 - **Keys:** one per direction, from Split(), then changed by counter:
-  - **an epoch is 2^20 datagrams**, and an epoch's key is `HKDF-Expand(that direction's secret, "AVPX epoch v2" || the epoch, 4 bytes, 32 bytes)`;
+  - **an epoch is 2^20 datagrams**, and every epoch's key, epoch 0's too, is `HKDF-Expand(that direction's secret, "AVPX epoch v2" || the epoch, 4 bytes, 32 bytes)`. The secret is Split's 48 bytes for that direction, and nothing ever seals with it (5.1 point 3);
   - both sides change at the same counter with no message, and each key seals at most 2^20 datagrams, far below the limits RFC 8446 section 5.5 sets for AES-GCM;
   - **a session ends after 2^32 datagrams either way, or 24 hours,** and a new handshake starts. At 60 packets a second, the counter limit is about 2 years away, so in practice it's the 24 hours.
+  - **Nothing is forward-secret inside a session, said plainly.** Each direction's secret lives as long as its session, and every epoch's key is made from it. So a copy of one side's memory, taken during a session, gives every epoch of that session, the ones already sent as well as the ones to come. What bounds that is the session's own end: 24 hours, or 2^32 datagrams, then a new handshake with new ephemeral keys, which the copy doesn't help with. Sessions before it, and after it, stay secret (section 13 property 3).
 - **The replay window: 1,024 datagrams,** as a bitmap behind the highest counter seen. Anything older, anything seen already, and any tag that fails is dropped, counted, and never answered. After 65,536 failed tags in one session, the session ends ("too many bad packets").
 - **No plaintext, ever.** Before the handshake has finished, and after a failure, no game byte is sent. There's no switch to turn sealing off.
 - **Padding game packets to fixed sizes: no, for now.** Packet sizes would show roughly what's going on (a firefight, a chat line's length). That's worth little to anyone, and padding to buckets would nearly double the relay's traffic. The handshake already uses only one size. This can be revisited.
 - **Wiping keys at the end:**
   - the game: `BCryptDestroyKey`, then `SecureZeroMemory` on every buffer that held a key or a secret;
   - Java: `Arrays.fill` on every array of ours, and `destroy()` where a key class has it.
-  - **A known limit:** Java's garbage collector and some Java key classes may leave copies we can't reach, so a memory dump of a running server can still hold keys. That's true of every managed-language server.
+  - **A known limit, and not a small one:** Java leaves copies of keys that the server can't wipe, and a busy relay makes them all the time. Named (Secondary's read of the server's code, finding 6.3):
+    - every AES-GCM seal or open, and every HMAC, makes a `new SecretKeySpec(key, ...)`, which copies the key (`Gcm.java`, `Hkdf.java`), and the `Cipher` and `Mac` keep their own key schedules;
+    - every ML-KEM encapsulation and decapsulation gives a `SecretKey` object; `getEncoded()` gives the server a copy to wipe, but the object keeps its own (`MlKem.java`);
+    - every ephemeral P-384 `KeyPair` the relay makes for A2, and its static keys, are JDK key objects that can't be destroyed (`HandshakeA.java`).
+    Each lives until the garbage collector takes it, and nothing says when. So a memory dump of a running relay holds many recent keys, not one or two. That's true of every server written in Java. The game, in C++, wipes all of its own.
 
 ## 10. Proving the host: a PAKE, or a signed identity
 

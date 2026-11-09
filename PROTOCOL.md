@@ -211,14 +211,24 @@ key again, and the store is about 20 times smaller. No address is kept, and the 
 fingerprint. One program writes the store: the list itself. The owner's approvals reach it as
 decision files, which it reads as hostile input like any request.
 
+**The owner's decisions** are files in the store's folder, named `decisions.` and a number. Each line is a fingerprint, a space,
+and `approved`, `refused`, `revoked` or `forgotten`; the last line is `end` and how many lines came before it, so a file read while
+it's still being written is refused whole, never applied in part. The lines are applied in order, all of them or none, at the
+list's next turn (about a second), and then the file is deleted. The same moves are checked again there, and a file with a move the
+states don't allow (below) is refused whole.
+
 **Asking again** is the same call, from **Check again**. There's no other call, so nobody can look up another player's state by their
 fingerprint:
 - a key already waiting or approved isn't a new request: the list keeps the name it had first, and answers with the state;
 - a key whose fingerprint is a record's but whose id isn't is refused (`400` with `key`), so a fingerprint, and the access code made
   from it, names one record only;
-- a key refused or revoked stays so. To ask again, the player makes a new identity.
+- a key refused stays so, unless the owner forgets it: then it may ask again, as a new request;
+- a key revoked stays so. To ask again, the player makes a new identity.
 
-**The states move only so:** waiting to approved or refused, approved to revoked. A waiting request is forgotten after 30 days.
+**The states move only so:** waiting to approved or refused, approved to revoked. The owner may also forget a waiting or refused
+request: its record goes, so it no longer counts against the limits below, and that key may ask again. Never an approved one (it's
+revoked, which also ends its sessions), and never a revoked one (a key taken back stays so). A waiting request is forgotten after 30
+days anyway.
 
 **The access code**, shown in the game and never sent: the fingerprint's first 80 bits, read as one number with the highest byte first,
 cut into sixteen 5-bit pieces from the top, each written as a letter of `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` (section 2's code letters),
@@ -236,6 +246,9 @@ matches no waiting request of it, and it's never approved.
 **The limits** (section 5 says how they're kept):
 - this call's body is at most 4,096 bytes, and its answer at most 512; every other call keeps the 1,024-byte limit;
 - one request a minute from one address, and 10 an hour;
+- a **new** request (a key the list doesn't have) 5 a day from one address, and 10 a day from one network: an IPv4 address's first 24
+  bits, or an IPv6 address's first 48. Asking again about a key the list has costs only the minute and hour limits. The day is the
+  address hasher's (section 5): its secret changes every 24 hours, and every count starts again with it;
 - at most 1,000 requests waiting;
 - **`busy`:** a limit was reached, so try again later;
 - **`closed`:** the list takes no requests at all (its settings give it no store).
@@ -264,7 +277,7 @@ Every number is a starting point, written in one place in the code, and changed 
 | Listings | 2,000 in all |
 | A listing with no good `POST` or `PUT` | 45 s |
 | Relays the list names | 16 |
-| Addresses the per-address limits remember | 10,000; the one heard from longest ago is forgotten first |
+| Addresses the per-address limits remember | 10,000; the one heard from longest ago is forgotten first. For the access call's limits, an address is forgotten only once its count has come all the way back: until then a new address gets `busy`, so a crowd of more than 10,000 can't start each address afresh |
 | An HTTPS request | headers 8 KB, body 1 KB; 5 s to send the headers and 5 s for the body |
 | HTTPS connections | 200 at once in all, 10 from one address |
 | HTTPS requests from one address | 5 a second, 20 at once; `GET /v1/games`, `GET /v1/relays` and `GET /v1/relay-keys` 1 a second, 5 at once |

@@ -29,6 +29,13 @@
 // relay makes from the sender's address and port, the time, and a secret of its own, and sends to that address. Only someone who gets
 // packets at that address can know it, and the relay keeps nothing to check it: it makes it again. A cookie is good for 10 to 20 s.
 //
+// PASSES (pass.js): the list may be on another machine, so it can't look a room up here. The relay puts a fresh pass in every HOST_OPENED
+// and HOST_KEPT, made with this relay's own pass key from its region, the room's code and the time; the host shows it to the list, which
+// checks it with the same key. So the time this is given (now) is the real time, Date.now(): a pass carries it to another machine.
+//
+// ECHO: anyone may ask the control port for an ECHO_BACK, to time its round trip and pick the nearest relay. The answer is the question's
+// own 16 bytes and count, to the address it came from, no bigger, and kept to the same limits as every control message. Nothing is kept.
+//
 // NO ADDRESSES ARE WRITTEN ANYWHERE (the user's ruling: no IPs). Addresses live in memory only while a game or a port needs them, and are
 // forgotten when it ends; the per-sender limits key by a hash (limits.js). The relay's lines (tick) are counts and times only. Codes,
 // tokens and tickets are never written either: a code would let anyone join.
@@ -36,6 +43,7 @@
 const crypto = require('crypto');
 const P = require('./protocol');
 const { TokenBucket, AddressHasher, PerSender } = require('./limits');
+const { kPassKeyBytes, isRegion, makePass } = require('./pass');
 
 const DEFAULTS = {
   mostGames: 500,
@@ -89,9 +97,16 @@ function sameEnd(end, address, port) {
 
 class RelayCore {
   // controlPort: the port hosts and joiners ask on. ports: the relay's other ports, one for each joiner while it's connected, all already
-  // open (main.js opens them). random(n): n random bytes. limits: anything in DEFAULTS to change.
-  constructor({ controlPort, ports, random = crypto.randomBytes, limits = {}, now = 0 }) {
+  // open (main.js opens them). region: this relay's region name, such as "virginia". passKey: this relay's pass key, 32 bytes, which the
+  // list holds too. random(n): n random bytes. limits: anything in DEFAULTS to change.
+  constructor({ controlPort, ports, region, passKey, random = crypto.randomBytes, limits = {}, now = 0 }) {
+    if (!isRegion(region) || !Buffer.isBuffer(passKey) || passKey.length !== kPassKeyBytes) {
+      throw new Error('RelayCore: a region name, and a pass key of 32 bytes');
+    }
+
     const L = { ...DEFAULTS, ...limits };
+    this.region = region;
+    this.passKey = Buffer.from(passKey);
     this.L = L;
     this.controlPort = controlPort;
     this.random = random;
@@ -122,7 +137,7 @@ class RelayCore {
   }
 
   static zeroCounts() {
-    return { opened: 0, closed: 0, expired: 0, joins: 0, refused: 0, forwardedPackets: 0, forwardedBytes: 0, tooBig: 0, overLimit: 0, notAMessage: 0, strangers: 0, portsExpired: 0 };
+    return { opened: 0, closed: 0, expired: 0, joins: 0, refused: 0, echoes: 0, forwardedPackets: 0, forwardedBytes: 0, tooBig: 0, overLimit: 0, notAMessage: 0, strangers: 0, portsExpired: 0 };
   }
 
   // ----- A packet in
@@ -206,7 +221,7 @@ class RelayCore {
         this.gamesByToken.set(game.token.toString('hex'), game);
         this.gamesPerSender.set(sender, (this.gamesPerSender.get(sender) || 0) + 1);
         this.counts.opened++;
-        return [to({ type: P.TYPE.HOST_OPENED, secret: game.token, code })];
+        return [to({ type: P.TYPE.HOST_OPENED, secret: game.token, code, ...this.passFor(game, now) })];
       }
 
       case P.TYPE.HOST_KEEP: {
@@ -219,7 +234,7 @@ class RelayCore {
         // The host's NAT may have given it a new port: the token says it's the host, so this is where it is now
         game.host = { address, port };
         game.keptAt = now;
-        return [to({ type: P.TYPE.HOST_KEPT, secret: game.token, number: game.joiners.size })];
+        return [to({ type: P.TYPE.HOST_KEPT, secret: game.token, number: game.joiners.size, ...this.passFor(game, now) })];
       }
 
       case P.TYPE.HOST_CLOSE: {
@@ -275,8 +290,14 @@ class RelayCore {
         ];
       }
 
+      case P.TYPE.ECHO:
+        // The asker's own bytes and count, straight back: the same size, to the same address, and nothing kept
+        this.counts.echoes++;
+        return [to({ type: P.TYPE.ECHO_BACK, secret: m.secret, number: m.number })];
+
       default:
-        // A message the relay sends, or a hello, which belongs on a joiner's port
+        // A message the relay sends (an ECHO_BACK among them, so two relays can't answer each other), or a hello, which belongs on a
+        // joiner's port
         this.counts.notAMessage++;
         return [];
     }
@@ -375,30 +396,12 @@ class RelayCore {
     return secret !== null && (sameSecret(secret, this.cookieFor(address, port, now, 0)) || sameSecret(secret, this.cookieFor(address, port, now, 1)));
   }
 
-  // ----- For the list (list/routes.js)
+  // ----- Passes
 
-  // The live game whose token this is (16 bytes), or null. The token is checked byte by byte in a fixed time, so how long this takes
-  // says nothing about how near a guess was.
-  gameByToken(token) {
-    if (!Buffer.isBuffer(token) || token.length !== P.kSecretBytes) {
-      return null;
-    }
-
-    const game = this.gamesByToken.get(token.toString('hex'));
-    return game && sameSecret(game.token, token) ? game : null;
-  }
-
-  // Every live game, for the list to read. A game's list entry lives on the game itself (game.listing), so it ends when the game does.
-  liveGames() {
-    return this.games.values();
-  }
-
-  // Ends a game now, as a HOST_CLOSE would
-  endGame(game) {
-    if (this.games.get(game.code.toString('latin1')) === game) {
-      this.closeGame(game);
-      this.counts.closed++;
-    }
+  // A fresh pass for a game's host to show the list: { pass, passTime }, the time in whole seconds
+  passFor(game, now) {
+    const passTime = Math.floor(now / 1000);
+    return { pass: makePass(this.passKey, this.region, game.code, passTime), passTime };
   }
 
   // ----- Endings
@@ -461,7 +464,7 @@ class RelayCore {
     }
 
     const line = `relay: in the last ${Math.round((now - this.statsAt) / 1000)} s: ${c.opened} games opened, ${c.closed} closed, ${c.expired} ended unkept; ` +
-      `${c.joins} joins, ${c.refused} refusals; forwarded ${c.forwardedPackets} packets, ${c.forwardedBytes} bytes; ` +
+      `${c.joins} joins, ${c.refused} refusals, ${c.echoes} echoes; forwarded ${c.forwardedPackets} packets, ${c.forwardedBytes} bytes; ` +
       `dropped ${c.tooBig} too big, ${c.overLimit} over a limit, ${c.notAMessage} not a message, ${c.strangers} from strangers; ${c.portsExpired} ports timed out. ` +
       `Now ${this.games.size} games, ${this.slots.size - this.free.length} of ${this.slots.size} ports in use (${pending} waiting for both ends)`;
     this.statsAt = now;

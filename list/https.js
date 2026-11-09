@@ -6,7 +6,7 @@
 // - headers at most 8 KB (Node refuses more), a body at most 1 KB (refused with 413 as soon as it's over, not after it's all come);
 // - 5 s to send the headers, and 10 s for the whole request: a sender who trickles a byte at a time is cut off;
 // - 200 connections at once in all, and 10 from one address;
-// - from one address, 5 requests a second (20 at once), and GET /v1/games 1 a second (5 at once).
+// - from one address, 5 requests a second (20 at once), and GET /v1/games and GET /v1/relays 1 a second (5 at once).
 // TLS is 1.2 or newer. Every answer is JSON, with headers that tell a browser to treat it as nothing but data, and HSTS.
 //
 // THE CERTIFICATE comes from two PEM files, the certificate (with its chain) and its private key, which a tool such as win-acme or certbot
@@ -15,6 +15,8 @@
 // written in the log and the old pair kept. The key never leaves the machine and is never written anywhere by this.
 //
 // NO ADDRESS IS WRITTEN ANYWHERE. A connection's address is only used, in memory, to key its limits through a hash (relay/limits.js).
+//
+// Once a second, the listings' tick takes down the ones not renewed in time, and once a minute gives a line of counts for the log.
 
 const fs = require('fs');
 const https = require('https');
@@ -59,10 +61,10 @@ function readCertificate(certFile, keyFile) {
   return { cert, key, stamp };
 }
 
-// The server. relay: the RelayCore whose games the list shows. certFile, keyFile: the PEM files. log(line): where its lines go.
-// now(): the time in milliseconds. hasher: the relay's AddressHasher, so one secret keys every limit. makeServer: only a test passes
-// this, to run the same code over plain HTTP on the loopback address.
-function createListServer({ relay, certFile, keyFile, log, now = Date.now, hasher, makeServer = null }) {
+// The server. listings: the Listings (listings.js) it serves. certFile, keyFile: the PEM files. log(line): where its lines go. now(): the
+// time in milliseconds. hasher: the relay's AddressHasher, so one secret keys every limit. makeServer: only a test passes this, to run the
+// same code over plain HTTP on the loopback address.
+function createListServer({ listings, certFile, keyFile, log, now = Date.now, hasher, makeServer = null }) {
   let certificate = makeServer ? null : readCertificate(certFile, keyFile);
   const options = {
     maxHeaderSize: LIMITS.mostHeaderBytes,
@@ -72,7 +74,7 @@ function createListServer({ relay, certFile, keyFile, log, now = Date.now, hashe
   };
 
   const perAddress = new PerSender({ rate: LIMITS.requestRate, burst: LIMITS.requestBurst, most: LIMITS.mostSenders, hasher });
-  const listings = new PerSender({ rate: LIMITS.listRate, burst: LIMITS.listBurst, most: LIMITS.mostSenders, hasher });
+  const lists = new PerSender({ rate: LIMITS.listRate, burst: LIMITS.listBurst, most: LIMITS.mostSenders, hasher });
   const everyone = new TokenBucket(LIMITS.everyoneRate, LIMITS.everyoneBurst);
   const open = new Map();   // hashed address -> how many connections it has open
   const counts = { requests: 0, refusedForLimits: 0, tooBig: 0 };
@@ -88,9 +90,9 @@ function createListServer({ relay, certFile, keyFile, log, now = Date.now, hashe
 
     counts.requests++;
     const [path, query = ''] = (request.url || '').split('?', 2);
-    const isList = request.method === 'GET' && path === '/v1/games';
+    const isList = request.method === 'GET' && (path === '/v1/games' || path === '/v1/relays');
 
-    if (!perAddress.allows(address, at) || (isList && !listings.allows(address, at)) || !everyone.take(at)) {
+    if (!perAddress.allows(address, at) || (isList && !lists.allows(address, at)) || !everyone.take(at)) {
       counts.refusedForLimits++;
       send(429, { error: 'too many requests: wait and try again' });
       return;
@@ -141,7 +143,7 @@ function createListServer({ relay, certFile, keyFile, log, now = Date.now, hashe
         return;
       }
 
-      const result = handle(relay, { method: request.method, path, query, body: Buffer.concat(parts) }, now());
+      const result = handle(listings, { method: request.method, path, query, body: Buffer.concat(parts) }, now());
       send(result.status, result.body);
     });
 
@@ -192,10 +194,15 @@ function createListServer({ relay, certFile, keyFile, log, now = Date.now, hashe
     look.unref();
   }
 
+  const ticker = setInterval(() => {
+    for (const line of listings.tick(now())) log(line);
+  }, 1000);
+  ticker.unref();
+
   return {
     server,
     counts,
-    stop: () => { if (look) clearInterval(look); server.close(); },
+    stop: () => { if (look) clearInterval(look); clearInterval(ticker); server.close(); },
   };
 }
 

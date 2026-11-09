@@ -1,10 +1,17 @@
 {
+  "region": "virginia",
+  "passKey": "make it with: openssl rand -hex 32",
   "relayAddress": "0.0.0.0",
   "controlPort": 27500,
   "relayPorts": "27501-27564",
-  "listAddress": "0.0.0.0",
-  "listPort": 443,
-  "certFile": "/etc/avpx/tls/fullchain.pem",
-  "keyFile": "/etc/avpx/tls/privkey.pem",
-  "logFile": ""
+  "logFile": "",
+  "list": {
+    "address": "0.0.0.0",
+    "port": 443,
+    "certFile": "/etc/avpx/tls/fullchain.pem",
+    "keyFile": "/etc/avpx/tls/privkey.pem",
+    "relays": [
+      { "region": "virginia", "host": "virginia.relay.<the domain>", "port": 27500 }
+    ]
+  }
 }

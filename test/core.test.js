@@ -5,6 +5,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 const P = require('../relay/protocol');
 const { RelayCore, makeCode } = require('../relay/core');
+const { makePass } = require('../relay/pass');
 const { seededRandom } = require('../support/seeded-random');
 
 const CONTROL = 27500;
@@ -12,8 +13,10 @@ const PORTS = [27501, 27502, 27503];
 const HOST = { address: '198.51.100.10', port: 40000 };
 const JOINER = { address: '203.0.113.20', port: 50000 };
 const STRANGER = { address: '192.0.2.30', port: 60000 };
+const REGION = 'virginia';
+const KEY = Buffer.alloc(32, 0x5a);
 
-const relay = (limits = {}) => new RelayCore({ controlPort: CONTROL, ports: PORTS, random: seededRandom(3), limits });
+const relay = (limits = {}) => new RelayCore({ controlPort: CONTROL, ports: PORTS, region: REGION, passKey: KEY, random: seededRandom(3), limits });
 const send = (r, to, from, msg, now = 0) => r.receive(to, from.address, from.port, Buffer.isBuffer(msg) ? msg : P.encode(msg), now);
 const only = (out) => { assert.strictEqual(out.length, 1, `one packet out, not ${out.length}`); return { ...out[0], m: P.decode(out[0].data) }; };
 
@@ -23,7 +26,7 @@ function openGame(r, from = HOST, now = 0) {
   assert.strictEqual(cookie.m.type, P.TYPE.COOKIE);
   const opened = only(send(r, CONTROL, from, { type: P.TYPE.HOST_OPEN, secret: cookie.m.secret }, now));
   assert.strictEqual(opened.m.type, P.TYPE.HOST_OPENED);
-  return { token: opened.m.secret, code: opened.m.code };
+  return { token: opened.m.secret, code: opened.m.code, pass: opened.m.pass, passTime: opened.m.passTime };
 }
 
 // A joiner asks to join, cookie and all: gives back what the relay sent (the answer to the joiner, and the note to the host)
@@ -120,7 +123,7 @@ test('a cookie is good for 10 to 20 s', () => {
 
 test('every answer to an address not yet proven is no bigger than its question', () => {
   const r = relay();
-  for (const msg of [{ type: P.TYPE.HOST_OPEN }, { type: P.TYPE.JOIN, code: Buffer.from('ABCD2345', 'latin1') }, { type: P.TYPE.HOST_KEEP, secret: Buffer.alloc(16, 7) }]) {
+  for (const msg of [{ type: P.TYPE.HOST_OPEN }, { type: P.TYPE.JOIN, code: Buffer.from('ABCD2345', 'latin1') }, { type: P.TYPE.HOST_KEEP, secret: Buffer.alloc(16, 7) }, { type: P.TYPE.ECHO, secret: Buffer.alloc(16, 3), number: 1 }]) {
     const question = P.encode(msg);
     for (const answer of r.receive(CONTROL, STRANGER.address, STRANGER.port, question, 0)) {
       assert.ok(answer.data.length <= question.length, `answer to type ${msg.type}`);
@@ -252,7 +255,56 @@ test('anything on the control port that isn\'t a message is dropped, as are mess
   assert.deepStrictEqual(send(r, CONTROL, STRANGER, Buffer.from('hello')), []);
   assert.deepStrictEqual(send(r, CONTROL, STRANGER, { type: P.TYPE.HOST_OPENED, secret: Buffer.alloc(16, 1), code: Buffer.from('ABCD2345', 'latin1') }), []);
   assert.deepStrictEqual(send(r, CONTROL, STRANGER, { type: P.TYPE.JOINER_HELLO, secret: Buffer.alloc(16, 1) }), []);
+  assert.deepStrictEqual(send(r, CONTROL, STRANGER, { type: P.TYPE.ECHO_BACK, secret: Buffer.alloc(16, 1), number: 1 }), [], 'an ECHO_BACK, so two relays can\'t answer each other');
+  assert.deepStrictEqual(send(r, CONTROL, STRANGER, { type: P.TYPE.COOKIE, secret: Buffer.alloc(16, 1) }), []);
+  assert.deepStrictEqual(send(r, CONTROL, STRANGER, { type: P.TYPE.REFUSED, number: 1 }), []);
   assert.deepStrictEqual(send(r, 1234, STRANGER, Buffer.from('a port the relay doesn\'t have')), []);
+});
+
+test('an echo comes straight back to its sender, the same size, with its own bytes and count, and nothing is kept', () => {
+  const r = relay();
+  const mine = Buffer.from('sixteen bytes!!!', 'latin1');
+  const question = P.encode({ type: P.TYPE.ECHO, secret: mine, number: 3 });
+  const back = only(r.receive(CONTROL, STRANGER.address, STRANGER.port, question, 0));
+  assert.strictEqual(back.m.type, P.TYPE.ECHO_BACK);
+  assert.ok(back.m.secret.equals(mine), 'the asker\'s own 16 bytes');
+  assert.strictEqual(back.m.number, 3, 'and its count');
+  assert.deepStrictEqual([back.from, back.address, back.port], [CONTROL, STRANGER.address, STRANGER.port], 'from the control port, to the sender only');
+  assert.strictEqual(back.data.length, question.length, 'no bigger than the question');
+  assert.deepStrictEqual([r.games.size, r.free.length], [0, PORTS.length], 'nothing kept');
+
+  const empty = only(send(r, CONTROL, STRANGER, { type: P.TYPE.ECHO }));
+  assert.deepStrictEqual([empty.m.type, empty.m.secret, empty.m.number], [P.TYPE.ECHO_BACK, null, 0], 'an echo of nothing is answered with nothing');
+  assert.deepStrictEqual(send(r, PORTS[0], STRANGER, { type: P.TYPE.ECHO, secret: mine }), [], 'only the control port answers echoes');
+});
+
+test('echoes are held to the control limits, and one over gets no answer at all', () => {
+  const r = relay({ controlRate: 1, controlBurst: 3 });
+  const echo = { type: P.TYPE.ECHO, secret: Buffer.alloc(16, 4), number: 1 };
+  for (let i = 0; i < 3; i++) assert.strictEqual(only(send(r, CONTROL, STRANGER, echo)).m.type, P.TYPE.ECHO_BACK);
+  assert.deepStrictEqual(send(r, CONTROL, STRANGER, echo), [], 'the 4th at once: nothing, not a REFUSED');
+  assert.strictEqual(only(send(r, CONTROL, HOST, echo)).m.type, P.TYPE.ECHO_BACK, 'another address has its own');
+
+  const all = relay({ everyoneRate: 1, everyoneBurst: 2 });
+  assert.strictEqual(send(all, CONTROL, STRANGER, echo).length, 1);
+  assert.strictEqual(send(all, CONTROL, HOST, echo).length, 1);
+  assert.deepStrictEqual(send(all, CONTROL, JOINER, echo), [], 'and everyone\'s together');
+});
+
+test('HOST_OPENED and every HOST_KEPT carry a fresh pass the list can check with this relay\'s key', () => {
+  const r = relay();
+  const now = 1794268800123;
+  const game = openGame(r, HOST, now);
+  assert.strictEqual(game.passTime, 1794268800, 'the pass time is now, in whole seconds');
+  assert.ok(game.pass.equals(makePass(KEY, REGION, game.code, game.passTime)), 'made from this relay\'s key, region and the game\'s code');
+
+  const kept = only(send(r, CONTROL, HOST, { type: P.TYPE.HOST_KEEP, secret: game.token }, now + 15000));
+  assert.strictEqual(kept.m.passTime, 1794268815, 'a HOST_KEPT has a fresh one');
+  assert.ok(kept.m.pass.equals(makePass(KEY, REGION, game.code, 1794268815)));
+  assert.ok(!kept.m.pass.equals(game.pass));
+
+  const other = new RelayCore({ controlPort: CONTROL, ports: PORTS, region: 'paris', passKey: KEY, random: seededRandom(3) });
+  assert.ok(!openGame(other, HOST, now).pass.equals(game.pass), 'the same key in another region makes another pass');
 });
 
 test('a kept game lives; an unkept one ends, with its ports and its code', () => {
@@ -365,8 +417,14 @@ test('nothing a packet holds can throw out of the relay', () => {
   assert.ok(Array.isArray(r.receive(CONTROL, STRANGER.address, STRANGER.port, null, 0)));
 });
 
-test('the relay refuses ports it could not keep apart', () => {
-  assert.throws(() => new RelayCore({ controlPort: 27500, ports: [27500], random: seededRandom(1) }), 'the control port as a relay port');
-  assert.throws(() => new RelayCore({ controlPort: 27500, ports: [27501, 27501], random: seededRandom(1) }), 'one port twice');
-  assert.throws(() => new RelayCore({ controlPort: 27500, ports: [0], random: seededRandom(1) }), 'port 0');
+test('the relay refuses ports it could not keep apart, and needs its region and pass key', () => {
+  const made = (o) => () => new RelayCore({ controlPort: 27500, ports: [27501], region: REGION, passKey: KEY, random: seededRandom(1), ...o });
+  assert.doesNotThrow(made({}));
+  assert.throws(made({ ports: [27500] }), /each relay port/, 'the control port as a relay port');
+  assert.throws(made({ ports: [27501, 27501] }), /each relay port/, 'one port twice');
+  assert.throws(made({ ports: [0] }), /each relay port/, 'port 0');
+  assert.throws(made({ region: undefined }), /region/, 'no region');
+  assert.throws(made({ region: 'Virginia' }), /region/, 'a region with a capital');
+  assert.throws(made({ passKey: undefined }), /pass key/, 'no pass key');
+  assert.throws(made({ passKey: Buffer.alloc(16, 1) }), /pass key/, 'a pass key of 16 bytes');
 });

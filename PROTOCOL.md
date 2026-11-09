@@ -2,7 +2,7 @@
 
 Written 2026-11-08 by Melanikus. This is the whole of what the server says and hears, in any language it's written in. Change it only together with the code and its tests, and say why here.
 
-**Changed 2026-11-08, ahead of the code:** one list and a relay in each region, so the game plays well from Brazil, Europe and the Middle East. New: the round-trip message (`ECHO`), the pass that lets the list check a room on another machine, the relays' directory (`GET /v1/relays`), and the listing's region, level number, game style, co-op state and host's round trip. The code catches up in the commits after this one; until then it does what this file said at d75a5bd. This note goes when the code matches.
+**Changed 2026-11-08:** one list and a relay in each region, so the game plays well from Brazil, Europe and the Middle East. New: the round-trip message (`ECHO`), the pass that lets the list check a room on another machine, the relays' directory (`GET /v1/relays`), and the listing's region, level number, game style, co-op state and host's round trip. The protocol is as it was written at 7014de1; the code matches it from the commit after.
 
 AVPx Dedicated Server is one program, and every machine runs the same code. Its settings say which parts a machine runs:
 

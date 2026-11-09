@@ -23,7 +23,11 @@ Written 2026-11-08 by Melanikus. This is for an ordinary Linux machine with Ubun
 4. **The folders:**
    - `install -d -o root -g root -m 0755 /opt/avpx/releases`
    - `install -d -o root -g avpx -m 0750 /etc/avpx`
-5. **The settings:** copy `settings.example.json` to `/etc/avpx/settings.json`, with `chown root:avpx` and `chmod 0640`. Change `relayPorts` there and in `firewall.sh` together, or neither.
+5. **The settings:** copy `settings.example.json` to `/etc/avpx/settings.json`, with `chown root:avpx` and `chmod 0640`. Then, in it:
+   - **passKey:** make it on this machine with `openssl rand -hex 32` and put its 64 digits in. It's a secret: it's what proves a game's room to the list (PROTOCOL.md section 3, Passes). It never goes in the repository, a log or a message. The server refuses to start while the example's words are still there.
+   - **host** in `list.relays`: the relay's DNS name, `virginia.relay.` and the domain, once the domain has a DNS record pointing it at this machine. The server refuses to start until it's a real name.
+   - Change `relayPorts` there and in `firewall.sh` together, or neither.
+   - A new version never touches this file: only `/opt/avpx` changes.
 6. **The firewall:** `sh firewall.sh`. If the hosting company has a firewall of its own in front of the machine (Lightsail does), open the same ports there, and no others.
 7. **The certificate,** once the domain points at the machine:
    - copy `certificate-hook.sh` to `/etc/letsencrypt/renewal-hooks/deploy/avpx.sh`, owned by root, with `chmod 0755`;
@@ -49,6 +53,14 @@ GitHub puts each version on the machine, with no key stored anywhere. It's done 
    - checks the list answers on `https://<the domain>/v1/games?version=1`.
 
    If it doesn't answer, the command points `current` back at the version before, and restarts again.
+
+## Adding a region later (not done yet)
+
+The first version runs on one machine, `virginia` (AWS us-east-1), with the relay and the list. The code is ready for more relays; these steps aren't written as files yet:
+- **The new machine** runs the same code with its own `region` and its own `passKey`, and no `list` in its settings.
+- **Its firewall** opens only SSH and the relay's UDP ports. No TCP 443 or 80, and no certificate, because it has no list. `firewall.sh` and these steps have no relay-only version yet: that's owed.
+- **The list's machine** gets one more entry in `list.relays`: the new region, its DNS name, its control port, and its `passKey`, copied over by hand, never through the repository. Then restart the service there.
+- No game needs changing: games read the relays from `GET /v1/relays`.
 
 ## Reading what it says
 

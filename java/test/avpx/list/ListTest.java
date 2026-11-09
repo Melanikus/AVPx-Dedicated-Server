@@ -625,10 +625,10 @@ public final class ListTest {
       }
     });
 
-    // While FIRST_V2_VERSION is the placeholder, this fails, so the list can't be merged with it. See Requests.java: whoever sets the
-    // real number takes this test out in the same change.
-    test("the first version-2 network version is the real one, not the placeholder", () -> {
-      ok(Requests.FIRST_V2_VERSION != 65535, "Requests.FIRST_V2_VERSION is still the placeholder: ask Secondary for the real number");
+    // The number every version-2 game and this list agree on (Requests.java says where it comes from). Changing it changes which games
+    // must carry a fingerprint, so it changes only with the game's own
+    test("the first version-2 network version is 115, the one Secondary reserved for the relay v2 game side", () -> {
+      same(Requests.FIRST_V2_VERSION, 115, "FIRST_V2_VERSION");
     });
   }
 

@@ -40,10 +40,9 @@ public final class Requests {
   // The first network version whose games speak handshake B (CRYPTO.md section 8), where a joiner checks the host is the one the list
   // named. A game of this version or a newer one must give its fingerprint, and one of an older version can't: it couldn't use one, and
   // an older game's reader refuses a field it doesn't know. The game names the same number.
-  // PLACEHOLDER: the real number comes from Secondary with the v2 game side's pull request (a used network version is never used again).
-  // ListTest's "the first version-2 network version is the real one" fails while this is the placeholder, so it can't be merged by
-  // mistake. Whoever sets the number takes that test out in the same change.
-  public static final int FIRST_V2_VERSION = 65535;
+  // 115 was reserved by Secondary, who keeps the network versions, on 2026-11-09 for the relay v2 game side: today's games are 114, and a
+  // used network version is never used again. The game's kMultiplayerVersion becomes 115 when that side lands.
+  public static final int FIRST_V2_VERSION = 115;
 
   // A body is one object with nothing nested in it
   private static final int BODY_DEPTH = 1;

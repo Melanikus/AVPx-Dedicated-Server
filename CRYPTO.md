@@ -61,7 +61,7 @@ No third-party crypto on the servers (AVP Tao 1). Each platform's own:
 | Platform | P-384, ECDSA, AES-GCM, SHA-384, HKDF | ML-KEM-1024, ML-DSA-87 |
 |---|---|---|
 | Java 25 (LTS) | `KeyAgreement "ECDH"`, `Signature "SHA384withECDSA"`, `Cipher "AES/GCM/NoPadding"`; HKDF through the KDF API, JEP 510, final in JDK 25. **[CHECK: the JEP's example is HKDF-SHA256. Confirm HKDF-SHA384 is among JDK 25's KDF algorithm names; if not, write HKDF by hand over HMAC-SHA384, `javax.crypto.Mac`, in java.base]** | ML-KEM, JEP 496, and ML-DSA, JEP 497, both in JDK 24, through `javax.crypto.KEM` (JEP 452) and `Signature` |
-| Node.js 24 (LTS) | `node:crypto`: `diffieHellman` on P-384 keys, `sign`/`verify`, `createCipheriv('aes-256-gcm')`, `hkdfSync('sha384')` | ML-DSA keys from v24.6.0, ML-KEM from v24.7.0, both on OpenSSL 3.5 (the KeyObject history in nodejs.org/api/crypto.html). **[CHECK: `crypto.encapsulate`'s own "Added in" line, once.]** Version 2's code sets `engines` to `>=24.7.0` |
+| Node.js 24 (LTS) | `node:crypto`: `diffieHellman` on P-384 keys, `sign`/`verify`, `createCipheriv('aes-256-gcm')`, `hkdfSync('sha384')` | ML-DSA keys from v24.6.0, ML-KEM from v24.7.0, both on OpenSSL 3.5 (the KeyObject history in nodejs.org/api/crypto.html). **[CHECK: `crypto.encapsulate`'s own "Added in" line, once.]** The server's `engines` is already `>=24.22.1` (f03cc0e), which is past both |
 | The game, Windows CNG (bcrypt.dll) | `BCRYPT_ECDH_P384_ALGORITHM`, `BCRYPT_ECDSA_P384_ALGORITHM`, `BCRYPT_AES_ALGORITHM` with `BCRYPT_CHAIN_MODE_GCM`, `BCRYPT_SHA384_ALGORITHM` with the HMAC flag. These have been in Windows since Windows 7 | ML-KEM and ML-DSA have been **generally available since the November 2025 update, on Windows 11 24H2 and 25H2** (at least the 2025-10 update KB5067036, per Microsoft's AD CS document), **and Windows Server 2025. Not on Windows 10.** Handles: `BCRYPT_MLKEM_ALG_HANDLE` (0x481) and `BCRYPT_MLDSA_ALG_HANDLE` (0x471), with the parameter set chosen through `BCryptSetProperty(BCRYPT_PARAMETER_SET_NAME, BCRYPT_MLKEM_PARAMETER_SET_1024 ...)`. Sources: Microsoft's Tech Community post "Post-Quantum Cryptography APIs Now Generally Available on Microsoft Platforms", and the AD CS document for the update number. Microsoft's sample page still says "prerelease"; that's out of date |
 
 The platform facts in this table were read in the official documents by PO on 2026-11-08. The two marks left are each to be confirmed once, in code, before the code relies on them.
@@ -78,12 +78,20 @@ The platform facts in this table were read in the official documents by PO on 20
 - **Upstream:** the PQ Code Package (PQCA, a Linux Foundation project), github.com/pq-code-package:
   - `mlkem-native`, for ML-KEM-1024;
   - `mldsa-native`, for ML-DSA-87.
-- **Licence:** each repository's own LICENSE file. **[CHECK]** I believe both offer Apache-2.0, ISC or MIT, at the user's choice. Whichever we take is written into the game's licence notices, beside ENet's.
-- **The exact version:** the release tag, its full commit hash, and the SHA-256 of the source archive, for each of the two. **[CHECK, and nothing is fetched until it's done]:**
-  - Each must be taken from upstream's own release page.
-  - Each must be at least two weeks old.
-  - Each must be written here before any code. Until then, the pins in the build are empty and the build refuses to fetch.
-  - **If `mldsa-native` has no stable release (a 1.x), say so here,** and the user decides whether a pre-release commit may be pinned, or whether to wait.
+- **Licence:**
+  - Both LICENSE files say the library code is **Apache-2.0 OR ISC OR MIT**, at our choice. GitHub shows "NOASSERTION" because of the triple licence. The code began as forks of the public-domain reference code (pq-crystals' Kyber and Dilithium).
+  - **Files outside the library itself may carry other terms:** "every file states its own SPDX-License-Identifier". So the reviewer checks the SPDX line of each file we take, and the game's licence notices name the one we choose, beside ENet's.
+- **The exact versions,** from upstream's own release pages (looked up by PO on 2026-11-08; both are the newest release, and both are over two weeks old):
+
+| | mlkem-native | mldsa-native |
+|---|---|---|
+| Release | **v2.0.0**, 2026-08-07 (earlier: 1.3.0, 1.2.0, 1.1.0, and 1.0.0 of 2025-06-04) | **v2.0.0**, 2026-08-07, **a stable release** (earlier: 1.0.0-alpha, -beta and -beta2) |
+| Commit | `d1b2fe782888bdb761a50336012923180be7f502` | `834a90d5e846ffa1e1611bd24e160bb2e9b86d35` |
+| Tag archive | github.com/pq-code-package/mlkem-native/archive/refs/tags/v2.0.0.tar.gz | github.com/pq-code-package/mldsa-native/archive/refs/tags/v2.0.0.tar.gz |
+| Its SHA-256 | `76bf71771f09a25f30463218974ae10752d72bca34bbc470c7f6f8655f51d622` | `97a7305c32b62cbcae97891823176e18ca96d9eaafc3728587d75bb113862a40` |
+| Its size | 1,256,351 bytes | 1,915,377 bytes |
+
+  **The commit is the anchor.** GitHub makes tag archives on the fly, and has changed how it makes them before. If an archive's SHA-256 ever stops matching, the build stops: it never goes on with a new hash. A person then fetches the pinned commit and compares its tree with the reviewed one before anything else.
 - **How it comes in:** as source only, never a built library (AVP Tao 1), the same way ENet does:
   - **a vcpkg overlay port, or the source kept in the repository;** the game's maintainers choose, as they did for ENet;
   - **pinned** by the commit hash and the archive's SHA-256;
@@ -91,14 +99,20 @@ The platform facts in this table were read in the official documents by PO on 20
   - **built** with the game's own flags;
   - **checked like our own code:** CodeQL C/C++, Snyk Code, the sanitizer run (AddressSanitizer and UndefinedBehaviorSanitizer), and take-out rows on the parts we call. Upstream's own test vectors, and the NIST ACVP vectors for ML-KEM-1024 and ML-DSA-87, run in the game's tests.
   - **Only the C is built,** with no assembly. The assembly paths are where upstream has some of its proofs, but the plain C is the same on every machine, and the game's x86 build is 32-bit.
-- **What upstream has proved by machine, and what it hasn't.** **[CHECK] against each project's README and its proofs folder, from memory:**
+- **What upstream has proved by machine, and what it hasn't** (each project's README at v2.0.0, read by PO on 2026-11-08):
   - **mlkem-native:**
-    - CBMC proofs that its C code is free of memory-safety and type-safety faults (no reads or writes out of bounds, no overflow);
-    - HOL Light proofs of functional correctness for its AArch64, and some x86_64, assembly.
-    - **Not proved:** that the C as a whole computes ML-KEM exactly as FIPS 203 says. That rests on tests and vectors.
-  - **mldsa-native:** I believe CBMC proofs are in progress, and less complete than mlkem-native's.
-  - **In neither:** nothing is proved about the whole program the game builds, or about side channels beyond upstream's own constant-time testing.
-  - So the game's own tests (the vectors above) and checks (the sanitizers, CodeQL, the take-outs) stand on their own, with no "already proved" credit.
+    - **all of its C** (mlkem/src and mlkem/src/fips202) is proved memory-safe and type-safe, with no integer overflow, by CBMC;
+    - its AArch64 and x86_64 assembly is proved functionally correct, memory-safe and constant-time, in HOL Light;
+    - its SOUNDNESS.md sets out the limits of these proofs. The reviewer reads it.
+  - **mldsa-native:**
+    - CBMC proves there are no out-of-bounds accesses or integer overflows **in all the C its C backend uses**;
+    - its assembly is proved in HOL Light, and Isabelle covers some parts;
+    - timing leaks are checked with valgrind, not proved, and some samplers' constant time has no proof yet.
+  - **What that means for the game, which builds the C only (32-bit x86):**
+    - it gets the CBMC memory and overflow proofs for both;
+    - **it doesn't get the functional-correctness or constant-time proofs,** which are for the assembly.
+  - **So whether our build computes ML-KEM and ML-DSA right rests on tests:** upstream's own, NIST's ACVP vectors, and ours.
+  - Its timing rests on upstream's valgrind checks, and on the reviewer's reading of the code that handles secrets. The game's own checks (the sanitizers, CodeQL, the take-outs) stand on their own, with no "already proved" credit.
 
 ### 3.2 One code path: the game never uses CNG for ML-KEM or ML-DSA, even where Windows has them
 
@@ -441,6 +455,8 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 
 1. **The game's post-quantum half: built from source,** so Windows 10 plays. Decided by the user on 2026-11-08 (section 3, 3.1 and 3.2): one code path everywhere, with CNG never used for ML-KEM or ML-DSA.
 
-All three are decided. What's left before code is the [CHECK] marks, and section 3.1's pins.
+All three are decided, and section 3.1's pins are in. What's left before code:
+- the two [CHECK] marks in section 3's table: HKDF-SHA384 among JDK 25's KDF names, and `crypto.encapsulate`'s own "Added in" line. Each is confirmed once, in code;
+- the reviewer's reading of the whole of both libraries at their pinned commits, each file's SPDX line included.
 2. **The release key: signed by hand.** Decided 2026-11-08 (PO, under Tao 1: the secure choice is taken, and the user told).
 3. **The check code: always shown on the join screen.** Decided 2026-11-08, the same way.

@@ -50,6 +50,8 @@ required=$(grep -E "^  REQUIRED: '" "$file" | sed "s/^  REQUIRED: '//; s/'$//")
 [ -n "$required" ] || no 'REQUIRED is there'
 for other in "$flows"/*.yml; do
   [ "$other" = "$file" ] && continue
+  # A workflow started by hand only (such as test-build.yml) never runs on a push, so it can't be required
+  if ! awk '/^on:/{f=1; next} /^[a-z]/{f=0} f' "$other" | grep -Eq '^  (push|pull_request|schedule):'; then continue; fi
   case " $required " in *" $(basename "$other") "*) ;; *) no "the workflow $(basename "$other") is in REQUIRED" ;; esac
 done
 if grep -E '^    name: ' "$file" | grep -v "^    name: 'Deploy: " | grep -q .; then no 'every job of deploy.yml is named "Deploy: ..."'; fi

@@ -322,7 +322,15 @@ a pattern of its own, written here first, and a model of its own (section 14).
   2. the fingerprint of those 1,665 bytes is an approved player's (refusal 22).
   Either refusal comes before `ss`, before any session is kept, and before A2's work.
 - A refused game is answered with nothing, like every refusal (section 16). Its player learns their state from the list, not from
-  the relay. That gives no one a way to ask the relay whether a fingerprint is approved.
+  the relay. No answer differs, and what the time taken could show, the list already tells anyone with the keys: an A1 naming an
+  approved key, sent by someone without its private halves, goes one ECDH further (`ss`) before its tag fails (refusal 8) than an
+  unapproved one (refusal 22). But such an A1 needs the player's whole public keys, which only their co-players have (handshake B),
+  and anyone holding them can ask `POST /v1/access-requests` for that key's state anyway. So the relay tells no one more than the list
+  does.
+- **One relay, one list, for now (a known limit):** the approved set is the list's own store, on the relay's machine. On nyc3 the list
+  and the relay are one program, so one store serves both. A relay on another machine never sees the requests or the owner's
+  decisions, so it would take nobody. Before a second machine's relay takes players, the way the approved fingerprints reach it is
+  written here first: signed by the owner, or put on each machine by his approval kit.
 - **A revoked player** can start no new handshake, and every session of theirs that's open ends, seats and rooms included, as soon
   as the relay applies the revoke: at its next turn after the owner's decision. A1 checks the approved set as the last decision left
   it, never an older copy.

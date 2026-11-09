@@ -123,6 +123,7 @@ Every call is HTTPS with TLS 1.2 or newer, and the server sends HSTS. The server
 | Call | Body | Answer |
 |---|---|---|
 | `GET /v1/relays` | none | `200 {"relays": [{"region", "host", "port"}]}`, at most 16 relays |
+| `GET /v1/relay-keys?region=R` | none | `200 {"region", "p384", "mlkem"}`: a version 2 relay's static public keys (CRYPTO.md section 12.1); `400` for any other query, or a body; `404` if the list has no version 2 relay in that region; `405` for any other method |
 | `POST /v1/games` | `{"region", "code", "pass", "passTime", "name", "level", "mode", "gameStyle", "levelNumber", "coopLobby", "players", "maxPlayers", "version", "fingerprint", "hostMs"}`, with `fingerprint` for a version-2 game and only for one | `201 {"owner"}`; `403` for a pass that isn't good; `409` if that game is listed already; `503` if the list is full |
 | `PUT /v1/games` | `{"owner"}` and all of POST's fields | `204`, no body; `403` for a pass that isn't good, the wrong owner, or a fingerprint other than the one it was listed with; `404` if that game isn't listed |
 | `DELETE /v1/games` | `{"region", "code", "owner"}` | `204`, no body; `403` for the wrong owner; `404` if that game isn't listed. The room itself stays until its host closes it, or stops keeping it. |
@@ -134,7 +135,9 @@ A game is known to the list by its region and code together: two relays could, r
 Any other status, and every `{"error"}` answer, means the call didn't work. The error's words are for the server's own tests and are never shown to a player: they come from the network.
 
 **Fields:**
-- **region:** 1 to 16 characters, small letters, digits and `-`, one of the regions in `GET /v1/relays`.
+- **region:** 1 to 16 characters, small letters, digits and `-`, one of the regions in `GET /v1/relays`. In `GET /v1/relay-keys`, everything after `region=` is checked as one, so `&`, `%`, a space or a capital letter there is `400`.
+- **p384:** a relay's static P-384 key, 194 hex digits, small letters: the 97-byte point, 0x04 then X and Y.
+- **mlkem:** a relay's static ML-KEM-1024 encapsulation key, 3,136 hex digits, small letters: its 1,568 bytes. The game holds the two keys to the relay's fingerprint it already has, and uses neither if they don't match (CRYPTO.md section 12.1).
 - **host:** a relay's DNS name, 1 to 63 characters, letters, digits, `-` and `.`. A name, never an address, so a relay can move to another machine without a game update.
 - **port:** a relay's control port, 1 to 65535.
 - **code:** 8 code letters (section 2).
@@ -154,7 +157,7 @@ Any other status, and every `{"error"}` answer, means the call didn't work. The 
 - **seconds:** how long the game has been listed, 0 to 31,536,000 (a year); a game listed longer still says a year.
 
 **What a reader can hold the answer to:**
-- **Its size:** an answer to `GET /v1/games` is at most 48 KB. The worst case, 100 version-2 games (each with a fingerprint) with every text at its longest and made of the characters JSON writes as two, and every number at its longest, is 46,011 bytes; `&code=` answers less. An answer to `GET /v1/relays` is at most 4 KB (worst case, 16 relays: 1,868 bytes). A reader can refuse anything bigger.
+- **Its size:** an answer to `GET /v1/games` is at most 48 KB. The worst case, 100 version-2 games (each with a fingerprint) with every text at its longest and made of the characters JSON writes as two, and every number at its longest, is 46,011 bytes; `&code=` answers less. An answer to `GET /v1/relays` is at most 4 KB (worst case, 16 relays: 1,868 bytes), and one to `GET /v1/relay-keys` at most 4 KB too (worst case, a 16-character region: 3,380 bytes). A reader can refuse anything bigger.
 - **Its escapes:** every text is printable ASCII, and for those JSON writes only two escapes, `\"` and `\\`. A reader can refuse any other escape (`\u`, `\n`, `\/` and the rest). The server's tests check both of these.
 
 **Heartbeat and expiry:** a listing lives 45 s after its last good `POST` or `PUT`. A host `PUT`s every 15 s with its newest pass. A pass is good for 60 s, so a listing outlives its room by at most 105 s, and a joiner who tries it meanwhile gets `REFUSED` (reason 1).
@@ -257,7 +260,7 @@ Every number is a starting point, written in one place in the code, and changed 
 | Addresses the per-address limits remember | 10,000; the one heard from longest ago is forgotten first |
 | An HTTPS request | headers 8 KB, body 1 KB; 5 s to send the headers and 5 s for the body |
 | HTTPS connections | 200 at once in all, 10 from one address |
-| HTTPS requests from one address | 5 a second, 20 at once; `GET /v1/games` and `GET /v1/relays` 1 a second, 5 at once |
+| HTTPS requests from one address | 5 a second, 20 at once; `GET /v1/games`, `GET /v1/relays` and `GET /v1/relay-keys` 1 a second, 5 at once |
 | HTTPS requests from everyone | 500 a second, 1,000 at once (in the code from the start; added to this table 2026-11-08 as a fix) |
 | An HTTPS connection's TLS handshake | 5 s |
 
@@ -268,6 +271,7 @@ Every number is a starting point, written in one place in the code, and changed 
 - joins and refusals;
 - echoes answered;
 - listings made, ended and expired, and passes refused;
+- relay keys given, and asked for but not found;
 - packets and bytes passed on;
 - drops by reason;
 - rooms and ports in use.

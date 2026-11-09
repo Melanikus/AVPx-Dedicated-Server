@@ -105,6 +105,25 @@ public final class CryptoV2VectorsTest {
       }
 
       same(refused, 12, "12 refusals, every one checked");
+
+      // Handshake B: its datagrams make B1 to B5 again, and its check code is the one its transcript gives
+      Map<String, Object> b = object(top.get("handshakeB"));
+      Map<String, Object> bDatagrams = object(b.get("datagrams"));
+
+      for (int i = 1; i <= 5; i++) {
+        List<Object> parts = Json.list(bDatagrams.get("b" + i));
+        Fragments.Assembly message = new Fragments.Assembly(Fragments.read(Fragments.hostToJoiner(), bytes(parts.get(0))));
+
+        for (Object d : parts) {
+          ok(message.add(Fragments.read(Fragments.hostToJoiner(), bytes(d))), "a B" + i + " datagram is taken");
+        }
+
+        same(message.message(), bytes(b.get("b" + i)), "B" + i + "'s datagrams make B" + i);
+      }
+
+      same(HandshakeB.checkCode(bytes(b.get("transcript"))), b.get("checkCode"), "B's check code, from its transcript");
+      same(HandshakeB.fingerprint(bytes(object(b.get("host")).get("p384Public")), bytes(object(b.get("host")).get("mlkemPublic"))),
+          bytes(object(b.get("host")).get("fingerprint")), "the host's fingerprint, from its two public keys");
     });
   }
 }

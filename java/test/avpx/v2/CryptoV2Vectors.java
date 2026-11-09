@@ -154,7 +154,10 @@ public final class CryptoV2Vectors {
         + " a P-384 private key as its 48-byte number; an ML-KEM-1024 key pair as FIPS 203's d then z (mlkemSeed, 64 bytes); an encapsulation"
         + " as its m. handshakeA's steps give h and ck after every step (MixKey steps give the secret mixed and the k made), and its"
         + " transcript is h after A3 (5.1, point 15). Its datagrams carry a stand-in cookie: a real one is the relay's own HMAC, and only it"
-        + " can check one. result is \"valid\" or \"invalid\".");
+        + " can check one. handshakeB is handshake B (section 8, and 5.1 points 17 to 20) the same way, joiner and host, with both"
+        + " identities and fingerprints, nJ and its commitment, nH, the transcript (h after B5) and the check code. Each side draws its"
+        + " random values in the order they first appear in its own messages. B's datagrams are end to end (AVPE), with a cookie of 0."
+        + " result is \"valid\" or \"invalid\".");
     top.put("protocol", HandshakeA.PROTOCOL);
     Map<String, Object> handshake = new LinkedHashMap<>();
     HandshakeA.Keys keys = handshakeA(handshake);
@@ -163,6 +166,7 @@ public final class CryptoV2Vectors {
     top.put("handshakeDatagrams", datagrams);
     List<Object> sealed = sealed(keys);
     top.put("sealed", sealed);
+    top.put("handshakeB", handshakeB());
     top.put("nonces", nonces(keys));
     top.put("epochKeys", epochKeys(keys));
     top.put("aesGcm", aesGcm());
@@ -173,6 +177,156 @@ public final class CryptoV2Vectors {
     write(out, top, "");
     out.append('\n');
     return out.toString();
+  }
+
+  // A player's identity, made from seeds, and written down as the primitives take it
+  private static Map<String, Object> identityFields(KeyPair p384, byte[] kemSeed, HandshakeB.Identity id) {
+    return fields("p384Private", hex(scalar(p384)), "p384Public", hex(id.p384Public()), "mlkemSeed", hex(kemSeed), "mlkemPublic",
+        hex(id.kemPublic()), "fingerprint", hex(id.fingerprint()));
+  }
+
+  // Handshake B, walked step by step, then held to the real HandshakeB (java/test/avpx/v2/HandshakeB.java), as handshake A is
+  private static Map<String, Object> handshakeB() {
+    int relayPort = 27507;
+    KeyPair hostP384 = P384.generate(ScriptedRandom.seeded(801));
+    ScriptedRandom hostKemRandom = ScriptedRandom.seeded(802);
+    KeyPair hostKem = MlKem.generate(hostKemRandom);
+    HandshakeB.Identity host = HandshakeB.Identity.of(hostP384, hostKem);
+    KeyPair joinerP384 = P384.generate(ScriptedRandom.seeded(803));
+    ScriptedRandom joinerKemRandom = ScriptedRandom.seeded(804);
+    KeyPair joinerKem = MlKem.generate(joinerKemRandom);
+    HandshakeB.Identity joiner = HandshakeB.Identity.of(joinerP384, joinerKem);
+
+    List<Object> steps = new ArrayList<>();
+    Noise noise = new Noise(HandshakeB.PROTOCOL);
+    steps.add(step("start: h = SHA-384(the protocol's name), and ck = h", noise));
+    byte[] prologue = Arrays.copyOf(REGION.getBytes(StandardCharsets.US_ASCII), REGION.length() + 1);
+    noise.mixHash(prologue);
+    steps.add(step("prologue: MixHash(the region, then a 0 byte)", noise, "data", hex(prologue)));
+    byte[] port = {(byte) relayPort, (byte) (relayPort >>> 8)};
+    noise.mixHash(port);
+    steps.add(step("prologue: MixHash(the joiner's relay port, 2 bytes little-endian)", noise, "data", hex(port)));
+    noise.mixHash(host.fingerprint());
+    steps.add(step("prologue: MixHash(the host's fingerprint, as the listing gives it)", noise, "data", hex(host.fingerprint())));
+
+    // B1, the joiner's: e, then its commitment to nJ. Its draws, in the order they first appear in its messages: e's two keys, nJ.
+    ScriptedRandom joinerRandom = ScriptedRandom.seeded(805);
+    KeyPair e = P384.generate(joinerRandom);
+    KeyPair ek = MlKem.generate(joinerRandom);
+    byte[] nJ = new byte[HandshakeB.NONCE_BYTES];
+    joinerRandom.nextBytes(nJ);
+    byte[] ekSeed = lastDraws(joinerRandom, 64, 32).get(0);
+    byte[] commitment = Noise.sha384(nJ);
+    byte[] eP384 = P384.encode((ECPublicKey) e.getPublic());
+    byte[] ekPublic = MlKem.encode(ek.getPublic());
+    noise.mixHash(eP384);
+    steps.add(step("B1, e: MixHash(the joiner's ephemeral P-384 key)", noise));
+    noise.mixHash(ekPublic);
+    steps.add(step("B1, e: MixHash(the joiner's ephemeral ML-KEM key)", noise));
+    noise.mixHash(commitment);
+    steps.add(step("B1: MixHash(the joiner's commitment, SHA-384(nJ))", noise, "data", hex(commitment)));
+    byte[] b1 = join(eP384, ekPublic, commitment);
+
+    // B2, the host's: e, ee, ekem, s, es, and a tag
+    ScriptedRandom hostRandom = ScriptedRandom.seeded(806);
+    KeyPair re = P384.generate(hostRandom);
+    byte[] reP384 = P384.encode((ECPublicKey) re.getPublic());
+    noise.mixHash(reP384);
+    steps.add(step("B2, e: MixHash(the host's ephemeral P-384 key)", noise));
+    steps.add(mixKey("B2, ee: MixKey(ECDH(the host's ephemeral key, the joiner's ephemeral key))", noise,
+        P384.agree(re.getPrivate(), (ECPublicKey) e.getPublic())));
+    MlKem.Encapsulated ekem = MlKem.encapsulate(ek.getPublic(), hostRandom);
+    byte[] ekemM = lastDraws(hostRandom, 32).get(0);
+    noise.mixHash(ekem.ciphertext());
+    steps.add(step("B2, ekem: MixHash(the ciphertext to the joiner's ephemeral ML-KEM key)", noise));
+    steps.add(mixKey("B2, ekem: MixKey(its secret)", noise, ekem.secret()));
+    byte[] sealedHost = noise.encryptAndHash(host.statics());
+    steps.add(step("B2, s: EncryptAndHash(the host's static P-384 key, then its static ML-KEM key) (k at n = 0)", noise));
+    steps.add(mixKey("B2, es: MixKey(ECDH(the host's static key, the joiner's ephemeral key))", noise,
+        P384.agree(hostP384.getPrivate(), (ECPublicKey) e.getPublic())));
+    byte[] tag2 = noise.encryptAndHash(NOTHING);
+    steps.add(step("B2: EncryptAndHash(nothing), its tag (k at n = 0)", noise, "sent", hex(tag2)));
+    byte[] b2 = join(reP384, ekem.ciphertext(), sealedHost, tag2);
+
+    // B3, the joiner's: skem, s, se, and a tag
+    MlKem.Encapsulated toHost = MlKem.encapsulate(hostKem.getPublic(), joinerRandom);
+    byte[] toHostM = lastDraws(joinerRandom, 32).get(0);
+    noise.mixHash(toHost.ciphertext());
+    steps.add(step("B3, skem: MixHash(the ciphertext to the host's static ML-KEM key)", noise));
+    steps.add(mixKey("B3, skem: MixKey(its secret)", noise, toHost.secret()));
+    byte[] sealedJoiner = noise.encryptAndHash(joiner.statics());
+    steps.add(step("B3, s: EncryptAndHash(the joiner's static P-384 key, then its static ML-KEM key) (k at n = 0)", noise));
+    steps.add(mixKey("B3, se: MixKey(ECDH(the joiner's static key, the host's ephemeral key))", noise,
+        P384.agree(joinerP384.getPrivate(), (ECPublicKey) re.getPublic())));
+    byte[] tag3 = noise.encryptAndHash(NOTHING);
+    steps.add(step("B3: EncryptAndHash(nothing), its tag (k at n = 0)", noise, "sent", hex(tag3)));
+    byte[] b3 = join(toHost.ciphertext(), sealedJoiner, tag3);
+
+    // B4, the host's: skem, then nH sealed (its tag is the host's key confirmation); B5, the joiner's: nJ sealed
+    MlKem.Encapsulated toJoiner = MlKem.encapsulate(joinerKem.getPublic(), hostRandom);
+    byte[] nH = new byte[HandshakeB.NONCE_BYTES];
+    hostRandom.nextBytes(nH);
+    byte[] toJoinerM = lastDraws(hostRandom, 32, 32).get(0);
+    noise.mixHash(toJoiner.ciphertext());
+    steps.add(step("B4, skem: MixHash(the ciphertext to the joiner's static ML-KEM key)", noise));
+    steps.add(mixKey("B4, skem: MixKey(its secret)", noise, toJoiner.secret()));
+    byte[] sealedNH = noise.encryptAndHash(nH);
+    steps.add(step("B4: EncryptAndHash(nH), the host's key confirmation (k at n = 0)", noise, "sent", hex(sealedNH)));
+    byte[] b4 = join(toJoiner.ciphertext(), sealedNH);
+    byte[] b5 = noise.encryptAndHash(nJ);
+    steps.add(step("B5: EncryptAndHash(nJ), the joiner's key confirmation (k at n = 1); h is now the transcript", noise,
+        "sent", hex(b5)));
+    Noise.Split split = noise.split();
+    byte[] transcript = noise.h();
+
+    // The real handshake, given the same randomness, must be these very steps
+    HandshakeB.Joiner realJoiner = HandshakeB.writeB1(REGION, relayPort, host.fingerprint(), joiner, ScriptedRandom.seeded(805));
+    must(Arrays.equals(realJoiner.b1(), b1), "HandshakeB's B1 isn't the steps'");
+    HandshakeB.Host realHost = HandshakeB.readB1(REGION, relayPort, host, b1, ScriptedRandom.seeded(806));
+    must(realHost != null && Arrays.equals(realHost.b2(), b2), "HandshakeB's B2 isn't the steps'");
+    must(Arrays.equals(realJoiner.readB2(b2), b3), "HandshakeB's B3 isn't the steps'");
+    must(Arrays.equals(realHost.readB3(b3), b4), "HandshakeB's B4 isn't the steps'");
+    HandshakeB.Joiner.Done done = realJoiner.readB4(b4);
+    must(done != null && Arrays.equals(done.b5(), b5), "HandshakeB's B5 isn't the steps'");
+    HandshakeB.Keys hostKeys = realHost.readB5(b5);
+    must(hostKeys != null, "the host refused B5's nJ");
+
+    for (HandshakeB.Keys k : List.of(done.keys(), hostKeys)) {
+      must(Arrays.equals(k.split().initiatorKey(), split.initiatorKey()) && Arrays.equals(k.split().responderKey(), split.responderKey())
+          && Arrays.equals(k.split().initiatorIv(), split.initiatorIv()) && Arrays.equals(k.split().responderIv(), split.responderIv())
+          && Arrays.equals(k.transcript(), transcript), "HandshakeB's keys or transcript aren't the steps'");
+    }
+
+    // B's datagrams: end to end (AVPE), a fixed id the joiner chose, no cookie
+    byte[] id = new byte[Fragments.ID_BYTES];
+    ScriptedRandom.seeded(807).nextBytes(id);
+    Map<String, Object> datagrams = fields("id", hex(id));
+    byte[][] messages = {b1, b2, b3, b4, b5};
+
+    for (int i = 0; i < messages.length; i++) {
+      List<Object> list = new ArrayList<>();
+
+      for (byte[] d : Fragments.cut(Fragments.hostToJoiner(), HandshakeB.B1 + i, id, new byte[Fragments.COOKIE_BYTES], messages[i])) {
+        list.add(hex(d));
+      }
+
+      datagrams.put("b" + (i + 1), list);
+    }
+
+    return fields("protocol", HandshakeB.PROTOCOL, "region", REGION, "relayPort", (long) relayPort,
+        "host", identityFields(hostP384, lastDraws(hostKemRandom, 64).get(0), host),
+        "joiner", identityFields(joinerP384, lastDraws(joinerKemRandom, 64).get(0), joiner),
+        "joinerEphemeral", fields("p384Private", hex(scalar(e)), "p384Public", hex(eP384), "mlkemSeed", hex(ekSeed), "mlkemPublic",
+            hex(ekPublic)),
+        "hostEphemeral", fields("p384Private", hex(scalar(re)), "p384Public", hex(reP384)),
+        "ekem", fields("m", hex(ekemM), "ciphertext", hex(ekem.ciphertext()), "secret", hex(ekem.secret())),
+        "skemToHost", fields("m", hex(toHostM), "ciphertext", hex(toHost.ciphertext()), "secret", hex(toHost.secret())),
+        "skemToJoiner", fields("m", hex(toJoinerM), "ciphertext", hex(toJoiner.ciphertext()), "secret", hex(toJoiner.secret())),
+        "nJ", hex(nJ), "commitment", hex(commitment), "nH", hex(nH),
+        "b1", hex(b1), "b2", hex(b2), "b3", hex(b3), "b4", hex(b4), "b5", hex(b5), "steps", steps,
+        "split", fields("keyJoinerToHost", hex(split.initiatorKey()), "keyHostToJoiner", hex(split.responderKey()), "ivJoinerToHost",
+            hex(split.initiatorIv()), "ivHostToJoiner", hex(split.responderIv())),
+        "transcript", hex(transcript), "checkCode", HandshakeB.checkCode(transcript), "datagrams", datagrams);
   }
 
   // Handshake A, walked step by step, then held to the real HandshakeA: fills "into", and gives back the keys both sides got

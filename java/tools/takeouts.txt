@@ -1615,33 +1615,33 @@ file: java/src/avpx/relay/RelaySockets.java
 
 # ----- The list's fingerprint and &code= (version-2 games; Requests.java, Listings.java, Routes.java)
 
-=== a version-2 game is listed without its fingerprint
+=== a version-2 game is listed without its host's id
 check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
     } else if (speaksHandshakeB) {
-      throw new Refusal(400, "a game of network version " + FIRST_V2_VERSION + " or newer must give its fingerprint");
+      throw new Refusal(400, "a game of network version " + FIRST_V2_VERSION + " or newer must give its host's id");
     }
 <<< to
     }
 >>>
 
-=== an older game may give a fingerprint
+=== an older game may give a host's id
 check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
       if (!speaksHandshakeB) {
-        throw new Refusal(400, "fingerprint is only for a game of network version " + FIRST_V2_VERSION + " or newer");
+        throw new Refusal(400, "id is only for a game of network version " + FIRST_V2_VERSION + " or newer");
       }
 <<< to
 >>>
 
-=== a fingerprint of any shape
+=== a host's id of any shape
 check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
-    if (!(value instanceof String text) || !HEX_16_BYTES.matcher(text).matches()) {
-      throw new Refusal(400, "fingerprint must be 32 hex digits, small letters");
+    if (!(value instanceof String text) || !HEX_48_BYTES.matcher(text).matches()) {
+      throw new Refusal(400, "id must be 96 hex digits, small letters: the host's whole id");
     }
 
     return text;
@@ -1649,12 +1649,12 @@ file: java/src/avpx/list/Requests.java
     return String.valueOf(value);
 >>>
 
-=== a PUT may change the fingerprint
+=== a PUT may change the host's id
 check: tests
 file: java/src/avpx/list/Listings.java
 <<< from
-    if (!Objects.equals(listing.fingerprint(), old.shown.fingerprint())) {
-      throw new Refusal(403, "that is not the fingerprint that game was listed with");
+    if (!Objects.equals(listing.hostId(), old.shown.hostId())) {
+      throw new Refusal(403, "that is not the host's id that game was listed with");
     }
 <<< to
 >>>
@@ -1669,12 +1669,12 @@ file: java/src/avpx/list/Listings.java
       if (entry.shown.version() == version && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
 >>>
 
-=== a version-2 game's row leaves its fingerprint out
+=== a version-2 game's row leaves its host's id out
 check: tests
 file: java/src/avpx/list/Routes.java
 <<< from
-          if (g.fingerprint() != null) {
-            game.put("fingerprint", g.fingerprint());
+          if (g.hostId() != null) {
+            game.put("id", g.hostId());
           }
 <<< to
 >>>
@@ -2404,4 +2404,26 @@ file: java/src/avpx/list/AccessLimits.java
     return from instanceof Inet4Address ? from.getHostAddress() : "v6 " + HexFormat.of().formatHex(from.getAddress(), 0, IPV6_SENDER_BYTES);
 <<< to
     return from.getHostAddress();
+>>>
+
+=== item 6: a listing's host may be named by the 32-digit fingerprint, as before
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+  private static final Pattern HEX_48_BYTES = Pattern.compile("[0-9a-f]{96}");
+<<< to
+  private static final Pattern HEX_48_BYTES = Pattern.compile("[0-9a-f]{32}|[0-9a-f]{96}");
+>>>
+
+=== item 6: handshake B's prologue mixes the host's 16-byte fingerprint, not its id
+check: tests
+file: java/src/avpx/v2/Identity.java
+<<< from
+  public byte[] id() {
+    return idOf(p384Public, kemPublic);
+  }
+<<< to
+  public byte[] id() {
+    return fingerprint();
+  }
 >>>

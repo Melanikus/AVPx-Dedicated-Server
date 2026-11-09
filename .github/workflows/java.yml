@@ -197,8 +197,14 @@ jobs:
           openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=localhost" \
             -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -keyout "$dir/privkey.pem" -out "$dir/list-v2.pem" 2> /dev/null
           key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-          keys=$("$JAVA_HOME/bin/java" -cp "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" avpx.tools.MakeRelayKeys \
-            | sed -n '/^"staticKeys": {$/,/^}$/p')
+          # MakeRelayKeys' output holds the relay's secret: kept this user's only, for as long as it takes to read the keys and the ID
+          (umask 077 && "$JAVA_HOME/bin/java" -cp "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" avpx.tools.MakeRelayKeys > "$dir/made.txt")
+          keys=$(sed -n '/^"staticKeys": {$/,/^}$/p' "$dir/made.txt")
+          relay_id=$(sed -n '/^ID: /{n;p;}' "$dir/made.txt")
+          rm -f "$dir/made.txt"
+          echo "$relay_id" | grep -q '^[0-9a-f]\{96\}$' || { echo "MakeRelayKeys didn't print a 96-digit ID"; exit 1; }
+          # The list certificate's pin, worked out by openssl, not by our code: SHA-256 of the DER of its public key (SubjectPublicKeyInfo)
+          pin=$(openssl x509 -in "$dir/list-v2.pem" -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum | cut -d' ' -f1)
           printf '{ "region": "saopaulo", "passKey": "%s", "relayAddress": "127.0.0.1", "controlPort": 27500, "relayPorts": "27501-27564",\n  "protocol": 2, "accessFolder": "%s",\n  "list": { "address": "127.0.0.1", "port": 8443, "certFile": "%s", "keyFile": "%s",\n    "relays": [{ "region": "saopaulo", "host": "localhost", "port": 27500 }] },\n%s\n}\n' \
             "$key" "$access" "$dir/list-v2.pem" "$dir/privkey.pem" "$keys" > "$dir/settings.json"
           sudo install -m 0644 "$dir/settings.json" /etc/avpx/settings.json
@@ -216,6 +222,8 @@ jobs:
           ln "$access/.decisions.ci" "$access/decisions.$(date +%s%N)" && rm "$access/.decisions.ci"
           sleep 3
           smoke --installed --identities "$dir/identities" > smoke.out 2>&1 || status=$?
+          # This machine's servers.cfg line (#175), for an address only printed, never reached (203.0.113.9 is TEST-NET-3)
+          smoke --installed --servers-line "CI test server" 203.0.113.9 > line.out 2> line.err || status=$?
           kill "$server"
           wait "$server" || true
           rm -f "$dir/identities"
@@ -227,6 +235,21 @@ jobs:
           if ls "$access"/decisions.* > /dev/null 2>&1; then echo "the decisions file wasn't taken in"; exit 1; fi
           for fp in "$host" "$joiner"; do
             grep -q "\"fp\":\"$fp\",[^}]*\"state\":\"approved\"" "$access/requests.json" || { echo "the decisions file was refused, not taken"; exit 1; }
+          done
+          cat line.out line.err
+          test "$(wc -l < line.out)" -eq 2 || { echo "the servers line run didn't print exactly two lines"; exit 1; }
+          sed -n 1p line.out | grep -q '^# CI test server: AVPx Dedicated Server ' || { echo "the servers line has no # line before it"; exit 1; }
+          printf 'CI test server\t203.0.113.9:8443\t%s\t203.0.113.9:27500\t%s\n' "$pin" "$relay_id" > line.want
+          sed -n 2p line.out | cmp -s - line.want || { echo "the servers line isn't openssl's pin of the certificate and MakeRelayKeys' ID"; exit 1; }
+          # Each wrong name or address is refused: exit 1, nothing on the output, and only the reason on the error stream
+          for wrong in '#comment|203.0.113.9' ' padded|203.0.113.9' 'CI test server|0.0.0.0' 'CI test server|010.0.0.1' 'CI test server|example.com' \
+            'CI test server|224.0.0.1' 'CI test server|100.64.0.1' 'a name of thirty-two characters!|203.0.113.9'; do
+            if smoke --installed --servers-line "${wrong%|*}" "${wrong#*|}" > wrong.out 2> wrong.err; then
+              echo "a wrong name or address was taken: [$wrong]"; exit 1
+            fi
+            if [ -s wrong.out ] || ! grep -q '^servers line: ' wrong.err; then
+              echo "a wrong name or address wasn't refused with only its reason: [$wrong]"; exit 1
+            fi
           done
           grep -q '^PASS  GET /v1/relay-keys for ' smoke.out || { echo "the list's relay keys weren't this relay's own"; exit 1; }
           grep -q '^relay [a-z0-9-]* ID [0-9a-f]\{96\}$' smoke.out || { echo "the run didn't print the relay's id"; exit 1; }

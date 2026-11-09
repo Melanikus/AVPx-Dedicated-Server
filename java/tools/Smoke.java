@@ -23,6 +23,8 @@ import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
+import java.time.LocalDate;
+import java.time.ZoneOffset;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.HashMap;
@@ -54,7 +56,7 @@ import javax.net.ssl.TrustManagerFactory;
 // list should name, and the certificate file. It trusts only that certificate, checks it is for this machine's own relay host in the
 // settings (or the DNS name --name gives), and leaves out the 6 log checks (its log is the journal). Its one game is listed, and taken
 // down, under network version 65535, which no game uses, so no player ever sees it. That's at or past the first version-2 network
-// version, whatever number that is, so the listing comes with a fingerprint (a made-up one: nobody joins it by handshake B).
+// version, whatever number that is, so the listing comes with a host's id (a made-up one: nobody joins it by handshake B).
 //
 // A RELAY-ONLY MACHINE (a later region's: its settings have no list, deploy/settings.relay-only.example.json) gets the relay's checks
 // only: the control port answering, a whole game through the relay's ports, and the pass in HOST_OPENED being this relay's own, for its
@@ -86,8 +88,8 @@ public final class Smoke {
   private static final String HOST = "127.0.0.1";
   // The network version its game is listed under: one no game uses, so a player never sees it
   private static final int VERSION = 65535;
-  // The fingerprint its listing gives, as a version-2 game's must (PROTOCOL.md section 4). Made up, and plainly so
-  private static final String FINGERPRINT = "00112233445566778899aabbccddeeff";
+  // The host's id its listing gives, 96 hex digits, as a version-2 game's must (PROTOCOL.md section 4). Made up, and plainly so
+  private static final String HOST_ID = "00112233445566778899aabbccddeeff".repeat(3);
   private static final Path INSTALLED_SETTINGS = Path.of("/etc/avpx/settings.json");
   private static final Pattern DNS_NAME = Pattern.compile("[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*");
 
@@ -360,7 +362,7 @@ public final class Smoke {
   private static String listing(String owner, String code, String pass, long passTime, int players) {
     return "{" + (owner == null ? "" : "\"owner\":\"" + owner + "\",") + "\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"pass\":\"" + pass
         + "\",\"passTime\":" + passTime + ",\"name\":\"Smoke test\",\"level\":\"Genshd1\",\"mode\":\"Coop\",\"gameStyle\":3,\"levelNumber\":12,"
-        + "\"coopLobby\":0,\"players\":" + players + ",\"maxPlayers\":4,\"version\":" + VERSION + ",\"fingerprint\":\"" + FINGERPRINT
+        + "\"coopLobby\":0,\"players\":" + players + ",\"maxPlayers\":4,\"version\":" + VERSION + ",\"id\":\"" + HOST_ID
         + "\",\"hostMs\":" + hostMs + "}";
   }
 
@@ -470,7 +472,140 @@ public final class Smoke {
     sha.update(kem);
     String id = hex.formatHex(sha.digest());
     System.out.println("relay " + c.region() + " ID " + id);
-    System.out.println("  the game's AliensVsPredator.cfg, [Network], must have: RelayKey=" + c.region() + ":" + id);
+    System.out.println("  the game finds it in this machine's servers.cfg line: Smoke --installed --servers-line <name> <public IPv4> prints it");
+  }
+
+  // ----- The servers.cfg line (#175)
+
+  // The one line a game's servers.cfg takes for this machine (AvP-docs' #175 design, Fifth's reader), and a # line before it naming
+  // the server's commit and the day, printed on their own, so the operator shares them as they are and copies nothing by hand:
+  //   <name> TAB <public IPv4>:<the list's port> TAB <the list's pin> TAB <public IPv4>:<the relay's control port> TAB <the relay's id>
+  // Only the name and the public address are the operator's to give, since nothing on the machine knows them for sure (behind a
+  // provider's network, the machine's own addresses aren't the one players reach). Everything else is worked out here, from what this
+  // machine runs, and checked against what it serves:
+  //   - the list's pin: SHA-256 of the SubjectPublicKeyInfo (the DER of the certificate's public key) in the certificate file the list's
+  //     settings name, which must be the very key the list serves over TLS right now, asked on 127.0.0.1;
+  //   - the relay's id: CRYPTO.md section 12.1's SHA-384, by hand, of the static keys the settings hold, which must be the keys the
+  //     list's GET /v1/relay-keys gives.
+  // The game trusts the list by that pin alone (#175's "trust the pin alone"), so the line holds for as long as the list keeps its key:
+  // deploy/README.md says how a certificate is made again from the same key. Exit 0 with the two lines, or 1 with the reason on the
+  // error stream and nothing on the output.
+  private static int serversLine(Settings settings, String name, String address) throws Exception {
+    String wrong = settings.protocol() != 2 ? "a servers.cfg line is for a version 2 server (\"protocol\": 2)"
+        : c.certificate() == null ? "a servers.cfg line needs this machine's list: its settings have none"
+        : !isLineName(name) ? "the name must be 1 to 31 printable ASCII characters, with no space at either end and no # first"
+        : !isUsableIpv4(address) ? "the address must be this machine's public IPv4, written plainly, one a server can have (not 0.x, "
+            + "224 and up, or a carrier's 100.64/10)"
+        : null;
+
+    if (wrong != null) {
+      System.err.println("servers line: " + wrong);
+      return 1;
+    }
+
+    Certificate file;
+
+    try (InputStream in = Files.newInputStream(c.certificate())) {
+      file = CertificateFactory.getInstance("X.509").generateCertificate(in);
+    }
+
+    byte[] spki = file.getPublicKey().getEncoded();
+    SSLContext tls = trustingOnly(c.certificate());
+    byte[] served = servedKey(tls);
+
+    if (served == null || !Arrays.equals(served, spki)) {
+      System.err.println("servers line: the list doesn't serve the key its certificate file holds (is it running? was the file changed "
+          + "since it started?): a pin from the file would be wrong");
+      return 1;
+    }
+
+    HexFormat hex = HexFormat.of();
+    byte[] p384 = settings.staticKeys().p384Public();
+    byte[] kem = settings.staticKeys().kemPublic();
+    Reply keys = api(tls, "GET", "/v1/relay-keys?region=" + c.region(), (String) null);
+    String expected = "{\"region\":\"" + c.region() + "\",\"p384\":\"" + hex.formatHex(p384) + "\",\"mlkem\":\"" + hex.formatHex(kem) + "\"}";
+
+    if (keys.status() != 200 || !keys.body().equals(expected)) {
+      System.err.println("servers line: the list's GET /v1/relay-keys doesn't give the static keys this relay's settings hold");
+      return 1;
+    }
+
+    MessageDigest sha384 = MessageDigest.getInstance("SHA-384");
+    sha384.update("AVPX relay keys v2".getBytes(StandardCharsets.US_ASCII));
+    sha384.update(p384);
+    sha384.update(kem);
+    String id = hex.formatHex(sha384.digest());
+    String pin = hex.formatHex(MessageDigest.getInstance("SHA-256").digest(spki));
+    System.out.print("# " + name + ": AVPx Dedicated Server " + deployedCommit() + ", made " + LocalDate.now(ZoneOffset.UTC) + " (UTC)\n"
+        + name + "\t" + address + ":" + settings.list().port() + "\t" + pin + "\t" + address + ":" + settings.controlPort() + "\t" + id
+        + "\n");
+    System.out.flush();
+    return 0;
+  }
+
+  // A servers.cfg name (#175): 1 to 31 characters of printable ASCII, so no tab; and here, also no space at either end (a reader that
+  // trims would see another name) and no # first (a line starting with # is a comment, and the game would never read it)
+  static boolean isLineName(String name) {
+    if (name == null || name.isEmpty() || name.length() > 31 || name.charAt(0) == ' ' || name.charAt(0) == '#'
+        || name.charAt(name.length() - 1) == ' ') {
+      return false;
+    }
+
+    for (int i = 0; i < name.length(); i++) {
+      if (name.charAt(i) < 32 || name.charAt(i) > 126) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  // One plain IPv4 address a server can have, as the game's IsUsableAddress takes it (relay_list.cpp) and #175's line allows it: four
+  // whole numbers 0 to 255 with no 0 in front, and not 0.x.x.x, nor 224 and up (multicast, 240/4, broadcast), nor 100.64/10 (a carrier's
+  // NAT: never a player's own network). A private, loopback or link-local address is printed: the game takes one in an added line only.
+  static boolean isUsableIpv4(String address) {
+    if (address == null || !Pattern.matches("(0|[1-9][0-9]{0,2})(\\.(0|[1-9][0-9]{0,2})){3}", address)) {
+      return false;
+    }
+
+    String[] parts = address.split("\\.");
+
+    for (String p : parts) {
+      if (Integer.parseInt(p) > 255) {
+        return false;
+      }
+    }
+
+    int first = Integer.parseInt(parts[0]);
+    int second = Integer.parseInt(parts[1]);
+    return first != 0 && first < 224 && !(first == 100 && second >= 64 && second <= 127);
+  }
+
+  // The public key the list serves now, as the DER of its SubjectPublicKeyInfo, asked over TLS on 127.0.0.1 with the list's own
+  // certificate as the only one trusted: null if the list doesn't answer, or serves another
+  private static byte[] servedKey(SSLContext context) {
+    try (Socket raw = new Socket(loopback(), c.list());
+        SSLSocket tls = (SSLSocket) context.getSocketFactory().createSocket(raw, c.name(), c.list(), true)) {
+      SSLParameters parameters = tls.getSSLParameters();
+      parameters.setEndpointIdentificationAlgorithm("HTTPS");
+      tls.setSSLParameters(parameters);
+      tls.setSoTimeout(10000);
+      tls.startHandshake();
+      return tls.getSession().getPeerCertificates()[0].getPublicKey().getEncoded();
+    } catch (IOException e) {
+      return null;
+    }
+  }
+
+  // The commit this machine runs: what /opt/avpx/current points at, a folder named by its commit (deploy/remote-deploy.sh), or "an
+  // unknown commit" where it's not that (a server put together by hand)
+  private static String deployedCommit() {
+    try {
+      String folder = Path.of("/opt/avpx/current").toRealPath().getFileName().toString();
+      return Pattern.matches("[0-9a-f]{40}", folder) ? folder : "an unknown commit";
+    } catch (IOException e) {
+      return "an unknown commit";
+    }
   }
 
   public static void main(String[] args) throws Exception {
@@ -484,6 +619,15 @@ public final class Smoke {
 
     if (words.contains("--installed")) {
       Settings settings = Settings.read(INSTALLED_SETTINGS);
+
+      // This machine's servers.cfg line, and nothing else: --servers-line <name> <public IPv4>
+      int lineAt = words.indexOf("--servers-line");
+
+      if (lineAt >= 0) {
+        c = installed(settings, words);
+        boolean given = lineAt + 2 < words.size();
+        System.exit(serversLine(settings, given ? words.get(lineAt + 1) : null, given ? words.get(lineAt + 2) : null));
+      }
 
       // The two identities' access requests, to this machine's own list (SmokeIdentities.java), and nothing else
       String requestFor = after(words, "--request-access");
@@ -556,9 +700,9 @@ public final class Smoke {
         owner = ownerFound.matches() ? ownerFound.group(1) : "";
         Reply shown = api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null);
         check(games(shown) == 1 && shown.body().contains("\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"name\":\"Smoke test\"")
-            && shown.body().contains("\"levelNumber\":12") && shown.body().contains("\"version\":" + VERSION + ",\"fingerprint\":\"" + FINGERPRINT + "\"")
+            && shown.body().contains("\"levelNumber\":12") && shown.body().contains("\"version\":" + VERSION + ",\"id\":\"" + HOST_ID + "\"")
             && !shown.body().contains(owner) && !shown.body().contains(pass),
-            "the listing shows, with its fingerprint and no owner key or pass in it");
+            "the listing shows, with its host's id and no owner key or pass in it");
       } else {
         // No list here to check the pass, so it's checked by hand: this relay's own, for its region
         check(Arrays.equals(opened.pass(), passFor(passKey, c.region(), code, opened.passTime())),

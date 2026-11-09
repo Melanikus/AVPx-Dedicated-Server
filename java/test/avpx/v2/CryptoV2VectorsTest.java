@@ -155,8 +155,12 @@ public final class CryptoV2VectorsTest {
       }
 
       same(HandshakeB.checkCode(bytes(b.get("transcript"))), b.get("checkCode"), "B's check code, from its transcript");
-      same(HandshakeB.fingerprint(bytes(object(b.get("host")).get("p384Public")), bytes(object(b.get("host")).get("mlkemPublic"))),
-          bytes(object(b.get("host")).get("fingerprint")), "the host's fingerprint, from its two public keys");
+      Map<String, Object> host = object(b.get("host"));
+      byte[] hostId = HandshakeB.id(bytes(host.get("p384Public")), bytes(host.get("mlkemPublic")));
+      same(hostId, bytes(host.get("id")), "the host's whole id, from its two public keys: what the listing gives, and B's prologue mixes");
+      same(Arrays.copyOf(hostId, 16), bytes(host.get("fingerprint")), "and its fingerprint, for people, is that id's first 16 bytes");
+      // B's steps: the start, then the prologue's three MixHashes, the host's id the last of them (5.1 point 17)
+      same(bytes(object(Json.list(b.get("steps")).get(3)).get("data")), hostId, "B's prologue mixes the whole id, 48 bytes");
     });
 
     test("a relay's id (CRYPTO.md 12.1) is the one hashes made outside Java give, the game's among them, and only from keys of the right "

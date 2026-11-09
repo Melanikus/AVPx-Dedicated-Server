@@ -58,21 +58,21 @@ final class HandshakeB {
   private static final byte[] NOTHING = new byte[0];
   private static final byte[] CHECK_CODE_WORDS = "AVPX check code v2".getBytes(StandardCharsets.US_ASCII);
 
-  // A player's fingerprint (CRYPTO.md section 8): Identity.java's, the one the server itself uses (handshake A's approval, the list's
+  // A player's whole id, 48 bytes (CRYPTO.md section 8): Identity.java's, the one the server itself uses (handshake A's approval, the list's
   // access requests), so there's one way it's made
-  static byte[] fingerprint(byte[] p384Public, byte[] kemPublic) {
-    return Identity.fingerprintOf(p384Public, kemPublic);
+  static byte[] id(byte[] p384Public, byte[] kemPublic) {
+    return Identity.idOf(p384Public, kemPublic);
   }
 
   // The start, for both sides: h = SHA-384(the protocol's name), ck = h; then the prologue, three MixHashes (5.1, point 17): the region's
-  // name and a 0 byte (as A's); the joiner's relay port, 2 bytes little-endian; the host's fingerprint as the listing gives it. No
+  // name and a 0 byte (as A's); the joiner's relay port, 2 bytes little-endian; the host's whole id, 48 bytes, as the listing gives it. No
   // pre-message: pattern XX has none.
-  static Noise start(String region, int relayPort, byte[] hostFingerprint) {
+  static Noise start(String region, int relayPort, byte[] hostId) {
     Noise noise = new Noise(PROTOCOL);
     byte[] name = region.getBytes(StandardCharsets.US_ASCII);
     noise.mixHash(Arrays.copyOf(name, name.length + 1));
     noise.mixHash(new byte[] {(byte) relayPort, (byte) (relayPort >>> 8)});
-    noise.mixHash(hostFingerprint);
+    noise.mixHash(hostId);
     return noise;
   }
 
@@ -89,8 +89,8 @@ final class HandshakeB {
     return String.format(Locale.ROOT, "%06d", Long.remainderUnsigned(n, 1_000_000));
   }
 
-  // What both sides have when B is done: the keys each way, the transcript (h after B5), and the other side's fingerprint
-  record Keys(Noise.Split split, byte[] transcript, byte[] theirFingerprint) {
+  // What both sides have when B is done: the keys each way, the transcript (h after B5), and the other side's whole id
+  record Keys(Noise.Split split, byte[] transcript, byte[] theirId) {
   }
 
   private static void mix(Noise noise, byte[] secret) {
@@ -121,7 +121,7 @@ final class HandshakeB {
   static final class Joiner {
     private final Noise noise;
     private final Identity me;
-    private final byte[] hostFingerprint;
+    private final byte[] hostId;
     private final SecureRandom random;
     private final KeyPair e;
     private final KeyPair ek;
@@ -129,10 +129,10 @@ final class HandshakeB {
     private final byte[] b1;
     private ECPublicKey hostEphemeral;
 
-    private Joiner(Noise noise, Identity me, byte[] hostFingerprint, SecureRandom random, KeyPair e, KeyPair ek, byte[] nJ, byte[] b1) {
+    private Joiner(Noise noise, Identity me, byte[] hostId, SecureRandom random, KeyPair e, KeyPair ek, byte[] nJ, byte[] b1) {
       this.noise = noise;
       this.me = me;
-      this.hostFingerprint = hostFingerprint.clone();
+      this.hostId = hostId.clone();
       this.random = random;
       this.e = e;
       this.ek = ek;
@@ -176,7 +176,7 @@ final class HandshakeB {
 
         mix(noise, ss2);
 
-        // s: the host's static keys, which must be the ones whose fingerprint the listing gave
+        // s: the host's static keys, which must be the ones whose id the listing gave
         byte[] statics = noise.decryptAndHash(sealedS);
 
         if (statics == null) {
@@ -188,7 +188,7 @@ final class HandshakeB {
         ECPublicKey hostStatic = P384.decode(hostP384);
         PublicKey hostStaticKem = MlKem.decode(hostKem);
 
-        if (hostStatic == null || hostStaticKem == null || !MessageDigest.isEqual(fingerprint(hostP384, hostKem), hostFingerprint)) {
+        if (hostStatic == null || hostStaticKem == null || !MessageDigest.isEqual(id(hostP384, hostKem), hostId)) {
           return null;
         }
 
@@ -246,7 +246,7 @@ final class HandshakeB {
 
         Noise.wipe(nH);
         byte[] b5 = noise.encryptAndHash(reveal);
-        return new Done(b5, new Keys(noise.split(), noise.h(), hostFingerprint.clone()));
+        return new Done(b5, new Keys(noise.split(), noise.h(), hostId.clone()));
       } finally {
         noise.wipe();
         Noise.wipe(nJ);
@@ -258,10 +258,10 @@ final class HandshakeB {
     }
   }
 
-  // B1, from a joiner to the host the listing named (by its fingerprint), on its joiner's port of that region's relay. random gives, in
+  // B1, from a joiner to the host the listing named (by its id), on its joiner's port of that region's relay. random gives, in
   // order: the joiner's ephemeral P-384 key, its ephemeral ML-KEM key, nJ, then (in B3) its encapsulation to the host's static key.
-  static Joiner writeB1(String region, int relayPort, byte[] hostFingerprint, Identity me, SecureRandom random) {
-    Noise noise = start(region, relayPort, hostFingerprint);
+  static Joiner writeB1(String region, int relayPort, byte[] hostId, Identity me, SecureRandom random) {
+    Noise noise = start(region, relayPort, hostId);
     KeyPair e = P384.generate(random);
     KeyPair ek = MlKem.generate(random);
     byte[] nJ = new byte[NONCE_BYTES];
@@ -272,7 +272,7 @@ final class HandshakeB {
     noise.mixHash(eP384);
     noise.mixHash(ekPublic);
     noise.mixHash(commitment);
-    return new Joiner(noise, me, hostFingerprint, random, e, ek, nJ, join(eP384, ekPublic, commitment));
+    return new Joiner(noise, me, hostId, random, e, ek, nJ, join(eP384, ekPublic, commitment));
   }
 
   // ----- The host (Noise's responder)
@@ -284,7 +284,7 @@ final class HandshakeB {
     private final KeyPair re;
     private final byte[] commitment;
     private final byte[] b2;
-    private byte[] joinerFingerprint;
+    private byte[] joinerId;
 
     private Host(Noise noise, Identity me, SecureRandom random, KeyPair re, byte[] commitment, byte[] b2) {
       this.noise = noise;
@@ -347,7 +347,7 @@ final class HandshakeB {
           return null;
         }
 
-        joinerFingerprint = fingerprint(joinerP384, joinerKem);
+        joinerId = id(joinerP384, joinerKem);
 
         // B4: skem to the joiner's static key, then nH, sealed (its tag is the host's key confirmation)
         MlKem.Encapsulated toJoiner = MlKem.encapsulate(joinerStaticKem, random);
@@ -382,7 +382,7 @@ final class HandshakeB {
         }
 
         Noise.wipe(nJ);
-        return new Keys(noise.split(), noise.h(), joinerFingerprint.clone());
+        return new Keys(noise.split(), noise.h(), joinerId.clone());
       } finally {
         noise.wipe();
       }
@@ -406,7 +406,7 @@ final class HandshakeB {
       return null;
     }
 
-    Noise noise = start(region, relayPort, me.fingerprint());
+    Noise noise = start(region, relayPort, me.id());
     noise.mixHash(jeP384);
     noise.mixHash(jeKem);
     noise.mixHash(commitment);

@@ -195,9 +195,9 @@ public final class Listings {
     }
 
     // A listing's host is the same for its whole life: a game that starts again makes a new listing. So a PUT can't change the
-    // fingerprint a joiner is told to check, nor give one to a listing that had none, nor take it away (a change of version would).
-    if (!Objects.equals(listing.fingerprint(), old.shown.fingerprint())) {
-      throw new Refusal(403, "that is not the fingerprint that game was listed with");
+    // host's id a joiner is told to check, nor give one to a listing that had none, nor take it away (a change of version would).
+    if (!Objects.equals(listing.hostId(), old.shown.hostId())) {
+      throw new Refusal(403, "that is not the host's id that game was listed with");
     }
 
     old.shown = listing;

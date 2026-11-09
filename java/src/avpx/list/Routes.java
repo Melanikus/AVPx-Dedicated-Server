@@ -40,9 +40,9 @@ public final class Routes {
   public static final long MOST_SECONDS = 31536000;
 
   // The most an answer to GET /v1/games can be: 100 games with every text field at its longest, every character one JSON writes as two
-  // (" and \), every number at its longest, and a fingerprint (a version-2 game's), come to 46,011 bytes. A game can refuse anything
-  // bigger. ListTest.java checks the worst case fits.
-  public static final int MOST_LIST_BYTES = 48 * 1024;
+  // (" and \), every number at its longest, and a host's id (a version-2 game's, 96 hex digits), come to 51,511 bytes. A game can refuse
+  // anything bigger. ListTest.java checks the worst case fits. (It was 46,011, under 48 KB, while a listing gave the 32-digit fingerprint.)
+  public static final int MOST_LIST_BYTES = 56 * 1024;
 
   // The most an answer to GET /v1/relays can be: 16 relays (Settings.java allows no more), each with the longest region and host name,
   // come to 1,868 bytes. ListTest.java checks that too.
@@ -134,8 +134,8 @@ public final class Routes {
           game.put("version", g.version());
 
           // Only a version-2 game has one, so an older game's reader, which refuses a field it doesn't know, never sees one
-          if (g.fingerprint() != null) {
-            game.put("fingerprint", g.fingerprint());
+          if (g.hostId() != null) {
+            game.put("id", g.hostId());
           }
 
           game.put("hostMs", g.hostMs());

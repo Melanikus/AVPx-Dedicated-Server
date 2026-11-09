@@ -20,8 +20,9 @@ import java.util.regex.Pattern;
 // - a name or mode is 1 to 32 printable ASCII characters (0x20 to 0x7E), and a level's name 1 to 39, so nothing in it can be a line break,
 //   a control character or anything a screen or a log could take for something else;
 // - a number is a whole number in its range, never text, a fraction or something huge;
-// - a pass, an owner key and a fingerprint are exactly 32 hex digits, a code exactly 8 code letters, a region a region name (Pass.java);
-// - a fingerprint comes with a game of network version FIRST_V2_VERSION or newer, and with no other.
+// - a pass and an owner key are exactly 32 hex digits, a host's id exactly 96, a code exactly 8 code letters, a region a region name
+//   (Pass.java);
+// - a host's id comes with a game of network version FIRST_V2_VERSION or newer, and with no other.
 // Nothing here writes anything anywhere.
 public final class Requests {
   private Requests() {
@@ -38,7 +39,7 @@ public final class Requests {
   static final int MOST_HOST_MILLISECONDS = 9999;    // 0 means the host didn't measure it
 
   // The first network version whose games speak handshake B (CRYPTO.md section 8), where a joiner checks the host is the one the list
-  // named. A game of this version or a newer one must give its fingerprint, and one of an older version can't: it couldn't use one, and
+  // named. A game of this version or a newer one must give its host's id, and one of an older version can't: it couldn't use one, and
   // an older game's reader refuses a field it doesn't know. The game names the same number.
   // 115 was reserved by Secondary, who keeps the network versions, on 2026-11-09 for the relay v2 game side: today's games are 114, and a
   // used network version is never used again. The game's kMultiplayerVersion becomes 115 when that side lands.
@@ -48,6 +49,7 @@ public final class Requests {
   private static final int BODY_DEPTH = 1;
 
   private static final Pattern HEX_16_BYTES = Pattern.compile("[0-9a-f]{32}");
+  private static final Pattern HEX_48_BYTES = Pattern.compile("[0-9a-f]{96}");
 
   // version=N, and for a code someone typed, &code= and its 8 code letters. The code is matched loosely here and checked by checkCode,
   // so a code has one rule everywhere.
@@ -68,10 +70,12 @@ public final class Requests {
     }
   }
 
-  // What a game's listing shows, as a POST or PUT sent it, every field checked. fingerprint is the host identity's fingerprint for this
-  // run, as 32 hex digits (CRYPTO.md section 8), on a game of version FIRST_V2_VERSION or newer, and null on an older one.
+  // What a game's listing shows, as a POST or PUT sent it, every field checked. hostId is the host identity's whole id for this run, as
+  // 96 hex digits (CRYPTO.md section 8: SHA-384 of "AVPX-ID-2" and its two public keys), on a game of version FIRST_V2_VERSION or
+  // newer, and null on an older one. The joiner's game compares it with the keys in handshake B's B2, so it's the whole digest, never
+  // the 16-byte fingerprint people read (SERVER-BLOCKERS.md item 6; until 2026-11-09 it was the fingerprint, as "fingerprint").
   public record Listing(String region, String code, long passTime, String name, String level, String mode, int gameStyle,
-      int levelNumber, int coopLobby, int players, int maxPlayers, int version, int hostMs, String fingerprint) {
+      int levelNumber, int coopLobby, int players, int maxPlayers, int version, int hostMs, String hostId) {
   }
 
   // What a GET /v1/games asks for: the games of one network version, and only those with this code, or all of them if code is null
@@ -130,10 +134,10 @@ public final class Requests {
     return value;
   }
 
-  // A host identity's fingerprint: 32 hex digits, small letters, kept as that text
-  static String checkFingerprint(Object value) throws Refusal {
-    if (!(value instanceof String text) || !HEX_16_BYTES.matcher(text).matches()) {
-      throw new Refusal(400, "fingerprint must be 32 hex digits, small letters");
+  // A host identity's whole id: 96 hex digits, small letters, kept as that text
+  static String checkHostId(Object value) throws Refusal {
+    if (!(value instanceof String text) || !HEX_48_BYTES.matcher(text).matches()) {
+      throw new Refusal(400, "id must be 96 hex digits, small letters: the host's whole id");
     }
 
     return text;
@@ -178,9 +182,9 @@ public final class Requests {
       List<String> fields = new ArrayList<>();
       fields.add("owner");
       fields.addAll(LISTING_FIELDS);
-      v = parseBody(bytes, fields, "fingerprint");
+      v = parseBody(bytes, fields, "id");
     } else {
-      v = parseBody(bytes, LISTING_FIELDS, "fingerprint");
+      v = parseBody(bytes, LISTING_FIELDS, "id");
     }
 
     byte[] owner = withOwner ? parseHex16(v.get("owner"), "owner") : null;
@@ -219,24 +223,24 @@ public final class Requests {
       throw new Refusal(400, "hostMs must be a whole number, 0 to 9999");
     }
 
-    // A fingerprint goes with a game that speaks handshake B, and only with one: a joiner of that version refuses a host it can't check,
+    // A host's id goes with a game that speaks handshake B, and only with one: a joiner of that version refuses a host it can't check,
     // and an older game couldn't use one
     boolean speaksHandshakeB = whole(v, "version") >= FIRST_V2_VERSION;
-    String fingerprint = null;
+    String hostId = null;
 
-    if (v.containsKey("fingerprint")) {
+    if (v.containsKey("id")) {
       if (!speaksHandshakeB) {
-        throw new Refusal(400, "fingerprint is only for a game of network version " + FIRST_V2_VERSION + " or newer");
+        throw new Refusal(400, "id is only for a game of network version " + FIRST_V2_VERSION + " or newer");
       }
 
-      fingerprint = checkFingerprint(v.get("fingerprint"));
+      hostId = checkHostId(v.get("id"));
     } else if (speaksHandshakeB) {
-      throw new Refusal(400, "a game of network version " + FIRST_V2_VERSION + " or newer must give its fingerprint");
+      throw new Refusal(400, "a game of network version " + FIRST_V2_VERSION + " or newer must give its host's id");
     }
 
     Listing listing = new Listing(region, code, (Long) v.get("passTime"), (String) v.get("name"), (String) v.get("level"),
         (String) v.get("mode"), whole(v, "gameStyle"), whole(v, "levelNumber"), whole(v, "coopLobby"), whole(v, "players"),
-        whole(v, "maxPlayers"), whole(v, "version"), whole(v, "hostMs"), fingerprint);
+        whole(v, "maxPlayers"), whole(v, "version"), whole(v, "hostMs"), hostId);
     return new Posted(owner, pass, listing);
   }
 

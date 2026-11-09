@@ -137,7 +137,7 @@ Any other status, and every `{"error"}` answer, means the call didn't work. The 
 **Fields:**
 - **region:** 1 to 16 characters, small letters, digits and `-`, one of the regions in `GET /v1/relays`. In `GET /v1/relay-keys`, everything after `region=` is checked as one, so `&`, `%`, a space or a capital letter there is `400`.
 - **p384:** a relay's static P-384 key, 194 hex digits, small letters: the 97-byte point, 0x04 then X and Y.
-- **mlkem:** a relay's static ML-KEM-1024 encapsulation key, 3,136 hex digits, small letters: its 1,568 bytes. The game holds the two keys to the relay's fingerprint it already has, and uses neither if they don't match (CRYPTO.md section 12.1).
+- **mlkem:** a relay's static ML-KEM-1024 encapsulation key, 3,136 hex digits, small letters: its 1,568 bytes. The game holds the two keys to the relay's id it already has, 96 hex digits, and uses neither if they don't match (CRYPTO.md section 12.1).
 - **host:** a relay's DNS name, 1 to 63 characters, letters, digits, `-` and `.`. A name, never an address, so a relay can move to another machine without a game update.
 - **port:** a relay's control port, 1 to 65535.
 - **code:** 8 code letters (section 2).
@@ -153,11 +153,12 @@ Any other status, and every `{"error"}` answer, means the call didn't work. The 
 - **players and maxPlayers:** whole numbers, 1 to 8, with players no more than maxPlayers.
 - **version:** a whole number, 1 to 65535, the game's network version. A **version-2 game** is one whose network version is the first that speaks handshake B (CRYPTO.md section 8) or a newer one. The list's code names that first version once (`FIRST_V2_VERSION`, Requests.java), and the game names the same number. A game asks only for games of its own version, so an older game never sees a version-2 row.
 - **fingerprint:** 32 hex digits, small letters: the fingerprint of the host's identity for this run (CRYPTO.md section 8), which a joiner checks in handshake B. A version-2 game must give it, and an older game can't (`400`). It stays the same for the listing's life: a host that starts again makes a new listing. Nothing secret.
+  **Changing (decided 2026-11-09, CRYPTO.md section 8):** this field becomes `id`, the host's whole id, 96 hex digits, small letters, in POST, PUT and GET alike, because the joiner's game compares it, and a machine compares the whole digest. Until that change is built, it's the fingerprint, as written here, and SERVER-BLOCKERS.md item 6 keeps every tester off.
 - **hostMs:** the host's round trip to its relay, in milliseconds, 1 to 9999; 0 if it wasn't measured (section 2, Round trips).
 - **seconds:** how long the game has been listed, 0 to 31,536,000 (a year); a game listed longer still says a year.
 
 **What a reader can hold the answer to:**
-- **Its size:** an answer to `GET /v1/games` is at most 48 KB. The worst case, 100 version-2 games (each with a fingerprint) with every text at its longest and made of the characters JSON writes as two, and every number at its longest, is 46,011 bytes; `&code=` answers less. An answer to `GET /v1/relays` is at most 4 KB (worst case, 16 relays: 1,868 bytes), and one to `GET /v1/relay-keys` at most 4 KB too (worst case, a 16-character region: 3,380 bytes). A reader can refuse anything bigger.
+- **Its size:** an answer to `GET /v1/games` is at most 48 KB. The worst case, 100 version-2 games (each with a fingerprint) with every text at its longest and made of the characters JSON writes as two, and every number at its longest, is 46,011 bytes; `&code=` answers less. With `id` in place of `fingerprint` (above), each version-2 row has 55 more bytes (64 more hex digits, and 9 fewer in the field's name), so the worst case becomes 51,511 bytes and the cap 56 KB: the list's own test counts it again from the code when it changes. An answer to `GET /v1/relays` is at most 4 KB (worst case, 16 relays: 1,868 bytes), and one to `GET /v1/relay-keys` at most 4 KB too (worst case, a 16-character region: 3,380 bytes). A reader can refuse anything bigger.
 - **Its escapes:** every text is printable ASCII, and for those JSON writes only two escapes, `\"` and `\\`. A reader can refuse any other escape (`\u`, `\n`, `\/` and the rest). The server's tests check both of these.
 
 **Heartbeat and expiry:** a listing lives 45 s after its last good `POST` or `PUT`. A host `PUT`s every 15 s with its newest pass. A pass is good for 60 s, so a listing outlives its room by at most 105 s, and a joiner who tries it meanwhile gets `REFUSED` (reason 1).
@@ -196,7 +197,7 @@ Agreed 2026-11-09 by Fourth (the game), Primary (the server) and Third.
   exactly 2,220 characters, with no `=`.
 - **fp:** the fingerprint the list worked out from `key` (CRYPTO.md section 8), 32 hex digits, small letters. The list never takes a
   fingerprint it's given. The game checks the answer's `fp` is its own, and treats it as no answer if not: that catches a list and a
-  game that work it out differently.
+  game that work it out differently. It proves nothing about who answered: the access code does that (below).
 - **state:** `waiting`, `approved`, `refused` or `revoked`.
 
 **What the list checks,** before it keeps anything:
@@ -204,13 +205,17 @@ Agreed 2026-11-09 by Fourth (the game), Primary (the server) and Third.
 - the P-384 key on the curve and not the point at infinity;
 - the ML-KEM key passing FIPS 203's encapsulation key check.
 
-**What the list keeps,** for each key: its fingerprint, name, key, state and when it was first asked. No address is kept, and the log
-has counts only, never a name, key or fingerprint. One program writes the store: the list itself. The owner's approvals reach it as
+**What the list keeps,** for each key: its id (CRYPTO.md section 8, the whole SHA-384, 96 hex digits), its fingerprint (the id's first
+32), the name, the state, and when it was first asked. Not the key itself: the relay compares A1's `s` by its id, so nothing needs the
+key again, and the store is about 20 times smaller. No address is kept, and the log has counts only, never a name, key, id or
+fingerprint. One program writes the store: the list itself. The owner's approvals reach it as
 decision files, which it reads as hostile input like any request.
 
 **Asking again** is the same call, from **Check again**. There's no other call, so nobody can look up another player's state by their
 fingerprint:
 - a key already waiting or approved isn't a new request: the list keeps the name it had first, and answers with the state;
+- a key whose fingerprint is a record's but whose id isn't is refused (`400` with `key`), so a fingerprint, and the access code made
+  from it, names one record only;
 - a key refused or revoked stays so. To ask again, the player makes a new identity.
 
 **The states move only so:** waiting to approved or refused, approved to revoked. A waiting request is forgotten after 30 days.
@@ -219,7 +224,9 @@ fingerprint:
 cut into sixteen 5-bit pieces from the top, each written as a letter of `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` (section 2's code letters),
 in four groups of four with dashes between, like `ABCD-EF23-4567-89GH`. The player gives it to the owner directly, by a way the owner
 knows is them. The owner's approval takes the code, in either case, with dashes and spaces left out, and refuses unless exactly one
-waiting request has it.
+waiting request has it. When more than one has it, it shows every one. To get a key swapped in the middle approved, someone would
+have to find a key whose code is the real one's (an 80-bit second preimage), and keep the real request from ever arriving: one more
+request with the same code, such as the player's own **Check again**, stops the approval and shows the owner both.
 
 **Why the code, and not the list's answer, is what protects a request:** the list's HTTPS is checked by Windows, with no pin of the
 game's own (CRYPTO.md section 12.1). A certificate wrongly given out for the list's name could let someone in the middle put another

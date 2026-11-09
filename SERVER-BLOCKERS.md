@@ -20,5 +20,6 @@ An item comes off the list only when it's done, in the commit that shows it, nev
 3. Every gate is green and required on main, Snyk included, with branch protection that holds for administrators too.
 4. The review of the post-quantum libraries' source (#10) is done.
 5. The deploy's AWS command line tool is pinned (#17): `deploy/get-aws-cli.sh` has its version, its sha256 and AWS's key fingerprint, and `deploy/aws-cli-key.asc` is there. Until then the script refuses, and so would a deploy.
+6. Every identity a machine compares is the whole SHA-384, 48 bytes, never the 16-byte fingerprint people read (CRYPTO.md section 8): the approved players at the relay, each relay's keys against the game's `relaykey` setting, and the listing's host against handshake B's keys. It comes off when the last of the three is built and its vectors pass.
 
 End of the list.

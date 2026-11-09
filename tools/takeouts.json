@@ -3,7 +3,7 @@
     "The take-out rows tools/takeouts.js runs: each breaks one thing in a copy, and the check it names must fail. Written 2026-11-08 by Melanikus for AVPx Dedicated Server.",
     "A row is { name, check: \"tests\" or \"standard\", file, from, to }. \"from\" is in its file exactly once; a \"from\" of \"\" makes a new file whose text is \"to\".",
     "list/https.js and relay/sockets.js have no rows: their limits are tested only by test/live.test.js, which opens sockets, and take-outs run the tests without AVPX_LIVE. That is owed: rows run with the live tests, in the Tests check on GitHub.",
-    "list/requests.js decodes a body with fatal UTF-8; it has no row, as a body that is not UTF-8 is refused by JSON.parse or the printable-ASCII check anyway, so nothing can tell the two apart."
+    "The HTTP rules in list/https.js (one request a connection, Transfer-Encoding refused, 431) are checked by test/live.test.js only, so they have no rows yet either."
   ],
   "rows": [
     {
@@ -287,13 +287,6 @@
       "to": "bytes.length > 1000000"
     },
     {
-      "name": "any characters in a name",
-      "check": "tests",
-      "file": "list/requests.js",
-      "from": "value.length <= most && /^[\\x20-\\x7e]+$/.test(value)",
-      "to": "value.length <= most"
-    },
-    {
       "name": "a level of any length",
       "check": "tests",
       "file": "list/requests.js",
@@ -453,6 +446,55 @@
       "file": "list/routes.js",
       "from": "      checkNoBody(body);\n      const { version }",
       "to": "      const { version }"
+    },
+    {
+      "name": "a key twice taken",
+      "check": "tests",
+      "file": "list/strict-json.js",
+      "from": "if (key === null || seen.has(key)) return null;",
+      "to": "if (key === null) return null;"
+    },
+    {
+      "name": "any escape taken",
+      "check": "tests",
+      "file": "list/strict-json.js",
+      "from": "if (next !== 0x22 && next !== 0x5c) return null;",
+      "to": "if (next < 0) return null;"
+    },
+    {
+      "name": "a number with a leading 0 taken",
+      "check": "tests",
+      "file": "list/strict-json.js",
+      "from": " || (digits > 1 && bytes[start] === 0x30)",
+      "to": ""
+    },
+    {
+      "name": "a number past 2^53 - 1 taken",
+      "check": "tests",
+      "file": "list/strict-json.js",
+      "from": "return Number.isSafeInteger(value) ? value : null;",
+      "to": "return value;"
+    },
+    {
+      "name": "control bytes and bytes past ASCII in a string",
+      "check": "tests",
+      "file": "list/strict-json.js",
+      "from": "} else if (b >= 0x20 && b <= 0x7e) {",
+      "to": "} else if (b !== 0x22) {"
+    },
+    {
+      "name": "something after the object taken",
+      "check": "tests",
+      "file": "list/strict-json.js",
+      "from": "return at === end ? out : null;",
+      "to": "return out;"
+    },
+    {
+      "name": "a body read with JSON.parse, which keeps the last of two keys",
+      "check": "tests",
+      "file": "list/requests.js",
+      "from": "  const value = readObject(bytes);",
+      "to": "  let value = null; try { value = JSON.parse(bytes.toString()); } catch (e) { value = null; }"
     },
     {
       "name": "a pass key of all 0 taken",

@@ -156,6 +156,18 @@ Any other status, and every `{"error"}` answer, means the call didn't work. The 
 
 **The list never holds an address.** A joiner gets only the region and the code, and joins through that region's relay.
 
+**How a request is read** (added 2026-11-08 as a fix, so that every server that speaks this, in any language, refuses exactly the same requests; nothing an honest game sends is refused):
+- **One request a connection.** Every answer says `Connection: close`, and the connection closes after it.
+- **A body comes with one `Content-Length`.** A request with `Transfer-Encoding` gets `400`, and so does one with two `Content-Length`s. Headers over 8 KB get `431`.
+- **A body is JSON, held to less than JSON allows:**
+  - one object, with JSON's whitespace (space, tab, CR, LF) between its parts;
+  - its values are strings or whole numbers, with no object or list inside it, and no `true`, `false` or `null`;
+  - every byte of a string is printable ASCII, and its only escapes are `\"` and `\\`;
+  - a number is `0`, or 1 to 16 digits with no leading `0`, at most 9,007,199,254,740,991, with no sign, fraction or exponent (`1.0`, `1e0`, `-1` and `01` are all refused);
+  - no key appears twice. Readers differ on which of two keys counts, and two programs that read one body two ways can be made to disagree about what it said.
+
+  Anything else gets `400`.
+
 ## 5. The abuse limits
 
 Every number is a starting point, written in one place in the code, and changed only with a reason here.
@@ -182,6 +194,8 @@ Every number is a starting point, written in one place in the code, and changed 
 | An HTTPS request | headers 8 KB, body 1 KB; 5 s to send the headers and 5 s for the body |
 | HTTPS connections | 200 at once in all, 10 from one address |
 | HTTPS requests from one address | 5 a second, 20 at once; `GET /v1/games` and `GET /v1/relays` 1 a second, 5 at once |
+| HTTPS requests from everyone | 500 a second, 1,000 at once (in the code from the start; added to this table 2026-11-08 as a fix) |
+| An HTTPS connection's TLS handshake | 5 s |
 
 **How addresses are told apart without keeping them:** a per-address limit keys by an HMAC-SHA-256 of the address, with a random key that changes every 24 hours and is never written anywhere. The address itself lives in memory only while a room or a port needs it.
 

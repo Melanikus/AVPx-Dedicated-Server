@@ -212,6 +212,7 @@ test('every field is held to its limits', () => {
   refused({ passTime: -1 }, 'a pass time below 0');
   refused({ passTime: 1.5 }, 'a fraction of a second');
   refused({ passTime: Number.MAX_SAFE_INTEGER + 1 }, 'a pass time past the most a number holds exactly');
+  refused({ passTime: String(game().passTime) }, 'a pass time as text');
   assert.strictEqual(call(L, 'POST', game({ name: 'x'.repeat(32), level: 'y'.repeat(39) })).status, 201, '32 and 39 are allowed');
   assert.strictEqual(call(L, 'POST', game({ code: 'ABCD2346', gameStyle: 0, levelNumber: 0, coopLobby: 0, hostMs: 0 })).status, 201, 'and 0 for each number that may be 0');
 
@@ -241,6 +242,19 @@ test('a body is exactly its call\'s fields, as JSON, at most 1 KB', () => {
   assert.strictEqual(call(L, 'POST', Buffer.alloc(1025, 0x20)).status, 400, 'over 1 KB');
   assert.strictEqual(call(L, 'POST', Buffer.from(`{"__proto__":{"x":1},${JSON.stringify(game()).slice(1)}`)).status, 400, 'a __proto__ field is just an extra field');
   assert.ok(body({ owner: 'f'.repeat(32), ...game({ name: '"'.repeat(32), level: '"'.repeat(39), mode: '"'.repeat(32) }) }).length < 1024, 'the largest PUT a game sends fits');
+});
+
+test('a body is read strictly, as PROTOCOL.md section 4 writes it: what JSON.parse would take is refused', () => {
+  const L = listings();
+  const text = JSON.stringify(game());
+  const refused = (raw, why) => assert.strictEqual(call(L, 'POST', Buffer.from(raw, 'latin1')).status, 400, why);
+  refused(`{"name":"first",${text.slice(1)}`, 'a key twice (JSON.parse would keep the second)');
+  refused(text.replace('"players":1', '"players":1.0'), 'a whole number written with .0');
+  refused(text.replace('"players":1', '"players":1e0'), 'a whole number written with an exponent');
+  refused(text.replace('"hostMs":40', '"hostMs":040'), 'a leading 0');
+  refused(text.replace('"Coop"', `"C${String.fromCharCode(92)}u006fop"`), 'a \\u escape, even of a plain letter');
+  refused(text.replace('{', '{"extra":{"x":1},'), 'an object inside');
+  assert.strictEqual(call(L, 'POST', Buffer.from(` \r\n${text.replace(/,/g, ' ,\t')}\n `, 'latin1')).status, 201, 'JSON\'s own whitespace is fine');
 });
 
 test('a GET\'s query is exactly version=N, and GET /v1/relays has none', () => {

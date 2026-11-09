@@ -125,6 +125,8 @@ test('the list\'s server answers with JSON and its safety headers, and refuses a
     assert.match(empty.headers['content-type'], /^application\/json/);
     assert.strictEqual(empty.headers['x-content-type-options'], 'nosniff');
     assert.match(empty.headers['strict-transport-security'], /max-age=/);
+    assert.strictEqual(empty.headers.connection, 'close', 'one request a connection');
+    assert.strictEqual((await request(port, 'POST', '/v1/games', null, { 'Transfer-Encoding': 'chunked' })).status, 400, 'a body sent in chunks');
     assert.strictEqual((await request(port, 'POST', '/v1/games', 'x'.repeat(1025))).status, 413);
     const relays = await request(port, 'GET', '/v1/relays');
     assert.deepStrictEqual(JSON.parse(relays.body), { relays: [{ region: REGION, host: 'virginia.relay.example.net', port: CONTROL }] });

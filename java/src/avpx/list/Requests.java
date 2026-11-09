@@ -208,11 +208,12 @@ public final class Requests {
   // The one thing a GET's query may say: version=N, the game's network version, 1 to 65535. Anything else in it is refused.
   public static int parseListQuery(String query) throws Refusal {
     Matcher match = LIST_QUERY.matcher(query == null ? "" : query);
+    long version = match.matches() ? Json.digitsValue(match.group(1), MOST_VERSION) : -1;
 
-    if (!match.matches() || Integer.parseInt(match.group(1)) > MOST_VERSION) {
+    if (version < 1) {
       throw new Refusal(400, "the query must be version=N, N from 1 to 65535");
     }
 
-    return Integer.parseInt(match.group(1));
+    return (int) version;
   }
 }

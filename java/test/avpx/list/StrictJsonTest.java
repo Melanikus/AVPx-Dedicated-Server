@@ -4,6 +4,7 @@ import static avpx.testing.Tests.latin1;
 import static avpx.testing.Tests.ok;
 import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.test;
+import static avpx.testing.Tests.throwsWith;
 
 import avpx.testing.SeededRandom;
 import avpx.testing.Stringify;
@@ -39,7 +40,11 @@ public final class StrictJsonTest {
   private static Map<String, Object> object(Object... fields) {
     Map<String, Object> out = new LinkedHashMap<>();
 
-    for (int i = 0; i < fields.length; i += 2) {
+    if (fields.length % 2 != 0) {
+      throw new IllegalArgumentException("fields come in name, value pairs");
+    }
+
+    for (int i = 0; i + 1 < fields.length; i += 2) {
       out.put((String) fields[i], fields[i + 1]);
     }
 
@@ -53,8 +58,15 @@ public final class StrictJsonTest {
       same(read("{}"), object(), "an empty one");
       same(read("{\"q\":\"" + BS + Q + BS + BS + "\"}"), object("q", Q + BS), "the two escapes");
       same(read("{\"n\":9007199254740991}").get("n"), 9007199254740991L, "the most a number holds exactly");
-      // Node's test checked that "__proto__" is only a key there; a Java map has no prototype at all, so it is only a key here too
-      same(read("{\"__proto__\":\"x\"}"), object("__proto__", "x"), "\"__proto__\" is only a key");
+      // Three names that are parts of every JavaScript object are refused, so both servers refuse the same bodies (PROTOCOL.md
+      // section 4). A Java map has no prototype, so for Java they're refused only to agree with every other server.
+      for (String name : List.of("__proto__", "constructor", "prototype")) {
+        same(read("{\"" + name + "\":\"x\"}"), null, "a field named " + name);
+        throwsWith(() -> Json.readObject(latin1("{\"a\":1,\"" + name + "\":2}"), BODY), "which name a part of every JavaScript object",
+            "refused for its name, wherever it comes: " + name);
+      }
+
+      same(read("{\"proto\":\"x\",\"constructors\":\"y\"}"), object("proto", "x", "constructors", "y"), "names like them are fine");
     });
 
     test("it refuses everything else", () -> {

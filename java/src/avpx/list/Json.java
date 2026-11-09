@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 // JSON, read strictly and written plainly: our own, because Java has none of its own, and every library is code we didn't write (AVP Tao
 // 1). Written 2026-11-08 by Melanikus for AVPx Dedicated Server.
@@ -17,6 +18,8 @@ import java.util.Map;
 // - a whole number is digits only, 0 and up, with no 0 in front of another digit, no fraction, no exponent and no minus, at most
 //   MOST_WHOLE (the most a JSON number holds exactly, 2 to the 53rd less 1);
 // - no field twice in one object, and nothing after the end;
+// - no field named __proto__, constructor or prototype (they name parts of every JavaScript object; refused so that every server
+//   refuses the same bodies, PROTOCOL.md section 4);
 // - between the parts, only JSON's own four spaces: space, tab, carriage return and line feed.
 // No true, false or null: nothing the server reads has them.
 //
@@ -32,6 +35,7 @@ public final class Json {
   // The most a whole number may be: the most a JSON number holds exactly, so every reader of it reads the same number
   public static final long MOST_WHOLE = 9007199254740991L;
   private static final int MOST_WHOLE_DIGITS = 16;
+  private static final Set<String> JAVASCRIPT_NAMES = Set.of("__proto__", "constructor", "prototype");
 
   // A text that isn't JSON as this reads it, with the reason
   public static final class Bad extends Exception {
@@ -182,6 +186,12 @@ public final class Json {
           throw new Bad("something else where a : has to be");
         }
 
+        // Three names that are a part of every JavaScript object. Java has no such thing, but a body holding one is refused all the same,
+        // so every server that speaks PROTOCOL.md refuses the same bodies (section 4)
+        if (JAVASCRIPT_NAMES.contains(name)) {
+          throw new Bad("a field named __proto__, constructor or prototype, which name a part of every JavaScript object");
+        }
+
         Object value = value(depth);
 
         if (out.containsKey(name)) {
@@ -280,14 +290,38 @@ public final class Json {
         throw new Bad("a number bigger than a JSON number holds exactly");
       }
 
-      long value = Long.parseLong(new String(b, start, digits, StandardCharsets.US_ASCII));
+      long value = digitsValue(new String(b, start, digits, StandardCharsets.US_ASCII), MOST_WHOLE);
 
-      if (value > MOST_WHOLE) {
+      if (value < 0) {
         throw new Bad("a number bigger than a JSON number holds exactly");
       }
 
       return value;
     }
+  }
+
+  // The value of a text that is nothing but the digits 0 to 9, 1 to 16 of them, if it's at most `most`; -1 for anything else. It adds the
+  // digits up itself, so whatever the text holds, it never throws: every number the server reads from outside is read with this, and a
+  // number from outside must never stop anything with an exception (AVP Tao 3). 16 digits is at most 9,999,999,999,999,999, which a long
+  // holds.
+  public static long digitsValue(String text, long most) {
+    if (text == null || text.isEmpty() || text.length() > MOST_WHOLE_DIGITS) {
+      return -1;
+    }
+
+    long value = 0;
+
+    for (int i = 0; i < text.length(); i++) {
+      char c = text.charAt(i);
+
+      if (c < '0' || c > '9') {
+        return -1;
+      }
+
+      value = value * 10 + (c - '0');
+    }
+
+    return value <= most ? value : -1;
   }
 
   // ----- Writing

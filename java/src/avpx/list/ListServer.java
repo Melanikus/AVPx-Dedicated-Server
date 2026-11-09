@@ -78,7 +78,7 @@ public final class ListServer {
   static final int MOST_THROWN_AWAY_BYTES = 64 * 1024;
   private static final int BACKLOG = 200;
   private static final String[] PROTOCOLS = {"TLSv1.3", "TLSv1.2"};
-  private static final Pattern DIGITS = Pattern.compile("[0-9]{1,16}");
+  private static final Pattern DIGITS = Pattern.compile("[0-9]+");
 
   // The headers every answer has, in this order
   private static final Map<String, String> HEADERS = headers();
@@ -269,29 +269,33 @@ public final class ListServer {
 
     try {
       tls = (SSLSocket) certificate.context().getSocketFactory().createSocket(raw, null, true);
+      // The server's side of the connection. The list asks for no certificate from the other end, so it checks none; if it ever did ask,
+      // the identity check below would apply to it, as the client's check applies to the server's certificate.
+      tls.setUseClientMode(false);
       SSLParameters parameters = tls.getSSLParameters();
       parameters.setProtocols(PROTOCOLS.clone());
       parameters.setCipherSuites(strongCiphers(tls.getEnabledCipherSuites()));
       parameters.setUseCipherSuitesOrder(true);
+      parameters.setEndpointIdentificationAlgorithm("HTTPS");
       tls.setSSLParameters(parameters);
       tls.setSoTimeout((int) HEADERS_MILLISECONDS);
       tls.startHandshake();
 
-      InputStream in = new BufferedInputStream(tls.getInputStream());
-      OutputStream out = tls.getOutputStream();
-      Http.Head head;
+      try (InputStream in = new BufferedInputStream(tls.getInputStream()); OutputStream out = tls.getOutputStream()) {
+        Http.Head head;
 
-      try {
-        head = Http.read(in, MOST_HEAD_BYTES);
-      } catch (Http.Refused refused) {
-        sendEarly(tls, out, in, error(refused.status(), refused.getMessage()));
-        return;
+        try {
+          head = Http.read(in, MOST_HEAD_BYTES);
+        } catch (Http.Refused refused) {
+          sendEarly(tls, out, in, error(refused.status(), refused.getMessage()));
+          return;
+        }
+
+        // The head came in time: from here, the body and the answer have their own time
+        deadline.cancel(false);
+        deadline = timers.schedule(() -> closeQuietly(raw), BODY_MILLISECONDS, TimeUnit.MILLISECONDS);
+        answer(head, tls, in, out, raw.getInetAddress().getHostAddress());
       }
-
-      // The head came in time: from here, the body and the answer have their own time
-      deadline.cancel(false);
-      deadline = timers.schedule(() -> closeQuietly(raw), BODY_MILLISECONDS, TimeUnit.MILLISECONDS);
-      answer(head, tls, in, out, raw.getInetAddress().getHostAddress());
     } catch (IOException | RuntimeException e) {
       // The sender went away, was too slow, or its TLS was no good: nothing to answer, and nothing to write about it
     } finally {
@@ -353,12 +357,15 @@ public final class ListServer {
         return;
       }
 
-      if (declared.length() > 4 || Integer.parseInt(declared) > Requests.MOST_BODY_BYTES) {
+      // Digits, but more than a body may be (however many digits: Json.digitsValue never throws)
+      long declaredLength = Json.digitsValue(declared, Requests.MOST_BODY_BYTES);
+
+      if (declaredLength < 0) {
         sendEarly(tls, out, in, error(413, "the body is too big"));
         return;
       }
 
-      length = Integer.parseInt(declared);
+      length = (int) declaredLength;
     }
 
     byte[] body = in.readNBytes(length);

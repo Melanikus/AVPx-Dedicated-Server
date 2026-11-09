@@ -105,6 +105,21 @@ public final class JsonTest {
       refused("{\"a\":1 2}", 1, "two numbers");
     });
 
+    test("a number from outside is read by adding its digits up, and nothing it holds can make that throw", () -> {
+      same(Json.digitsValue("0", 10), 0L, "0");
+      same(Json.digitsValue("42", 42), 42L, "at its most");
+      same(Json.digitsValue("9999999999999999", Json.MOST_WHOLE), 9999999999999999L, "16 digits");
+      same(Json.digitsValue("43", 42), -1L, "past its most");
+      same(Json.digitsValue("12345678901234567", Long.MAX_VALUE), -1L, "17 digits, refused before any adding");
+      same(Json.digitsValue("99999999999999999999999999999999", Long.MAX_VALUE), -1L, "far more digits than a long holds");
+      same(Json.digitsValue("", 10), -1L, "nothing");
+      same(Json.digitsValue(null, 10), -1L, "no text at all");
+      same(Json.digitsValue("1x", 10), -1L, "a letter");
+      same(Json.digitsValue("-1", 10), -1L, "a minus");
+      same(Json.digitsValue(" 1", 10), -1L, "a space");
+      same(Json.digitsValue("1.0", 10), -1L, "a fraction");
+    });
+
     test("readObject takes only an object", () -> {
       throwsAny(() -> Json.readObject(latin1("[1]"), 1), "a list");
       throwsAny(() -> Json.readObject(latin1("\"x\""), 1), "a text");

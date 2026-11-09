@@ -37,9 +37,13 @@ public final class SettingsTest {
 
   // An object from name, value pairs; a pair whose value is LEAVE_OUT takes that name out
   private static Map<String, Object> with(Map<String, Object> from, Object... changes) {
+    if (changes.length % 2 != 0) {
+      throw new IllegalArgumentException("changes come in name, value pairs");
+    }
+
     Map<String, Object> out = new LinkedHashMap<>(from);
 
-    for (int i = 0; i < changes.length; i += 2) {
+    for (int i = 0; i + 1 < changes.length; i += 2) {
       if (changes[i + 1] == LEAVE_OUT) {
         out.remove((String) changes[i]);
       } else {
@@ -134,6 +138,7 @@ public final class SettingsTest {
       refused(with(relayOnly(), "relayPorts", "27501"), "one number");
       refused(with(relayOnly(), "relayPorts", "27564-27501"), "going down");
       refused(with(relayOnly(), "relayPorts", "20000-30000"), "over 4000 ports");
+      refused(with(relayOnly(), "relayPorts", "70000-70001"), "ports past 65535, read without anything that could throw");
       refused(with(relayOnly(), "relayPorts", "27400-27600"), "the control port among them");
       refused(with(relayOnly(), "relayAddress", "localhost"), "a name, not an address");
       refused(with(relayOnly(), "relayAddress", "::1"), "IPv6");
@@ -202,30 +207,36 @@ public final class SettingsTest {
     test("the log writes a line with its time, keeps the file to its size, and turns a line break into a space", () -> {
       Path dir = Files.createTempDirectory("avpx-log-");
       Path file = dir.resolve("server.log");
-      Log log = new Log(file, () -> Instant.EPOCH, new PrintStream(OutputStream.nullOutputStream(), true, StandardCharsets.UTF_8));
-
-      try {
-        log.line("first\nsecond");
-        same(Files.readString(file, StandardCharsets.UTF_8), "1970-01-01T00:00:00.000Z first second\n", "one line, with its time");
-        String longLine = "x".repeat(1024 * 1024);
-
-        for (int i = 0; i < 12; i++) {
-          log.line(longLine);
-        }
-
-        ok(Files.size(file) <= Log.MOST_FILE_BYTES, "the file stays under its size");
-        ok(Files.exists(dir.resolve("server.log.1")), "and the old lines moved to .1");
-      } finally {
-        log.close();
-
-        try (Stream<Path> files = Files.list(dir)) {
-          for (Path f : files.toList()) {
-            Files.delete(f);
-          }
-        }
-
-        Files.delete(dir);
+      try (PrintStream nowhere = new PrintStream(OutputStream.nullOutputStream(), true, StandardCharsets.UTF_8)) {
+        Log log = new Log(file, () -> Instant.EPOCH, nowhere);
+        logTest(dir, file, log);
       }
     });
+  }
+
+  // The log test's body, with the log written to nowhere on the screen
+  private static void logTest(Path dir, Path file, Log log) throws Exception {
+    try {
+      log.line("first\nsecond");
+      same(Files.readString(file, StandardCharsets.UTF_8), "1970-01-01T00:00:00.000Z first second\n", "one line, with its time");
+      String longLine = "x".repeat(1024 * 1024);
+
+      for (int i = 0; i < 12; i++) {
+        log.line(longLine);
+      }
+
+      ok(Files.size(file) <= Log.MOST_FILE_BYTES, "the file stays under its size");
+      ok(Files.exists(dir.resolve("server.log.1")), "and the old lines moved to .1");
+    } finally {
+      log.close();
+
+      try (Stream<Path> files = Files.list(dir)) {
+        for (Path f : files.toList()) {
+          Files.delete(f);
+        }
+      }
+
+      Files.delete(dir);
+    }
   }
 }

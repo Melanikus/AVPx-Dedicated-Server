@@ -157,7 +157,7 @@ public final class Settings {
   }
 
   private static String path(Object value, String name, boolean required) throws Refused {
-    if (value == null || "".equals(value)) {
+    if (value == null || (value instanceof String empty && empty.isEmpty())) {
       if (required) {
         throw new Refused(name + " is required");
       }
@@ -296,8 +296,9 @@ public final class Settings {
       throw new Refused("relayPorts must be \"first-last\", such as \"27501-27564\"");
     }
 
-    int first = port(Long.parseLong(range.group(1)), "relayPorts' first", LEAST_RELAY_PORT);
-    int last = port(Long.parseLong(range.group(2)), "relayPorts' last", LEAST_RELAY_PORT);
+    // Each is 4 or 5 digits (RANGE), read without anything that could throw; port() then holds it to its range
+    int first = port(Json.digitsValue(range.group(1), Json.MOST_WHOLE), "relayPorts' first", LEAST_RELAY_PORT);
+    int last = port(Json.digitsValue(range.group(2), Json.MOST_WHOLE), "relayPorts' last", LEAST_RELAY_PORT);
 
     if (last < first || last - first + 1 > MOST_RELAY_PORTS) {
       throw new Refused("relayPorts must go up, and be at most " + MOST_RELAY_PORTS + " ports");

@@ -43,6 +43,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
 import javax.net.ssl.SSLContext;
+import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.TrustManagerFactory;
 
@@ -176,7 +177,11 @@ public final class LiveTest {
 
   // One request, over its own TLS connection, as the game sends one: the answer read to its end (the server closes after it)
   private static Reply request(Running list, String method, String path, String body, Map<String, String> extra) throws IOException {
-    try (SSLSocket s = (SSLSocket) list.client().getSocketFactory().createSocket(loopback(), list.server().port())) {
+    try (SSLSocket s = (SSLSocket) list.client().getSocketFactory().createSocket(LOOPBACK, list.server().port())) {
+      // Like a game, the client checks the certificate is for the address it asked for (127.0.0.1), not only that it trusts it
+      SSLParameters parameters = s.getSSLParameters();
+      parameters.setEndpointIdentificationAlgorithm("HTTPS");
+      s.setSSLParameters(parameters);
       s.setSoTimeout(10000);
       StringBuilder head = new StringBuilder(method + " " + path + " HTTP/1.1\r\nHost: 127.0.0.1\r\n");
 
@@ -206,7 +211,11 @@ public final class LiveTest {
 
       String text = got.toString(StandardCharsets.US_ASCII);
       int end = text.indexOf("\r\n\r\n");
+      ok(end >= 0, "an answer with a head");
       String[] lines = text.substring(0, end).split("\r\n");
+      String[] first = lines[0].split(" ");
+      long status = first.length >= 2 ? Json.digitsValue(first[1], 999) : -1;
+      ok(status > 0, "an answer that starts with HTTP/1.1 and a status that is a number");
       Map<String, String> headers = new LinkedHashMap<>();
 
       for (int i = 1; i < lines.length; i++) {
@@ -214,7 +223,7 @@ public final class LiveTest {
         headers.put(lines[i].substring(0, colon).toLowerCase(Locale.ROOT), lines[i].substring(colon + 1).strip());
       }
 
-      return new Reply(Integer.parseInt(lines[0].split(" ")[1]), headers, text.substring(end + 4));
+      return new Reply((int) status, headers, text.substring(end + 4));
     }
   }
 
@@ -303,6 +312,11 @@ public final class LiveTest {
         Reply two = request(list, "POST", "/v1/games", null, twoLengths);
         same(two.status(), 400, "two Content-Lengths");
         matches(two.body(), "one Content-Length", "refused for its two Content-Lengths");
+        Reply huge = request(list, "POST", "/v1/games", null, Map.of("Content-Length", "99999999999999999999"));
+        same(huge.status(), 413, "a Content-Length of 20 digits is too big, and nothing throws");
+        Reply notANumber = request(list, "POST", "/v1/games", null, Map.of("Content-Length", "1x"));
+        same(notANumber.status(), 400, "a Content-Length that isn't a number");
+        matches(notANumber.body(), "whole number", "refused for not being a whole number");
         same(request(list, "POST", "/v1/games", "x".repeat(1025), Map.of()).status(), 413, "a body over 1 KB");
         Reply relays = request(list, "GET", "/v1/relays");
         Map<String, Object> want = new LinkedHashMap<>();

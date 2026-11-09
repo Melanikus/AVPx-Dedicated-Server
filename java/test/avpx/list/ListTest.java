@@ -86,7 +86,11 @@ public final class ListTest {
     byte[] passKey = null;
     Map<String, Object> others = new LinkedHashMap<>();
 
-    for (int i = 0; i < changes.length; i += 2) {
+    if (changes.length % 2 != 0) {
+      throw new IllegalArgumentException("changes come in name, value pairs");
+    }
+
+    for (int i = 0; i + 1 < changes.length; i += 2) {
       String name = (String) changes[i];
       Object value = changes[i + 1];
 
@@ -489,7 +493,7 @@ public final class ListTest {
     test("a GET's query is exactly version=N, and GET /v1/relays has none", () -> {
       Listings l = listings();
 
-      for (String q : List.of("", "version=", "version=0", "version=65536", "version=07", "version=1&x=2", "x=1", "version=1e3", "version=-1",
+      for (String q : List.of("", "version=", "version=0", "version=65536", "version=07", "version=1&x=2", "x=1", "version=1e3", "version=-1", "version=99999",
           "version= 1", "version=7?x")) {
         same(call(l, "GET", null, q, NOW).status(), 400, "query \"" + q + "\"");
       }

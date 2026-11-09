@@ -58,6 +58,9 @@ public final class Takeouts {
   // A row's file: a plain path below the copy's top folder, nothing that could climb out of it
   private static final Pattern PLAIN_PATH = Pattern.compile("[A-Za-z0-9_.][A-Za-z0-9_./-]*");
 
+  // The shell, by its full path, so it can't be another program of that name found first in the PATH
+  private static final String SHELL = "/bin/sh";
+
   private static final long MOST_MINUTES_A_CHECK = 10;
   private static final int MOST_AT_ONCE = 4;
 
@@ -203,7 +206,7 @@ public final class Takeouts {
     String java = Path.of(System.getenv("JAVA_HOME"), "bin", "java").toString();
     ProcessBuilder builder = check.equals("standard")
         ? new ProcessBuilder(java, "-cp", tools.toString(), "avpx.tools.CheckStandard")
-        : new ProcessBuilder("sh", "java/build.sh");
+        : new ProcessBuilder(SHELL, "java/build.sh");
     builder.directory(copy.toFile());
     builder.redirectErrorStream(true);
     builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);

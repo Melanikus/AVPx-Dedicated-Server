@@ -457,13 +457,13 @@ file: java/src/avpx/list/Requests.java
 check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
-    if (!match.matches() || Integer.parseInt(match.group(1)) > MOST_VERSION) {
+    if (version < 1) {
       throw new Refusal(400, "the query must be version=N, N from 1 to 65535");
     }
-
-    return Integer.parseInt(match.group(1));
 <<< to
-    return match.matches() ? Integer.parseInt(match.group(1)) : 1;
+    if (version < 0) {
+      version = 1;
+    }
 >>>
 
 === a pass time of any kind
@@ -665,10 +665,9 @@ file: java/src/avpx/list/Json.java
 check: tests
 file: java/src/avpx/list/Json.java
 <<< from
-      if (value > MOST_WHOLE) {
-        throw new Bad("a number bigger than a JSON number holds exactly");
-      }
+      long value = digitsValue(new String(b, start, digits, StandardCharsets.US_ASCII), MOST_WHOLE);
 <<< to
+      long value = digitsValue(new String(b, start, digits, StandardCharsets.US_ASCII), Long.MAX_VALUE);
 >>>
 
 === control bytes and bytes past ASCII in a string
@@ -928,6 +927,24 @@ final class ForgottenTest {
 }
 >>>
 
+=== a field named __proto__, constructor or prototype taken
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+        if (JAVASCRIPT_NAMES.contains(name)) {
+<<< to
+        if (false) {
+>>>
+
+=== a number from outside read with a sum that can go past what it may be
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+    return value <= most ? value : -1;
+<<< to
+    return value;
+>>>
+
 === a line in a request's head ended by LF alone
 check: tests
 file: java/src/avpx/list/Http.java
@@ -1004,9 +1021,9 @@ file: java/src/avpx/list/ListServer.java
 check: live
 file: java/src/avpx/list/ListServer.java
 <<< from
-      if (declared.length() > 4 || Integer.parseInt(declared) > Requests.MOST_BODY_BYTES) {
+      long declaredLength = Json.digitsValue(declared, Requests.MOST_BODY_BYTES);
 <<< to
-      if (false) {
+      long declaredLength = Json.digitsValue(declared, Long.MAX_VALUE);
 >>>
 
 === a key used with a certificate it doesn't belong to

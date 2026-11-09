@@ -26,9 +26,19 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: The pinned JDK, checked by its signature, its sha256 and its version before it runs
+      # get-jdk.sh must use nothing from the user's home: the deploy runs it as a user with none (avpx-build, ProtectHome). So here it runs
+      # with a home whose .curlrc sends every download to a proxy that isn't there, and whose gpg.conf has an option gpg refuses: if it
+      # read either, it would fail. First, the trap is shown to trap: plain curl and plain gpg, which do read the home, fail in it.
+      - name: The pinned JDK, checked by its signature, its sha256 and its version before it runs, using nothing from the home folder
         run: |
-          sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
+          trapped="$RUNNER_TEMP/trapped-home"
+          mkdir -p "$trapped/.gnupg"
+          chmod 700 "$trapped/.gnupg"
+          printf 'proxy = "http://127.0.0.1:9"\n' > "$trapped/.curlrc"
+          printf 'no-such-gpg-option\n' > "$trapped/.gnupg/gpg.conf"
+          if HOME="$trapped" curl --silent --max-time 20 --output /dev/null https://github.com; then echo "the .curlrc trap doesn't trap"; exit 1; fi
+          if HOME="$trapped" gpg --batch --list-keys > /dev/null 2>&1; then echo "the gpg.conf trap doesn't trap"; exit 1; fi
+          HOME="$trapped" sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
           echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
 
       # The live tests open sockets on 127.0.0.1 only, and must all run here: with AVPX_LIVE=1 a live test that doesn't run fails

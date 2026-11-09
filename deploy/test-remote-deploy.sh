@@ -41,18 +41,39 @@ esac
 STANDIN
 cat > "$fake/systemd-run" <<'STANDIN'
 #!/bin/sh
-# systemd-run's stand-in: notes the limits on one line, then runs what comes after --
+# systemd-run's stand-in: notes the limits and the variables on one line, refuses what the real one can't set up, then runs what comes
+# after --, with those variables. Like the real one (both were seen on a real machine, 2026-11-09):
+#   - a unit whose InaccessiblePaths names something that isn't there fails, unless the name starts with "-";
+#   - with PrivateTmp=yes the unit has a /tmp of its own, so a folder in the machine's /tmp can't be its working or writable folder.
+# And a working or writable folder outside the case's machine is refused too, so a case can't reach out of its folder.
+set -f
 limits=''
+vars=''
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --) shift; break ;;
     -p) limits="$limits $2"; shift 2 ;;
+    --setenv=*) vars="$vars ${1#--setenv=}"; shift ;;
     *) shift ;;
   esac
 done
-echo "systemd-run$limits :: $*" >> "$FAKE_LOG"
+echo "systemd-run$limits ::$vars :: $*" >> "$FAKE_LOG"
+case "$limits" in *' PrivateTmp=yes'*) own_tmp=yes ;; *) own_tmp=no ;; esac
+for l in $limits; do
+  case "$l" in
+    InaccessiblePaths=-*) ;;
+    InaccessiblePaths=*)
+      [ -e "$FAKE_ROOT${l#*=}" ] || { echo "Failed to set up mount namespacing: ${l#*=}: No such file or directory (226/NAMESPACE)" >&2; exit 226; } ;;
+    WorkingDirectory=*|ReadWritePaths=*)
+      p=${l#*=}
+      case "$p" in "$FAKE_ROOT"/*) ;; *) echo "the stand-in: $p is outside the machine (226/NAMESPACE)" >&2; exit 226 ;; esac
+      case "$own_tmp:$p" in yes:"$FAKE_ROOT"/tmp/*|yes:"$FAKE_ROOT"/var/tmp/*)
+        echo "Failed to set up mount namespacing: $p: No such file or directory (226/NAMESPACE)" >&2; exit 226 ;;
+      esac ;;
+  esac
+done
 cd "$(echo "$limits" | sed -n 's/.*WorkingDirectory=\([^ ]*\).*/\1/p')"
-exec "$@"
+exec env $vars "$@"
 STANDIN
 cat > "$fake/systemctl" <<'STANDIN'
 #!/bin/sh
@@ -78,7 +99,8 @@ make_jdk() {
 # jars holding $3 (or fails, if $3 is FAIL), and whose get-jdk.sh pins $PIN
 machine() {
   m="$work/m$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"
-  mkdir -p "$m/root/opt/avpx/releases" "$m/tree/java/tools"
+  # The machine's own /tmp is where mktemp -d would put a folder (TMPDIR, in deploy below); /etc/avpx is there, /etc/letsencrypt isn't
+  mkdir -p "$m/root/opt/avpx/releases" "$m/root/var/lib" "$m/root/tmp" "$m/root/etc/avpx" "$m/tree/java/tools"
   if [ "$2" != NONE ]; then
     make_jdk "$m/root/opt/avpx-jdk-$2" "$2"
     ln -s "$m/root/opt/avpx-jdk-$2" "$m/root/opt/avpx-jdk"
@@ -110,7 +132,8 @@ sha_of() {
 # Runs the script under test ($1) on the machine $m with the rest as its arguments; gives back 0 or 1
 deploy() {
   s=$1; shift
-  if PATH="$fake:$PATH" AVPX_DEPLOY_ROOT="$m/root" FAKE_LOG="$m/log" FAKE_TREE="$m/tree" FAKE_HEAD="$FAKE_HEAD" sh "$s" "$@" > "$m/out" 2>&1; then
+  if PATH="$fake:$PATH" AVPX_DEPLOY_ROOT="$m/root" TMPDIR="$m/root/tmp" FAKE_ROOT="$m/root" FAKE_LOG="$m/log" FAKE_TREE="$m/tree" \
+    FAKE_HEAD="$FAKE_HEAD" sh "$s" "$@" > "$m/out" 2>&1; then
     return 0
   else
     return 1
@@ -145,9 +168,27 @@ all_cases() {
     && ! grep -q 'get-jdk into' "$m/log"; then :; else no 'a good deploy fetches that commit, puts both jars in place, restarts, and runs the installed smoke test'; fi
   # ...and every step that touched fetched code ran as avpx-build, with the settings and the certificate out of reach
   if grep 'systemd-run' "$m/log" | grep -v 'User=avpx-build' | grep -q .; then no 'every fetched-code step runs as avpx-build'; fi
-  if grep 'systemd-run' "$m/log" | grep -v 'InaccessiblePaths=/etc/avpx InaccessiblePaths=/etc/letsencrypt' | grep -q .; then no 'with /etc/avpx and /etc/letsencrypt out of reach'; fi
+  if grep 'systemd-run' "$m/log" | grep -v 'InaccessiblePaths=/etc/avpx InaccessiblePaths=-/etc/letsencrypt' | grep -q .; then no 'with /etc/avpx and /etc/letsencrypt out of reach'; fi
   grep 'systemd-run' "$m/log" | grep 'build.sh' | grep -q 'PrivateNetwork=yes' || no 'the build runs with no network'
   grep -q "chown avpx-build" "$m/log" || no 'the work folder is avpx-build own'
+  if grep 'systemd-run' "$m/log" | grep -v ':: HOME=[^ ]*/var/lib/avpx-deploy\.[^ ]* GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null :: ' | grep -q .; then
+    no "every avpx-build step has the work folder as its HOME, and git reads no settings from outside it"
+  fi
+  if ls "$m/root/var/lib" | grep -q .; then no 'the work folder is removed at the end'; fi
+
+  # A jar that is a link, to the settings, say: refused, though what it points at has the very bytes of the gates' jar, and nothing of
+  # it is copied anywhere. Then the same with the build folder itself a link, to a folder holding both.
+  machine "$C1" "$PIN" one
+  printf one > "$m/root/etc/avpx/settings.json"
+  printf '#!/bin/sh\nmkdir -p "$(dirname "$0")/build"\nln -s "%s" "$(dirname "$0")/build/avpx-server.jar"\nprintf %%s "smoke one" > "$(dirname "$0")/build/avpx-smoke.jar"\n' \
+    "$m/root/etc/avpx/settings.json" > "$m/tree/java/build.sh"
+  if ! deploy "$s" "$C1" "$(sha_of one)" && [ ! -e "$m/root/opt/avpx/current" ] && [ ! -e "$m/root/opt/avpx/releases/$C1" ] \
+    && grep -q "didn't make both jars as plain files" "$m/out"; then :; else no 'a jar that is a link is refused, and nothing is copied'; fi
+  machine "$C1" "$PIN" one
+  printf one > "$m/root/etc/avpx/avpx-server.jar" && printf 'smoke one' > "$m/root/etc/avpx/avpx-smoke.jar"
+  printf '#!/bin/sh\nln -s "%s" "$(dirname "$0")/build"\n' "$m/root/etc/avpx" > "$m/tree/java/build.sh"
+  if ! deploy "$s" "$C1" "$(sha_of one)" && [ ! -e "$m/root/opt/avpx/current" ] && [ ! -e "$m/root/opt/avpx/releases/$C1" ] \
+    && grep -q "didn't make both jars as plain files" "$m/out"; then :; else no 'a build folder that is a link is refused, and nothing is copied'; fi
 
   # The jars aren't the tested ones
   machine "$C1" "$PIN" one
@@ -227,7 +268,12 @@ s/^case "\$commit" in \*\[!0-9a-f\]\*) refuse/case "$commit" in *[!0-9a-fA-Z;x]*
 s/^as_builder no-network env/as_builder network env/
 s/ -p InaccessiblePaths=\/etc\/avpx / /
 s/^  systemctl stop "\$service" || true$/  true/
-s/^  as_builder network sh "\$tree\/java\/tools\/get-jdk.sh"/  true "$tree\/java\/tools\/get-jdk.sh"/'
+s/^  as_builder network sh "\$tree\/java\/tools\/get-jdk.sh"/  true "$tree\/java\/tools\/get-jdk.sh"/
+s/InaccessiblePaths=-\/etc\/letsencrypt/InaccessiblePaths=\/etc\/letsencrypt/
+s/^work=\$(mktemp -d "\$root\/var\/lib\/avpx-deploy\.XXXXXXXXXX")$/work=$(mktemp -d)/
+s/ --setenv=HOME="\$work"//
+s/^  \[ -f "\$1" \] && \[ ! -L "\$1" \] && .*$/  [ -f "$1" ] \&\& [ ! -L "$1" ]/
+s/^  \[ -f "\$1" \] && \[ ! -L "\$1" \] && .*$/  true/'
 echo "$breaks" | while IFS= read -r edit; do
   sed "$edit" "$script" > "$work/broken.sh"
   if cmp -s "$work/broken.sh" "$script"; then echo "TAKE-OUT CAN'T RUN, its text isn't in the script: $edit"; exit 1; fi

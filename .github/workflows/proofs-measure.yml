@@ -1,11 +1,15 @@
 # FOR MEASURING ONLY: runs on a push to the proofs-measure branch, which is never merged. Written 2026-11-09 by Melanikus for AVPx
 # Dedicated Server.
 #
-# Round 2. Round 1 found pqik and pqxx, even as written, running until the runner was shut down, with ProVerif's clause count still
-# climbing. This round says whether that's memory (measure.sh now prints ProVerif's and the machine's every 30 seconds, and holds
-# ProVerif to 14 GiB so it says "out of memory" itself), and tries the two levers that change ProVerif's work but never an answer:
-# one query per run (with the phase-1 line out for authentication), and another selection function. It also runs again the two jobs
-# whose OCaml install hit the 5-minute limit on a slow mirror.
+# Round 3. Round 2 (the logs are kept outside the repository) found:
+# - pqnk kem-broken: both queries true, in 6 minutes and 1.3 GB;
+# - every pqik and pqxx job out of memory at 14 GiB, in 4 to 60 minutes, as written too: one query alone, the phase-1 line out,
+#   and either other selection function. And the clauses themselves are enormous: pqik q2 held 9,336 of them in 13 GB, about
+#   1.4 MB each.
+# So this round asks what makes them so big, one change to the model at a time, mostly on pqik q2 (out of memory in 10 minutes),
+# with pqxx q3 beside it (5 minutes). measure.sh says what each change is: names is the one a proof could rest on, if it's what
+# helps; dhpk, nobad and bounded change the model, only to find the cause. pqxx both-broken runs with names too, with the newer
+# leaks (a broken half's secrets given away as each is made), to see that it still finds the attacks.
 #
 # ProVerif is fetched, checked and built exactly as proofs.yml does it, and the comments there say why each step is so.
 name: Proofs, measured
@@ -26,23 +30,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { model: pqxx, variant: as-written, setting: '' }
-          - { model: pqxx, variant: as-written, setting: selterm }
-          - { model: pqxx, variant: as-written, setting: seltermmax }
-          - { model: pqxx, variant: as-written, setting: q1 }
-          - { model: pqxx, variant: as-written, setting: q2 }
-          - { model: pqxx, variant: as-written, setting: q3 }
-          - { model: pqxx, variant: as-written, setting: q4 }
-          - { model: pqik, variant: as-written, setting: '' }
-          - { model: pqik, variant: as-written, setting: selterm }
-          - { model: pqik, variant: as-written, setting: q1 }
-          - { model: pqik, variant: as-written, setting: q2 }
-          - { model: pqik, variant: as-written, setting: q3 }
-          - { model: pqik, variant: dh-broken, setting: q1 }
-          - { model: pqik, variant: dh-broken, setting: q2 }
-          - { model: pqik, variant: dh-broken, setting: q3 }
-          - { model: pqnk, variant: kem-broken, setting: '' }
-          - { model: pqxx, variant: both-broken, setting: '' }
+          - { model: pqik, variant: as-written, setting: q2+names }
+          - { model: pqik, variant: as-written, setting: q2+dhpk }
+          - { model: pqik, variant: as-written, setting: q2+nobad }
+          - { model: pqik, variant: as-written, setting: q2+bounded }
+          - { model: pqik, variant: as-written, setting: q2+names+dhpk }
+          - { model: pqik, variant: as-written, setting: q2+selterm+names }
+          - { model: pqik, variant: as-written, setting: q1+names }
+          - { model: pqik, variant: as-written, setting: names+dhpk }
+          - { model: pqxx, variant: as-written, setting: q3+names }
+          - { model: pqxx, variant: as-written, setting: q3+dhpk }
+          - { model: pqxx, variant: as-written, setting: q3+bounded }
+          - { model: pqxx, variant: both-broken, setting: names }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

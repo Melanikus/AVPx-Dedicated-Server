@@ -16,6 +16,8 @@
    - A2, relay to game: e, ee, se, ekem, skem (to the game's static ML-KEM key), and EncryptAndHash(the relay's session id);
    - A3, game to relay: an empty EncryptAndHash at nonce 1, the game's key confirmation. Only then does the relay take the player;
    - Split: one key each way. The game then sends a control message sealed with its key, holding a secret.
+     (Split gives each direction a secret, and epoch 0's key is made from it: 5.1 points 3 and 8. The model makes those two one-way
+     steps one, splitir and splitri, because a one-way function of a one-way function is the same to the attacker here.)
    - MixKey is HKDF: two functions of (ck, the secret) that give the next ck and the next k, one-way and with no other property.
    - ECDH is Diffie-Hellman: exp(exp(g, x), y) = exp(exp(g, y), x). ML-KEM is an ideal KEM. AES-256-GCM is ideal authenticated
      encryption, opening only with its key, nonce and associated data (here, h). The nonces are n0 and n1, as in section 5.
@@ -46,9 +48,10 @@
       included, can be taken for the honest player.
 
    THE BROKEN HALVES. The lines marked LEAKDH and LEAKKEM are comments here. proofs/run.sh makes copies with them switched on:
-   - LEAKDH breaks ECDH entirely: the attacker is given every static ECDH secret (the relay's and the honest player's) and every ECDH
-     result an honest side computes;
-   - LEAKKEM breaks ML-KEM the same way: every static ML-KEM secret key, and every ML-KEM secret an honest side computes.
+   - LEAKDH breaks ECDH entirely: the attacker is given every ECDH exponent as it's made, the static ones (the relay's and the honest
+     player's) and every ephemeral;
+   - LEAKKEM breaks ML-KEM the same way: every ML-KEM secret key, static and ephemeral, and every encapsulation's coins.
+   That's at least as much as every value those secrets make (proofs/README.md says why).
    Either alone must keep all three queries true: that's the hybrid. Both together make them false, so the model isn't trivially true. *)
 
 free c: channel.
@@ -119,8 +122,11 @@ query s: G, h: bitstring, kir: key, kri: key;
 (* The game: knows the relay's static keys before it says anything, and holds its own *)
 let Initiator(cdh: exponent, ckem: kemsk, sdhPub: G, skemPub: kempk) =
   new e: exponent;
+  (*LEAKDH out(c, e); LEAKDH*)
   new ek: kemsk;
+  (*LEAKKEM out(c, ek); LEAKKEM*)
   new r1: coins;
+  (*LEAKKEM out(c, r1); LEAKKEM*)
   let cdhPub = exp(g, cdh) in
   let h0 = hash0(protoname) in
   let ck0 = h0 in
@@ -133,13 +139,11 @@ let Initiator(cdh: exponent, ckem: kemsk, sdhPub: G, skemPub: kempk) =
   let h5 = hash(h4, kempk2b(kemPub(ek))) in
   (* es *)
   let dhes = G2b(exp(sdhPub, e)) in
-  (*LEAKDH out(c, dhes); LEAKDH*)
   let ck1 = kdfck(ck0, dhes) in
   (* skem, to the relay's static ML-KEM key *)
   let ct1 = kemct(skemPub, r1) in
   let h6 = hash(h5, ct1) in
   let ss1 = kemss(skemPub, r1) in
-  (*LEAKKEM out(c, ss1); LEAKKEM*)
   let ck2 = kdfck(ck1, ss1) in
   let k2 = kdfk(ck1, ss1) in
   (* s: the game's two static public keys, sealed *)
@@ -147,7 +151,6 @@ let Initiator(cdh: exponent, ckem: kemsk, sdhPub: G, skemPub: kempk) =
   let h7 = hash(h6, sct) in
   (* ss *)
   let dhss = G2b(exp(sdhPub, cdh)) in
-  (*LEAKDH out(c, dhss); LEAKDH*)
   let ck3 = kdfck(ck2, dhss) in
   let k3 = kdfk(ck2, dhss) in
   let a1tag = aenc(k3, n0, h7, empty) in
@@ -157,18 +160,14 @@ let Initiator(cdh: exponent, ckem: kemsk, sdhPub: G, skemPub: kempk) =
   in(c, (repub: G, ct2: bitstring, ct3: bitstring, a2: bitstring));
   let h9 = hash(h8, G2b(repub)) in
   let dhee = G2b(exp(repub, e)) in
-  (*LEAKDH out(c, dhee); LEAKDH*)
   let ck4 = kdfck(ck3, dhee) in
   let dhse = G2b(exp(repub, cdh)) in
-  (*LEAKDH out(c, dhse); LEAKDH*)
   let ck5 = kdfck(ck4, dhse) in
   let h10 = hash(h9, ct2) in
   let ss2 = kemdec(ek, ct2) in
-  (*LEAKKEM out(c, ss2); LEAKKEM*)
   let ck6 = kdfck(ck5, ss2) in
   let h11 = hash(h10, ct3) in
   let ss3 = kemdec(ckem, ct3) in
-  (*LEAKKEM out(c, ss3); LEAKKEM*)
   let ck7 = kdfck(ck6, ss3) in
   let k7 = kdfk(ck6, ss3) in
   let sid = adec(k7, n0, h11, a2) in
@@ -213,8 +212,11 @@ let Responder(sdh: exponent, skem: kemsk) =
   let h8 = hash(h7, a1tag) in
   (* A2 *)
   new re: exponent;
+  (*LEAKDH out(c, re); LEAKDH*)
   new r2: coins;
+  (*LEAKKEM out(c, r2); LEAKKEM*)
   new r3: coins;
+  (*LEAKKEM out(c, r3); LEAKKEM*)
   new sid: bitstring;
   let repub = exp(g, re) in
   let h9 = hash(h8, G2b(repub)) in

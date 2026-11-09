@@ -13,6 +13,8 @@
    - A2, relay to game: e, ee, ekem, and EncryptAndHash(the relay's session id);
    - A3, game to relay: an empty EncryptAndHash, the game's key confirmation;
    - Split: one key each way. The game then sends a control message sealed with its key, holding a secret.
+     (Split gives each direction a secret, and epoch 0's key is made from it: 5.1 points 3 and 8. The model makes those two one-way
+     steps one, splitir and splitri, because a one-way function of a one-way function is the same to the attacker here.)
    - MixKey is HKDF: here two functions of (ck, the secret) that give the next ck and the next k. They're one-way and have no other
      property, which is what HKDF-SHA-384 is taken to be.
    - ECDH is Diffie-Hellman: exp(exp(g, x), y) = exp(exp(g, y), x).
@@ -36,9 +38,10 @@
       static keys, derived the same two keys over the same transcript, in a session of its own; and each such relay session answers
       only one game session, so a replayed handshake can't be taken twice.
 
-   The lines marked LEAKDH and LEAKKEM are comments here. proofs/run.sh makes copies with them switched on, giving the attacker every ECDH
-   secret, or every ML-KEM secret, or both, to show that either half of the hybrid alone keeps both queries true, and that with both
-   broken they fail (so the model isn't trivially true). *)
+   The lines marked LEAKDH and LEAKKEM are comments here. proofs/run.sh makes copies with them switched on. A broken half gives the
+   attacker its secrets, each as it's made: LEAKDH every ECDH exponent, the relay's static one and every ephemeral; LEAKKEM every ML-KEM
+   secret key and every encapsulation's coins. That's at least as much as every value those secrets make (proofs/README.md says why).
+   Either half alone must keep both queries true, and with both broken they must fail, so the model isn't trivially true. *)
 
 free c: channel.
 
@@ -97,8 +100,11 @@ query s: G, h: bitstring, kir: key, kri: key; inj-event(IDone(s, h, kir, kri)) =
 (* The game: knows the relay's static keys (from the signed directory) before it says anything *)
 let Initiator(sdhPub: G, skemPub: kempk) =
   new e: exponent;
+  (*LEAKDH out(c, e); LEAKDH*)
   new ek: kemsk;
+  (*LEAKKEM out(c, ek); LEAKKEM*)
   new r1: coins;
+  (*LEAKKEM out(c, r1); LEAKKEM*)
   let h0 = hash0(protoname) in
   let ck0 = h0 in
   let h1 = hash(h0, region) in
@@ -110,13 +116,11 @@ let Initiator(sdhPub: G, skemPub: kempk) =
   let h5 = hash(h4, kempk2b(kemPub(ek))) in
   (* es *)
   let dhes = G2b(exp(sdhPub, e)) in
-  (*LEAKDH out(c, dhes); LEAKDH*)
   let ck1 = kdfck(ck0, dhes) in
   (* skem *)
   let ct1 = kemct(skemPub, r1) in
   let h6 = hash(h5, ct1) in
   let ss1 = kemss(skemPub, r1) in
-  (*LEAKKEM out(c, ss1); LEAKKEM*)
   let ck2 = kdfck(ck1, ss1) in
   let k2 = kdfk(ck1, ss1) in
   let a1tag = aenc(k2, n0, h6, empty) in
@@ -126,11 +130,9 @@ let Initiator(sdhPub: G, skemPub: kempk) =
   in(c, (repub: G, ct2: bitstring, a2: bitstring));
   let h8 = hash(h7, G2b(repub)) in
   let dhee = G2b(exp(repub, e)) in
-  (*LEAKDH out(c, dhee); LEAKDH*)
   let ck3 = kdfck(ck2, dhee) in
   let h9 = hash(h8, ct2) in
   let ss2 = kemdec(ek, ct2) in
-  (*LEAKKEM out(c, ss2); LEAKKEM*)
   let ck4 = kdfck(ck3, ss2) in
   let k4 = kdfk(ck3, ss2) in
   let sid = adec(k4, n0, h9, a2) in
@@ -167,7 +169,9 @@ let Responder(sdh: exponent, skem: kemsk) =
   let h7 = hash(h6, a1tag) in
   (* A2: e, ee, ekem, and the session id *)
   new re: exponent;
+  (*LEAKDH out(c, re); LEAKDH*)
   new r2: coins;
+  (*LEAKKEM out(c, r2); LEAKKEM*)
   new sid: bitstring;
   let repub = exp(g, re) in
   let h8 = hash(h7, G2b(repub)) in
@@ -194,7 +198,9 @@ let Responder(sdh: exponent, skem: kemsk) =
 
 process
   new sdh: exponent;
+  (*LEAKDH out(c, sdh); LEAKDH*)
   new skem: kemsk;
+  (*LEAKKEM out(c, skem); LEAKKEM*)
   out(c, (exp(g, sdh), kemPub(skem)));
   (
     (! Initiator(exp(g, sdh), kemPub(skem)))

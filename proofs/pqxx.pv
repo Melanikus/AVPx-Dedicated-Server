@@ -16,6 +16,8 @@
    - B5, joiner to host: an EncryptAndHash of the joiner's 32 bytes, which the host checks against B1's commitment: the joiner's key
      confirmation, after B4's skem;
    - Split, then each side sends a sealed game datagram holding a secret.
+     (Split gives each direction a secret, and epoch 0's key is made from it: 5.1 points 3 and 8. The model makes those two one-way
+     steps one, splitir and splitri, because a one-way function of a one-way function is the same to the attacker here.)
    The joiner takes the host only if the fingerprint of the static keys in B2 is the one the listing gave. The host takes any joiner (in
    the game, anyone may join), and what's proved is about a joiner whose identity it knows.
 
@@ -30,7 +32,9 @@
       over the same transcript;
    4. the joiner's authentication to the host, injective: when the host finishes with the honest joiner's identity, that joiner derived
       the same keys over the same transcript.
-   The LEAKDH and LEAKKEM lines are comments here; proofs/run.sh switches them on in copies (proofs/README.md). *)
+   The LEAKDH and LEAKKEM lines are comments here; proofs/run.sh switches them on in copies. A broken half gives the attacker its
+   secrets, each as it's made: every ECDH exponent, static and ephemeral, or every ML-KEM secret key and every encapsulation's coins
+   (proofs/README.md). *)
 
 free c: channel.
 
@@ -93,8 +97,11 @@ let Joiner(jdh: exponent, jkem: kemsk, hostfp: bitstring) =
   let jdhPub = exp(g, jdh) in
   let jkemPub = kemPub(jkem) in
   new e: exponent;
+  (*LEAKDH out(c, e); LEAKDH*)
   new ek: kemsk;
+  (*LEAKKEM out(c, ek); LEAKKEM*)
   new r3: coins;
+  (*LEAKKEM out(c, r3); LEAKKEM*)
   new nj: bitstring;
   let h0 = hash0(protoname) in
   let ck0 = h0 in
@@ -107,18 +114,15 @@ let Joiner(jdh: exponent, jkem: kemsk, hostfp: bitstring) =
   in(c, (hepub: G, ct2: bitstring, sealedS: bitstring, b2tag: bitstring));
   let h2 = hash(h1, G2b(hepub)) in
   let dhee = G2b(exp(hepub, e)) in
-  (*LEAKDH out(c, dhee); LEAKDH*)
   let ck1 = kdfck(ck0, dhee) in
   let h3 = hash(h2, ct2) in
   let ss2 = kemdec(ek, ct2) in
-  (*LEAKKEM out(c, ss2); LEAKKEM*)
   let ck2 = kdfck(ck1, ss2) in
   let k2 = kdfk(ck1, ss2) in
   let (hsdh: G, hskem: kempk) = adec(k2, n0, h3, sealedS) in
   let h4 = hash(h3, sealedS) in
   if fp(hsdh, hskem) = hostfp then
   let dhes = G2b(exp(hsdh, e)) in
-  (*LEAKDH out(c, dhes); LEAKDH*)
   let ck3 = kdfck(ck2, dhes) in
   let k3 = kdfk(ck2, dhes) in
   let m2 = adec(k3, n0, h4, b2tag) in
@@ -128,13 +132,11 @@ let Joiner(jdh: exponent, jkem: kemsk, hostfp: bitstring) =
   let ct3 = kemct(hskem, r3) in
   let h6 = hash(h5, ct3) in
   let ss3 = kemss(hskem, r3) in
-  (*LEAKKEM out(c, ss3); LEAKKEM*)
   let ck4 = kdfck(ck3, ss3) in
   let k4 = kdfk(ck3, ss3) in
   let sealedJ = aenc(k4, n0, h6, (jdhPub, jkemPub)) in
   let h7 = hash(h6, sealedJ) in
   let dhse = G2b(exp(hepub, jdh)) in
-  (*LEAKDH out(c, dhse); LEAKDH*)
   let ck5 = kdfck(ck4, dhse) in
   let k5 = kdfk(ck4, dhse) in
   let b3tag = aenc(k5, n0, h7, empty) in
@@ -144,7 +146,6 @@ let Joiner(jdh: exponent, jkem: kemsk, hostfp: bitstring) =
   in(c, (ct4: bitstring, b4tag: bitstring));
   let h9 = hash(h8, ct4) in
   let ss4 = kemdec(jkem, ct4) in
-  (*LEAKKEM out(c, ss4); LEAKKEM*)
   let ck6 = kdfck(ck5, ss4) in
   let k6 = kdfk(ck5, ss4) in
   let nh = adec(k6, n0, h9, b4tag) in
@@ -170,7 +171,9 @@ let Host(hdh: exponent, hkem: kemsk, honestJ: G) =
   let h1 = hash(hash(hash(hp, G2b(epub)), kempk2b(ekPub)), cj) in
   (* B2 *)
   new he: exponent;
+  (*LEAKDH out(c, he); LEAKDH*)
   new r2: coins;
+  (*LEAKKEM out(c, r2); LEAKKEM*)
   let hepub = exp(g, he) in
   let h2 = hash(h1, G2b(hepub)) in
   let dhee = G2b(exp(epub, he)) in
@@ -204,6 +207,7 @@ let Host(hdh: exponent, hkem: kemsk, honestJ: G) =
   let h8 = hash(h7, b3tag) in
   (* B4: skem to the joiner's static key, and the host's confirmation *)
   new r4: coins;
+  (*LEAKKEM out(c, r4); LEAKKEM*)
   new nh: bitstring;
   let ct4 = kemct(jkemPub, r4) in
   let h9 = hash(h8, ct4) in
@@ -226,9 +230,13 @@ let Host(hdh: exponent, hkem: kemsk, honestJ: G) =
 
 process
   new hdh: exponent;
+  (*LEAKDH out(c, hdh); LEAKDH*)
   new hkem: kemsk;
+  (*LEAKKEM out(c, hkem); LEAKKEM*)
   new jdh: exponent;
+  (*LEAKDH out(c, jdh); LEAKDH*)
   new jkem: kemsk;
+  (*LEAKKEM out(c, jkem); LEAKKEM*)
   out(c, (exp(g, hdh), kemPub(hkem), exp(g, jdh), kemPub(jkem)));
   (
     (! Joiner(jdh, jkem, fp(exp(g, hdh), kemPub(hkem))))

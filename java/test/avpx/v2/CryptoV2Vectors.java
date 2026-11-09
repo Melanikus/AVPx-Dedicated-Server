@@ -163,6 +163,8 @@ public final class CryptoV2Vectors {
         + " can check one. handshakeB is handshake B (section 8, and 5.1 points 17 to 20) the same way, joiner and host, with both"
         + " identities and fingerprints, nJ and its commitment, nH, the transcript (h after B5) and the check code. Each side draws its"
         + " random values in the order they first appear in its own messages. B's datagrams are end to end (AVPE), with a cookie of 0."
+        + " handshakeB.refusals are whole B messages a side must refuse, by refusal number (section 16). sealedGame is section 9's sealed"
+        + " game datagrams (AVPG), sealed under handshakeB's split: the joiner's with keyJoinerToHost, the host's with keyHostToJoiner."
         + " result is \"valid\" or \"invalid\".");
     top.put("protocol", HandshakeA.PROTOCOL);
     Map<String, Object> handshake = new LinkedHashMap<>();
@@ -172,12 +174,14 @@ public final class CryptoV2Vectors {
     top.put("handshakeDatagrams", datagrams);
     List<Object> sealed = sealed(keys);
     top.put("sealed", sealed);
-    top.put("handshakeB", handshakeB());
+    List<Object> sealedGame = new ArrayList<>();
+    top.put("handshakeB", handshakeB(sealedGame));
     top.put("nonces", nonces(keys));
     top.put("epochKeys", epochKeys(keys));
     top.put("aesGcm", aesGcm());
     top.put("mlkem", mlkem());
     top.put("signatures", signatures());
+    top.put("sealedGame", sealedGame);
     top.put("refusals", refusals(datagrams, sealed));
     StringBuilder out = new StringBuilder();
     write(out, top, "");
@@ -192,7 +196,8 @@ public final class CryptoV2Vectors {
   }
 
   // Handshake B, walked step by step, then held to the real HandshakeB (java/test/avpx/v2/HandshakeB.java), as handshake A is
-  private static Map<String, Object> handshakeB() {
+  // Handshake B, walked step by step, then held to HandshakeB. Its split also seals the sealed game datagrams, which go into sealedGame.
+  private static Map<String, Object> handshakeB(List<Object> sealedGame) {
     int relayPort = 27507;
     KeyPair hostP384 = P384.generate(ScriptedRandom.seeded(801));
     ScriptedRandom hostKemRandom = ScriptedRandom.seeded(802);
@@ -319,6 +324,27 @@ public final class CryptoV2Vectors {
       datagrams.put("b" + (i + 1), list);
     }
 
+    // Refusal 10's bytes: a B2 from a host with other static keys, sealed under the fingerprint the listing names. Every tag checks,
+    // because the prologue is the one the joiner expects; only the fingerprint of the statics inside is wrong, and the joiner refuses it.
+    HandshakeB.Identity other = HandshakeB.Identity.of(P384.generate(ScriptedRandom.seeded(808)), MlKem.generate(ScriptedRandom.seeded(809)));
+    byte[] otherB2 = b2From(relayPort, host.fingerprint(), other, e, ek, b1);
+    HandshakeB.Joiner refuses = HandshakeB.writeB1(REGION, relayPort, host.fingerprint(), joiner, ScriptedRandom.seeded(805));
+    must(Arrays.equals(refuses.b1(), b1) && refuses.readB2(otherB2) == null, "the joiner took a B2 from a host the listing didn't name");
+
+    // Refusal 21's bytes: B5 revealing another nJ, with a good tag (the joiner holds the keys). SHA-384 of it isn't B1's commitment, so
+    // the host refuses it. The same handshake again, from the same randomness, up to B4.
+    HandshakeB.Joiner liar = HandshakeB.writeB1(REGION, relayPort, host.fingerprint(), joiner, ScriptedRandom.seeded(805));
+    HandshakeB.Host fooled = HandshakeB.readB1(REGION, relayPort, host, liar.b1(), ScriptedRandom.seeded(806));
+    byte[] otherNJ = SeededRandom.of(810).next(HandshakeB.NONCE_BYTES);
+    HandshakeB.Joiner.Done lied = liar.readB4(fooled.readB3(liar.readB2(fooled.b2())), otherNJ);
+    must(lied != null && !Arrays.equals(lied.b5(), b5) && fooled.readB5(lied.b5()) == null, "the host took a B5 whose nJ isn't B1's");
+    List<Object> refusals = List.of(
+        refusal(10, "B2 from a host with other static keys, sealed under the fingerprint the listing names: every tag checks, the"
+            + " fingerprint of the statics doesn't (the joiner refuses it)", otherB2),
+        refusal(21, "B5 revealing another nJ, with a good tag: SHA-384 of it isn't B1's commitment (the host refuses it)", lied.b5()));
+
+    sealedGame.addAll(sealedGame(split));
+
     return fields("protocol", HandshakeB.PROTOCOL, "region", REGION, "relayPort", (long) relayPort,
         "host", identityFields(hostP384, lastDraws(hostKemRandom, 64).get(0), host),
         "joiner", identityFields(joinerP384, lastDraws(joinerKemRandom, 64).get(0), joiner),
@@ -332,7 +358,74 @@ public final class CryptoV2Vectors {
         "b1", hex(b1), "b2", hex(b2), "b3", hex(b3), "b4", hex(b4), "b5", hex(b5), "steps", steps,
         "split", fields("keyJoinerToHost", hex(split.initiatorKey()), "keyHostToJoiner", hex(split.responderKey()), "ivJoinerToHost",
             hex(split.initiatorIv()), "ivHostToJoiner", hex(split.responderIv())),
-        "transcript", hex(transcript), "checkCode", HandshakeB.checkCode(transcript), "datagrams", datagrams);
+        "transcript", hex(transcript), "checkCode", HandshakeB.checkCode(transcript), "datagrams", datagrams, "refusals", refusals);
+  }
+
+  // B2 as a host with the identity `as` would make it for B1, but with the prologue naming `fingerprint`. The host's draws are the same
+  // as the real B2's (seed 806), so only the statics and es differ. For a test vector only: it's the case refusal 10 is for, a host
+  // that knows the listing's fingerprint but not its keys.
+  private static byte[] b2From(int relayPort, byte[] fingerprint, HandshakeB.Identity as, KeyPair e, KeyPair ek, byte[] b1) {
+    Noise noise = new Noise(HandshakeB.PROTOCOL);
+    noise.mixHash(Arrays.copyOf(REGION.getBytes(StandardCharsets.US_ASCII), REGION.length() + 1));
+    noise.mixHash(new byte[] {(byte) relayPort, (byte) (relayPort >>> 8)});
+    noise.mixHash(fingerprint);
+    int eBytes = P384.encode((ECPublicKey) e.getPublic()).length;
+    int ekBytes = MlKem.encode(ek.getPublic()).length;
+    noise.mixHash(Arrays.copyOfRange(b1, 0, eBytes));
+    noise.mixHash(Arrays.copyOfRange(b1, eBytes, eBytes + ekBytes));
+    noise.mixHash(Arrays.copyOfRange(b1, eBytes + ekBytes, b1.length));
+    ScriptedRandom hostRandom = ScriptedRandom.seeded(806);
+    KeyPair re = P384.generate(hostRandom);
+    byte[] reP384 = P384.encode((ECPublicKey) re.getPublic());
+    noise.mixHash(reP384);
+    noise.mixKey(P384.agree(re.getPrivate(), (ECPublicKey) e.getPublic()));
+    MlKem.Encapsulated ekem = MlKem.encapsulate(ek.getPublic(), hostRandom);
+    noise.mixHash(ekem.ciphertext());
+    noise.mixKey(ekem.secret());
+    byte[] sealedStatics = noise.encryptAndHash(as.statics());
+    noise.mixKey(P384.agree(as.p384().getPrivate(), (ECPublicKey) e.getPublic()));
+    byte[] tag = noise.encryptAndHash(NOTHING);
+    return join(reP384, ekem.ciphertext(), sealedStatics, tag);
+  }
+
+  // Section 9's sealed game datagrams (AVPG), sealed here by the rule from the primitives the known answers hold (Gcm, Hkdf, Noise.nonce).
+  // The relay never seals one, so this is the one place the server's side writes them down, and the game's own code must make and open
+  // the same bytes. Both edges of a datagram's size, and the last counter of epoch 0 and the first of epoch 1.
+  //   bytes 0-3 "AVPG"; 4-11 the counter, 8 bytes little-endian; then the ENet datagram sealed; then the 16-byte tag. The AAD is bytes 0-11.
+  private static List<Object> sealedGame(Noise.Split split) {
+    List<Object> out = new ArrayList<>();
+    Object[][] cases = {
+        {"joiner", 0L, 1392}, {"joiner", 1L, 20}, {"joiner", (1L << 20) - 1, 20}, {"joiner", 1L << 20, 20},
+        {"host", 0L, 0}, {"host", 1L, 1472},
+    };
+    SeededRandom r = SeededRandom.of(811);
+
+    for (Object[] c : cases) {
+      boolean fromJoiner = c[0].equals("joiner");
+      long counter = (Long) c[1];
+      byte[] message = r.next((Integer) c[2]);
+      byte[] key = fromJoiner ? split.initiatorKey() : split.responderKey();
+      byte[] iv = fromJoiner ? split.initiatorIv() : split.responderIv();
+      long epoch = counter >>> Channel.EPOCH_SHIFT;
+      byte[] epochKey = epoch == 0 ? key : Hkdf.expand(key, Channel.epochInfo(epoch), Noise.KEY_BYTES);
+      byte[] aad = new byte[12];
+      aad[0] = 'A';
+      aad[1] = 'V';
+      aad[2] = 'P';
+      aad[3] = 'G';
+
+      for (int i = 0; i < 8; i++) {
+        aad[4 + i] = (byte) (counter >>> (8 * i));
+      }
+
+      byte[] sealed = join(aad, Gcm.seal(epochKey, Noise.nonce(iv, counter), aad, message));
+      must(sealed.length == message.length + 28 && sealed.length <= 1500, "a sealed game datagram of the wrong size");
+      must(Arrays.equals(Gcm.open(epochKey, Noise.nonce(iv, counter), aad, Arrays.copyOfRange(sealed, 12, sealed.length)), message),
+          "a sealed game datagram that doesn't open");
+      out.add(fields("from", c[0], "counter", counter, "epoch", epoch, "message", hex(message), "sealed", hex(sealed)));
+    }
+
+    return out;
   }
 
   // Handshake A, walked step by step, then held to the real HandshakeA: fills "into", and gives back the keys both sides got

@@ -1,0 +1,10 @@
+# Issues: only the two forms below, and security problems sent to private reporting instead (SECURITY.md). Written 2026-11-09 by
+# Melanikus for AVPx Dedicated Server.
+blank_issues_enabled: false
+contact_links:
+  - name: A security problem
+    url: https://github.com/Melanikus/AVPx-Dedicated-Server/security/advisories/new
+    about: Report it privately here, never in a public issue (SECURITY.md).
+  - name: A problem in the game itself
+    url: https://github.com/Melanikus/AvP/issues
+    about: The game's side (its Find games page, its networking) lives in the game's own repository.

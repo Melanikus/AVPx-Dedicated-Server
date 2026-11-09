@@ -1,0 +1,26 @@
+# The form for a new feature. Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
+name: A feature
+description: Something new the server could do. Open this before writing the code, so its shape can be agreed first.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: why
+    attributes:
+      label: What it's for
+      description: Who needs it, and what they can't do without it.
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What it would do
+      description: If it changes what the server says or hears, which part of PROTOCOL.md changes.
+    validations:
+      required: true
+  - type: textarea
+    id: hostile
+    attributes:
+      label: What a hostile sender could do with it
+      description: Everything that arrives is hostile. What would the limits be, and what would be refused?
+    validations:
+      required: true

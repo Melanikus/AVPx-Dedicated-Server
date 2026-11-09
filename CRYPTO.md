@@ -155,7 +155,7 @@ This comes from Fourth's list (AvP-docs, engine/pq-native-needs.md). The names o
 | **Directory key** | ECDSA plus ML-DSA | offline, beside the root | signs the relays directory (section 12) |
 | **List key** | ECDSA plus ML-DSA | on the list's machine | signs each answer of `GET /v1/games` |
 | **A relay's static key** | ECDH P-384 plus ML-KEM-1024 | on that relay's machine | proves the relay, in handshake A |
-| **A player's identity key** | ECDH P-384 plus ML-KEM-1024 | made on first run, in the player's save folder, sealed with Windows' DPAPI (section 4.1) | proves a host or joiner, in handshake B |
+| **A player's identity key** | ECDH P-384 plus ML-KEM-1024 | made on first run, in the player's own LocalAppData folder, which never roams, sealed with Windows' DPAPI (section 4.1) | proves a host or joiner, in handshake B |
 | **Session keys** | AES-256 per direction | memory only, wiped at the end (section 9) | seal the messages |
 
 **Pinned in the game:** the root's public keys. There are two roots: the one in use, and the next one, made at the same time and kept offline apart. So a root can be replaced without the game being left with none.
@@ -169,8 +169,22 @@ This was Fourth's suggestion, and it's taken as the secure option: it's Windows'
   - for **this Windows user only** (never `CRYPTPROTECT_LOCAL_MACHINE`);
   - with `CRYPTPROTECT_UI_FORBIDDEN`;
   - with the optional entropy `AVPX identity v2`.
-  - The sealed blob and the public halves go in the save folder. The plain private keys exist only in memory while the game runs, and are wiped (`SecureZeroMemory`) when it ends.
-- **What it protects against:** someone who copies the save folder, a backup, or the disk. Only the same Windows user can open it.
+  - The plain private keys exist only in memory while the game runs, and are wiped (`SecureZeroMemory`) when it ends.
+- **Where it's kept:** the sealed blob and the public halves are one file, `%LOCALAPPDATA%AVPxidentity-v2.bin` (the folder from
+  `SHGetKnownFolderPath` with `FOLDERID_LocalAppData`), laid out as `net_identity_file.h` says. A `-dev -secondcopy` game keeps
+  `identity-v2-second-copy.bin` there, so two copies on one PC are still two players.
+  - **Not the save folder,** because Windows often moves Documents into OneDrive and copies it to the player's other PCs, where the
+    seal won't open. Each PC would make a new identity and copy it back, and two PCs would keep replacing each other's. LocalAppData
+    never roams.
+  - **Only the player's own file is read.** The file is opened once, and its owner is checked through that same handle
+    (`GetSecurityInfo`) before a byte of it is read. Anyone else's file is refused. The reason: `CryptUnprotectData` opens a blob
+    sealed with `CRYPTPROTECT_LOCAL_MACHINE` for any account on the machine, and the entropy is no secret, so a file planted by
+    someone else, with keys they know, would otherwise open. The game writes the file owned by this user, with one entry in its
+    access list, this user, and nothing inherited (a protected DACL).
+  - **On the disk before it's in place:** a new file is written with `CreateFileW` and `FlushFileBuffers`, then moved over the old
+    one in one step (`MoveFileEx`). After a power cut the file is either the old one or the whole new one, never one full of zeros,
+    which would cost the player their identity and their approval.
+- **What it protects against:** someone who copies the file, a backup, or the disk. Only the same Windows user can open it.
 - **What it can't:** a program running as that same user can unseal the blob too, and so can malware with the user's rights. That's true of every key a program keeps for its user.
 - **When it fails:** when `CryptUnprotectData` refuses, because the profile moved to another machine, the password was reset by an administrator, or the file is damaged. The game then:
   - makes a **new identity**;

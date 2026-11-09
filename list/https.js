@@ -37,6 +37,9 @@ const LIMITS = {
 };
 const kCertificateLookMilliseconds = 60 * 60 * 1000;
 
+// After a body too big is refused, how much more of it is thrown away before the connection is cut
+const kMostThrownAwayBytes = 64 * 1024;
+
 const kHeaders = {
   'Content-Type': 'application/json; charset=utf-8',
   'Cache-Control': 'no-store',
@@ -93,34 +96,44 @@ function createListServer({ relay, certFile, keyFile, log, now = Date.now, hashe
       return;
     }
 
-    // The body, at most kMostBodyBytes: one byte more and the request is refused there and then
+    // The body, at most kMostBodyBytes: one byte more and the request is refused there and then. The refusal is sent, and the connection
+    // closed once it has gone; what the sender is still sending is thrown away as it comes, up to kMostThrownAwayBytes, and past that
+    // the connection is cut. (Cutting it at once, before the answer has gone, leaves an honest sender with a broken connection and no
+    // answer, which the live test found.)
     const declared = request.headers['content-length'];
-
-    if (declared !== undefined && !(/^[0-9]{1,4}$/.test(declared) && Number(declared) <= kMostBodyBytes)) {
-      counts.tooBig++;
-      send(413, { error: 'the body is too big' });
-      request.destroy();
-      return;
-    }
-
     const parts = [];
     let size = 0;
     let refused = false;
 
+    const refuseTooBig = () => {
+      refused = true;
+      counts.tooBig++;
+      response.setHeader('Connection', 'close');
+      send(413, { error: 'the body is too big' });
+      response.on('finish', () => request.socket.end());
+    };
+
+    if (declared !== undefined && !(/^[0-9]{1,4}$/.test(declared) && Number(declared) <= kMostBodyBytes)) {
+      refuseTooBig();
+    }
+
     request.on('data', (part) => {
       size += part.length;
 
-      if (size > kMostBodyBytes && !refused) {
-        refused = true;
-        counts.tooBig++;
-        send(413, { error: 'the body is too big' });
-        request.destroy();
+      if (refused) {
+        if (size > kMostThrownAwayBytes) {
+          request.destroy();
+        }
+
         return;
       }
 
-      if (!refused) {
-        parts.push(part);
+      if (size > kMostBodyBytes) {
+        refuseTooBig();
+        return;
       }
+
+      parts.push(part);
     });
 
     request.on('end', () => {

@@ -152,7 +152,16 @@ The same test machine, on any host with Ubuntu 24.04 and a browser console, with
 
 **First run the Test build** (section 3, step 1), because step 8 below needs its commit.
 
-Then in the console, as root (`sudo -i` if you aren't), do **section C above, steps 2 to 8, exactly as written**: the updates and tools, ufw (SSH only), the users `avpx` and `avpx-build`, the folders, the throwaway certificate for `virginia.relay.avpx.test`, the settings, and the service. Step 9 holds too: the first deploy fetches the JDK.
+Then in the console, as root (`sudo -i` if you aren't), do **section C above, steps 2 to 8**: the updates and tools, ufw (SSH only), the users `avpx` and `avpx-build`, the folders, the throwaway certificate, the settings, and the service. Step 9 holds too: the first deploy fetches the JDK.
+
+**One change: name the region after where the machine really is.** Section C is written for AWS's us-east-1, in Virginia, so it says `virginia`. A droplet in DigitalOcean's nyc3 (New York) is `newyork`, and players see that name, so it must say where the machine is. In steps 6 and 7, then:
+- **the certificate** is for `newyork.relay.avpx.test`:
+  ```
+  cd /etc/avpx/tls && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout newyork-key.pem -out newyork-cert.pem -days 30 -subj "/CN=newyork.relay.avpx.test" -addext "subjectAltName=DNS:newyork.relay.avpx.test" -addext "basicConstraints=critical,CA:FALSE" -addext "extendedKeyUsage=serverAuth" && chown root:avpx newyork-*.pem && chmod 0640 newyork-*.pem
+  ```
+- **the settings** say `"region": "newyork"`, `"certFile": "/etc/avpx/tls/newyork-cert.pem"` and `"keyFile": "/etc/avpx/tls/newyork-key.pem"`, and their one relay is `{ "region": "newyork", "host": "newyork.relay.avpx.test", "port": 27500 }`.
+
+On another host, use that data centre's own place the same way.
 
 ### 3. The first deploy, by hand
 
@@ -190,8 +199,8 @@ Nothing is open to anyone else. **To be done with it:** destroy the droplet in D
 ## Later: the public machine
 
 When SERVER-BLOCKERS.md says `Nothing.`, GitHub's **Deploy** workflow (`.github/workflows/deploy.yml`) puts each version on the public machine, after you approve its `production` environment. It needs:
-- **the domain,** with DNS names for the list and for `virginia.relay.<the domain>`;
-- **a Let's Encrypt certificate covering both names,** so the smoke test's check against the relay's name passes: `certbot certonly --standalone -d <the list's name> -d virginia.relay.<the domain>`, with `certificate-hook.sh` as its deploy hook;
+- **the domain,** with DNS names for the list and for `<region>.relay.<the domain>`, the region named after where the machine really is (`virginia` on AWS us-east-1, `newyork` in DigitalOcean nyc3);
+- **a Let's Encrypt certificate covering both names,** so the smoke test's check against the relay's name passes: `certbot certonly --standalone -d <the list's name> -d <region>.relay.<the domain>`, with `certificate-hook.sh` as its deploy hook;
 - **the firewall opened** to the game's ports (`sh deploy/firewall.sh list`, and the same in Lightsail's);
 - **an IAM role** that trusts only this repository's `production` environment through GitHub's OIDC, and may only run `avpx-deploy` on the one machine (`ssm:SendCommand`, `ssm:GetCommandInvocation`). No Lightsail rights;
 - **the repository variables** `AVPX_DEPLOY_ROLE_ARN`, `AVPX_DEPLOY_MACHINE` (the `mi-` id) and `AVPX_DEPLOY_REGION` (`us-east-1`). Until they're set, the workflow refuses.
@@ -200,7 +209,7 @@ When SERVER-BLOCKERS.md says `Nothing.`, GitHub's **Deploy** workflow (`.github/
 
 ## Adding a region: a relay-only machine
 
-The first version runs on one machine, `virginia`, with the relay and the list. Each later region (Sao Paulo or Paris, say) is a machine that runs **a relay only**: the same server, with its own region and its own pass key, and no list. No game needs changing: games read the relays from `GET /v1/relays`. The list can know 16 relays at most.
+The first version runs on one machine, with the relay and the list. Each machine's region is named after where it really is, because players see that name: the test machine is `newyork` (DigitalOcean nyc3, New York), and the AWS plan's machine is `virginia` (us-east-1). Each later region (Sao Paulo or Paris, say) is a machine that runs **a relay only**: the same server, with its own region and its own pass key, and no list. No game needs changing: games read the relays from `GET /v1/relays`. The list can know 16 relays at most.
 
 1. **The machine:** Ubuntu 24.04 LTS, near its players. In the provider's own firewall, let in only SSH (TCP 22) from your own IP, for now.
 2. **Set it up,** as root: section C's steps 2 to 5 exactly as written (the updates and tools, ufw with SSH only, the users `avpx` and `avpx-build`, the folders). **No certificate** (step 6): a relay-only machine has no list, so no HTTPS.
@@ -219,3 +228,14 @@ The first version runs on one machine, `virginia`, with the relay and the list. 
    ```
    - The pass key is typed or pasted from one root terminal to the other by hand. Never through the repository, a message, a file left anywhere, or a log.
    - Then `systemctl restart avpx-java` there, and check `GET /v1/relays` lists the new region. Games can use it from then on.
+
+## History
+
+What happened on real machines, so a later reader knows what has been proved there and what hasn't.
+
+- **2026-11-09, the first real deploy,** by hand, to the test machine in DigitalOcean nyc3 (New York). It stopped safely at the fetch, with nothing put in place, on two sandbox bugs the tests' stand-ins didn't model:
+  - `InaccessiblePaths=/etc/letsencrypt` fails when that folder isn't there, and a test machine has no certbot;
+  - the work folder was in `/tmp`, which the build steps can't see, since they have a `/tmp` of their own (`PrivateTmp`).
+  - Both were fixed in b8f2caf, and the stand-in now fails the same way the machine did. git's warning about avpx-build's missing home went too: HOME is the work folder now.
+- **2026-11-09, the second deploy,** of 6a885c9, passed. The pinned JDK was fetched and checked, the build ran with no network, the jars matched CI's, and `Smoke --installed` passed all 32 checks, healthy. No git warning.
+- **2026-11-09, the region renamed.** The machine had been set up as `virginia`, left over from the AWS plan, though it's in New York. It's `newyork` now, with a certificate of its own for `newyork.relay.avpx.test` (`Smoke --installed --name newyork.relay.avpx.test`: 32 of 32). `virginia` stays for AWS us-east-1.

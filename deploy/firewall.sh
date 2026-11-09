@@ -2,7 +2,7 @@
 # The firewall of a public machine, for the server. Written 2026-11-08 by Melanikus for AVPx Dedicated Server; the relay-only kind added
 # 2026-11-09.
 #
-#   sh deploy/firewall.sh list      the machine that runs the list and a relay (the first, virginia)
+#   sh deploy/firewall.sh list      the machine that runs the list and a relay (the first public one)
 #   sh deploy/firewall.sh relay     a machine that runs a relay only (a later region: no list, so no HTTPS and no certificate)
 #
 # Everything coming in is refused, except:

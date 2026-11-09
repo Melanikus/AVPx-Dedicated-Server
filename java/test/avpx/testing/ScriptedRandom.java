@@ -2,6 +2,8 @@ package avpx.testing;
 
 import java.security.SecureRandom;
 import java.security.SecureRandomSpi;
+import java.util.ArrayList;
+import java.util.List;
 
 // A "random" source that gives exactly the bytes it was given, in order, then refuses: for known-answer tests and test vectors only.
 // Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
@@ -12,9 +14,23 @@ import java.security.SecureRandomSpi;
 // Never for the server: it uses RandomBytes.secure() and SecureRandom.
 public final class ScriptedRandom extends SecureRandom {
   private static final long serialVersionUID = 1L;
+  private final Script script;
 
   private ScriptedRandom(Script script) {
     super(script, null);
+    this.script = script;
+  }
+
+  // Every draw so far, in order, each as the bytes it gave: so the test vectors can write down what each key was made from (FIPS 203's
+  // d and z, an encapsulation's m), as the bytes every other implementation takes, not as how Java happened to ask for them
+  public List<byte[]> draws() {
+    List<byte[]> out = new ArrayList<>();
+
+    for (byte[] d : script.draws) {
+      out.add(d.clone());
+    }
+
+    return out;
   }
 
   // The bytes to give, one after another
@@ -46,6 +62,7 @@ public final class ScriptedRandom extends SecureRandom {
     private final byte[] bytes;
     // Not kept if this were ever written out (SecureRandomSpi can be serialized; SeededRandom can't): nothing here ever is
     private final transient SeededRandom more;
+    private final ArrayList<byte[]> draws = new ArrayList<>();
     private int at;
 
     Script(byte[] bytes) {
@@ -67,15 +84,14 @@ public final class ScriptedRandom extends SecureRandom {
     protected void engineNextBytes(byte[] out) {
       if (more != null) {
         System.arraycopy(more.next(out.length), 0, out, 0, out.length);
-        return;
-      }
-
-      if (at + out.length > bytes.length) {
+      } else if (at + out.length > bytes.length) {
         throw new IllegalStateException("ScriptedRandom: asked for more bytes than it was given");
+      } else {
+        System.arraycopy(bytes, at, out, 0, out.length);
+        at += out.length;
       }
 
-      System.arraycopy(bytes, at, out, 0, out.length);
-      at += out.length;
+      draws.add(out.clone());
     }
 
     @Override

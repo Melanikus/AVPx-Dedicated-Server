@@ -1,9 +1,16 @@
 # Proofs: the formal models of CRYPTO.md's handshakes, run with ProVerif, every answer checked (proofs/run.sh). Written 2026-11-09 by
 # Melanikus for AVPx Dedicated Server.
 #
-# ProVerif comes from Ubuntu's own package archive, which apt checks against Ubuntu's signing keys before it installs anything; the
-# version is the one Ubuntu 24.04 carries, printed in the log. Building it from source, pinned to a release and its hash, is owed (a card
-# of its own). Every action is pinned to a full commit hash (CODING-STANDARD.md rule 7).
+# ProVerif is built here from INRIA's own source release, version 2.05, because Ubuntu 24.04 has no package of it (the first run said
+# "Unable to locate package proverif"). Downloaded code is untrusted until it's checked (AVP Tao 1):
+# - INRIA publishes no checksum and no signature for its releases, so the SHA-256 pinned below is the only check. It was taken by PO
+#   on 2026-11-09 from the file at that address (980,879 bytes, last changed 2026-08-07), whose build script was read before anything
+#   ran: it compiles the sources with OCaml's own tools, and fetches nothing;
+# - every path in the archive must sit under proverif2.05/, with none absolute and none climbing out with "..", before it's unpacked;
+# - OCaml comes from Ubuntu's archive, which apt checks against Ubuntu's signing keys;
+# - it's built with -nointeract, so nothing graphical is needed.
+# A new ProVerif release changes URL and KEY together, looked up the same way. Every action is pinned to a full commit hash
+# (CODING-STANDARD.md rule 7).
 name: Proofs
 
 on:
@@ -23,10 +30,27 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: ProVerif, from Ubuntu's signed archive
+      - name: OCaml, from Ubuntu's signed archive
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends proverif
-          dpkg-query -W proverif
+          sudo apt-get install -y -q --no-install-recommends ocaml-nox
+          ocamlopt -version
+      - name: ProVerif 2.05 from INRIA's source, checked by its pinned SHA-256, then built
+        env:
+          URL: https://bblanche.gitlabpages.inria.fr/proverif/proverif2.05.tar.gz
+          KEY: 4871f53c32ab4a04669a060c4886ba5d9080496963fb980a9a62d2c429ceabc4
+        run: |
+          set -eu
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/proverif.tar.gz" "$URL"
+          echo "$KEY  $RUNNER_TEMP/proverif.tar.gz" | sha256sum --check --strict
+          tar -tzf "$RUNNER_TEMP/proverif.tar.gz" > "$RUNNER_TEMP/proverif.list"
+          if grep -v '^proverif2\.05/' "$RUNNER_TEMP/proverif.list" | grep -q .; then echo 'a path outside proverif2.05/'; exit 1; fi
+          if grep -q '\.\.' "$RUNNER_TEMP/proverif.list"; then echo 'a path with ..'; exit 1; fi
+          tar -xzf "$RUNNER_TEMP/proverif.tar.gz" -C "$RUNNER_TEMP"
+          (cd "$RUNNER_TEMP/proverif2.05" && sh ./build -nointeract)
+          [ -x "$RUNNER_TEMP/proverif2.05/proverif" ] || { echo 'the build made no proverif'; exit 1; }
+          echo "$RUNNER_TEMP/proverif2.05" >> "$GITHUB_PATH"
       - name: Every model, every variant, every answer the one it must be
-        run: sh proofs/run.sh
+        run: |
+          proverif -help 2>&1 | head -n 3 || true
+          sh proofs/run.sh

@@ -17,7 +17,7 @@ Written 2026-11-09 by Melanikus. CRYPTO.md section 14 promises these: models of 
 
 ## Running them
 
-- **On GitHub:** the **Proofs** check (`.github/workflows/proofs.yml`) installs ProVerif from Ubuntu's signed archive and runs `sh proofs/run.sh` on every change.
+- **On GitHub:** the **Proofs** check (`.github/workflows/proofs.yml`) builds ProVerif 2.05 from INRIA's source release, checked by a pinned SHA-256 (INRIA publishes no checksum or signature, so the pin is the only check), with OCaml from Ubuntu's signed archive, and runs `sh proofs/run.sh` on every change.
 - **On your own machine:** install ProVerif (from your system's packages, or built from its source at bblanche.gitlabpages.inria.fr/proverif), then `sh proofs/run.sh`. It exits 0 only if every answer is the one it must be.
 
-**Not yet run:** these were written without running ProVerif (it isn't run on the author's machine unasked); the first Proofs run on GitHub is their first check. Whether Ubuntu 24.04's archive carries a `proverif` package is checked by that run too: if it doesn't, the check fails, and ProVerif is built from source instead.
+**Not yet run:** these were written without running ProVerif (it isn't run on the author's machine unasked); the first Proofs run on GitHub is their first check. (Ubuntu 24.04 turned out to have no ProVerif package, so it's built from source.)

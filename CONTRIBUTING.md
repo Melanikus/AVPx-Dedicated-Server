@@ -18,7 +18,7 @@ Written 2026-11-09 by Melanikus. Thank you for wanting to help. This server face
 2. **Make the change on a branch of your own fork,** with its tests and take-out rows. Before you push, run what the gates run:
    - `sh java/tools/get-jdk.sh <folder>` once, then `JAVA_HOME=<folder> AVPX_LIVE=1 sh java/build.sh`: the build, every test (the live ones on 127.0.0.1 only), and the coding standard;
    - the take-outs and the smoke test, as java.yml runs them;
-   - if you changed `deploy/`, its tests: `sh deploy/test-check-blockers.sh`, `sh deploy/test-remote-deploy.sh` (on Linux), `sh deploy/test-deploy-workflow.sh` and `sh deploy/make-ssm-document.sh --check`.
+   - if you changed `deploy/`, its tests: `sh deploy/test-check-blockers.sh`, `sh deploy/test-remote-deploy.sh` (on Linux), `sh deploy/test-deploy-workflow.sh`, `sh deploy/test-open-for-tester.sh`, `sh deploy/test-firewall.sh`, `sh deploy/test-get-aws-cli.sh` (needs gpg and zip) and `sh deploy/make-ssm-document.sh --check`.
 3. **Open a pull request** against `main`, and fill in its checklist.
 4. **Every check must be green.** GATES.md lists them, and branch protection requires each one, for everyone, administrators too. Workflows from forks wait for a maintainer to approve their first run.
 5. **A maintainer reviews it.** Expect questions: we ask for evidence (the test, the run, the line) rather than take a change on trust, our own included.

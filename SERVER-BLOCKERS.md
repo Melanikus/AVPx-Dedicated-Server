@@ -16,5 +16,6 @@ An item comes off the list only when it's done, in the commit that shows it, nev
 3. Every gate is green and required on main, Snyk included, with branch protection that holds for administrators too.
 4. The review of the post-quantum libraries' source (#10) is done.
 5. A first deploy, to a test machine nobody else can reach, passes the smoke client.
+6. The deploy's AWS command line tool is pinned (#17): `deploy/get-aws-cli.sh` has its version, its sha256 and AWS's key fingerprint, and `deploy/aws-cli-key.asc` is there. Until then the script refuses, and so would a deploy.
 
 End of the list.

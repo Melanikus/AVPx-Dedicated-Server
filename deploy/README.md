@@ -12,9 +12,13 @@ Written 2026-11-08 by Melanikus; for the Java server only from 2026-11-09. It's 
 | `remote-deploy.sh` | What the machine runs to take one commit: it fetches it, builds it as a user with no rights, checks the jars are the tested ones, switches, health-checks, and rolls back on failure |
 | `avpx-deploy.ssm.json` | The same script as an AWS Systems Manager document, `avpx-deploy`, made from `remote-deploy.sh` by `make-ssm-document.sh` |
 | `check-blockers.sh` | Refuses every deploy while SERVER-BLOCKERS.md lists anything |
+| `check-ubuntu-tools.sh` | For GitHub's deploy workflow: checks the curl, jq, gpg, unzip and sha256sum it uses are Ubuntu's own, unchanged |
+| `get-aws-cli.sh` | For GitHub's deploy workflow: fetches the pinned AWS command line tool, checked by AWS's signature, its sha256 and its version. It refuses until its pins and `aws-cli-key.asc` are filled in (card #17) |
 | `firewall.sh` | The firewall of a public machine, later: `list` for the list's machine (SSH, TCP 443, TCP 80 for the certificate, and the relay), `relay` for a relay-only one (SSH and the relay's UDP ports |
 | `certificate-hook.sh` | For the public machine, later: certbot runs it after each renewal |
 | `settings.example.json` | The settings, as `/etc/avpx/settings.json` holds them |
+| `settings.relay-only.example.json` | The settings of a relay-only machine, a later region's: no list |
+| `open-for-tester.sh`, `close-for-tester.sh`, `tester-address.sh` | A test machine opened to one tester's IPv4 address, and closed again |
 | `test-*.sh` | The tests of the above, run by the "Deploy scripts" check |
 
 ## The first test machine, step by step (tonight)

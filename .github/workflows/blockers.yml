@@ -48,3 +48,7 @@ jobs:
         run: sh deploy/test-open-for-tester.sh
       - name: firewall.sh (the list machine, and a relay-only one), with a stand-in ufw
         run: sh deploy/test-firewall.sh
+      - name: get-aws-cli.sh (the pinned AWS CLI, its signature, sha256 and version), against a made-up release signed with a test key
+        run: sh deploy/test-get-aws-cli.sh
+      - name: The curl, jq, gpg, unzip and sha256sum the deploy uses are Ubuntu's own on this runner, unchanged
+        run: sh deploy/check-ubuntu-tools.sh

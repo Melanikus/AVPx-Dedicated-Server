@@ -17,9 +17,15 @@
 #
 # The role, the machine and the region come from the repository's variables (not secrets: none of them gives access by itself), and
 # each is held to its shape; until they're set, the deploy job refuses. No action but checkout is used: the identity token is fetched
-# with curl from GitHub's own endpoint into a file only this job can read, and the runner's own aws command line tool trades it for the
-# role itself (AWS_WEB_IDENTITY_TOKEN_FILE), so no key passes through the script. curl, jq, gh and aws come from GitHub's runner image,
-# unpinned: pinning and checking the AWS CLI (its zip is signed) is owed, as a card of its own.
+# with curl from GitHub's own endpoint into a file only this job can read, and the AWS command line tool trades it for the role itself
+# (AWS_WEB_IDENTITY_TOKEN_FILE), so no key passes through the script.
+#
+# THE TOOLS, and where each comes from (card #17):
+#   - curl and jq are Ubuntu's own, always by their full path (/usr/bin/curl, /usr/bin/jq), so nothing earlier on PATH can stand in
+#     for one; each job that uses them first runs deploy/check-ubuntu-tools.sh, which checks they're Ubuntu's and unchanged;
+#   - the AWS command line tool is never the runner's: deploy/get-aws-cli.sh fetches the pinned one, checked by AWS's signature, its
+#     sha256 and its version, and the job uses only that ("$aws"). Until its pins are filled in, it refuses, and so does the deploy;
+#   - GitHub's own gh tool isn't used: its two questions to GitHub are asked with curl.
 name: Deploy
 
 on:
@@ -73,17 +79,31 @@ jobs:
       contents: read
       actions: read
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: curl and jq are Ubuntu's own, unchanged
+        run: sh deploy/check-ubuntu-tools.sh
       - name: The commit is on main, and the latest run of every required workflow for it succeeded
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
-          where=$(gh api "repos/$GITHUB_REPOSITORY/compare/$COMMIT...main" --jq .status)
+          # Only Ubuntu's own folders, so every command here is Ubuntu's, whatever the runner put earlier on PATH
+          PATH=/usr/bin:/bin
+          # One question to GitHub's API, with this job's own token (which may only read): HTTPS only, and fail on any HTTP error.
+          # -q first, so curl reads no ~/.curlrc.
+          ask() {
+            /usr/bin/curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 -H "Authorization: Bearer $GH_TOKEN" \
+              -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "https://api.github.com/repos/$GITHUB_REPOSITORY/$1"
+          }
+          ask "compare/$COMMIT...main" > compare.json
+          where=$(/usr/bin/jq -r .status compare.json)
           case "$where" in ahead|identical) echo "the commit is on main" ;; *) echo "the commit isn't on main ($where)"; exit 1 ;; esac
-          gh api "repos/$GITHUB_REPOSITORY/actions/runs?head_sha=$COMMIT&event=push&branch=main&per_page=100" > runs.json
+          ask "actions/runs?head_sha=$COMMIT&event=push&branch=main&per_page=100" > runs.json
           missing=0
           for flow in $REQUIRED; do
-            ended=$(jq -r --arg path ".github/workflows/$flow" --arg sha "$COMMIT" \
+            ended=$(/usr/bin/jq -r --arg path ".github/workflows/$flow" --arg sha "$COMMIT" \
               '[.workflow_runs[] | select(.path == $path and .head_sha == $sha)] | sort_by(.run_number, .run_attempt) | last | .conclusion // "no run"' runs.json)
             if [ "$ended" = success ]; then echo "succeeded: $flow"; else echo "NOT SUCCEEDED: $flow ($ended)"; missing=1; fi
           done
@@ -129,6 +149,14 @@ jobs:
       REGION: ${{ vars.AVPX_DEPLOY_REGION }}
       DRY_RUN: ${{ inputs.dry_run }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: curl and jq are Ubuntu's own, unchanged
+        run: sh deploy/check-ubuntu-tools.sh
+      # A dry run fetches and checks it too, so a dry run proves the tool is there and pinned
+      - name: The pinned AWS command line tool, checked by AWS's signature, its sha256 and its version
+        run: sh deploy/get-aws-cli.sh "$RUNNER_TEMP/aws-cli"
       - name: The role, the machine and the region are set, each in its shape
         run: |
           printf '%s' "$JARS" | grep -Eqx '[0-9a-f]{64}' || { echo "the build gave no SHA-256 for the jars"; exit 1; }
@@ -147,24 +175,30 @@ jobs:
         if: ${{ !inputs.dry_run }}
         run: |
           set -eu
+          # Only Ubuntu's own folders, so every command here is Ubuntu's, whatever the runner put earlier on PATH
+          PATH=/usr/bin:/bin
           # GitHub's identity token for this job, for AWS (audience sts.amazonaws.com), into a file only this job's user can read, removed
           # at the end. The aws tool trades it for the role itself, so no key ever passes through this script or its log.
           umask 077
+          aws="$RUNNER_TEMP/aws-cli/bin/aws"
           token_file="$RUNNER_TEMP/aws-web-identity"
-          trap 'rm -f "$token_file"' EXIT
-          curl --fail --silent --show-error --proto '=https' --tlsv1.2 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value > "$token_file"
+          trap 'rm -f "$token_file" "$token_file.json"' EXIT
+          /usr/bin/curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" > "$token_file.json"
+          /usr/bin/jq -r .value "$token_file.json" > "$token_file"
+          # It must look like the token it is (three parts of base64url, with dots between), or nothing is sent
+          grep -Eqx '[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+' "$token_file" || { echo 'GitHub gave no identity token'; exit 1; }
           export AWS_WEB_IDENTITY_TOKEN_FILE="$token_file" AWS_ROLE_ARN="$ROLE" AWS_ROLE_SESSION_NAME="avpx-deploy-$GITHUB_RUN_ID" AWS_REGION="$REGION"
-          id=$(aws ssm send-command --region "$REGION" --document-name avpx-deploy --instance-ids "$MACHINE" \
+          id=$("$aws" ssm send-command --region "$REGION" --document-name avpx-deploy --instance-ids "$MACHINE" \
             --parameters "commit=$COMMIT,jarsSha256=$JARS" --comment "AVPx deploy of $COMMIT" --query Command.CommandId --output text)
           echo "sent: command $id"
           # The machine's answer: every 15 s, for up to 40 minutes (the document itself gives up after 30)
           for i in $(seq 1 160); do
             sleep 15
-            status=$(aws ssm get-command-invocation --region "$REGION" --command-id "$id" --instance-id "$MACHINE" --query Status --output text 2>/dev/null || echo Pending)
+            status=$("$aws" ssm get-command-invocation --region "$REGION" --command-id "$id" --instance-id "$MACHINE" --query Status --output text 2>/dev/null || echo Pending)
             case "$status" in
               Success|Failed|Cancelled|TimedOut)
-                aws ssm get-command-invocation --region "$REGION" --command-id "$id" --instance-id "$MACHINE" --query StandardOutputContent --output text
+                "$aws" ssm get-command-invocation --region "$REGION" --command-id "$id" --instance-id "$MACHINE" --query StandardOutputContent --output text
                 echo "the machine says: $status"
                 [ "$status" = Success ]
                 exit $?

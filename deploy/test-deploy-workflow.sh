@@ -10,7 +10,10 @@
 #   4. only the deploy job may ask for an identity token (id-token: write, once in the file), and that job waits for "production";
 #   5. no action but checkout, and no secret: the role, machine and region come from variables;
 #   6. every other workflow is in REQUIRED, by its file, so a commit must have passed it, and a workflow added later can't be forgotten;
-#      and the deploy's own jobs are named "Deploy: ...", so none can stand in for a required one.
+#      and the deploy's own jobs are named "Deploy: ...", so none can stand in for a required one;
+#   7. the tools (card #17): gh never; curl and jq only by their full path in /usr/bin, in a job that first checks they're Ubuntu's own
+#      (deploy/check-ubuntu-tools.sh); and aws only as "$aws", the pinned one, in a job that first fetches and checks it
+#      (deploy/get-aws-cli.sh).
 set -eu
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -56,8 +59,48 @@ for other in "$flows"/*.yml; do
 done
 if grep -E '^    name: ' "$file" | grep -v "^    name: 'Deploy: " | grep -q .; then no 'every job of deploy.yml is named "Deploy: ..."'; fi
 
+# 7. The tools. What runs is every line but comments and the steps' names (a name such as "curl and jq are Ubuntu's own" runs nothing).
+code=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*- name:' -e '^[[:space:]]*name:' "$file")
+by_name() { printf '%s\n' "$code" | grep -Eq "(^|[[:space:];|&(])$1[[:space:]]"; }
+if by_name gh; then no 'gh is not used'; fi
+if by_name curl || by_name jq; then no 'curl and jq are used only by their full path, /usr/bin/curl and /usr/bin/jq'; fi
+if by_name aws; then no 'aws is used only as "$aws", the pinned one'; fi
+# The line number in the job $1 of the first line matching $2 (a fixed text), or nothing
+first() { job_of "$1" | grep -n -F -- "$2" | head -n 1 | cut -d: -f1; }
+for job in blockers gates build deploy; do
+  use=$(first "$job" '/usr/bin/curl'); jq_use=$(first "$job" '/usr/bin/jq')
+  if [ -z "$use" ] || { [ -n "$jq_use" ] && [ "$jq_use" -lt "$use" ]; }; then use=$jq_use; fi
+  check=$(first "$job" 'run: sh deploy/check-ubuntu-tools.sh')
+  if [ -n "$use" ] && { [ -z "$check" ] || [ "$check" -gt "$use" ]; }; then no "the $job job checks curl and jq are Ubuntu's own before it uses them"; fi
+  use=$(first "$job" '"$aws"')
+  fetched=$(first "$job" 'run: sh deploy/get-aws-cli.sh "$RUNNER_TEMP/aws-cli"')
+  if [ -n "$use" ] && { [ -z "$fetched" ] || [ "$fetched" -gt "$use" ]; }; then no "the $job job fetches and checks the pinned aws before it uses it"; fi
+done
+
 if [ "$bad" -ne 0 ]; then
   echo "$bad rules of deploy.yml don't hold"
   exit 1
 fi
 echo 'deploy.yml: every rule holds'
+
+# The take-outs of rule 7: broken copies of deploy.yml, each with one rule about the tools taken out, must each be caught. Each runs this
+# test again, in a folder of its own holding the copy; AVPX_IN_TAKEOUT tells that run not to start take-outs of its own.
+[ "${AVPX_IN_TAKEOUT:-}" = yes ] && exit 0
+t=$(mktemp -d)
+trap 'rm -rf "$t"' EXIT
+mkdir -p "$t/deploy" "$t/.github/workflows"
+cp "$here/test-deploy-workflow.sh" "$t/deploy/test-deploy-workflow.sh"
+cp "$flows"/*.yml "$t/.github/workflows/"
+failed=0
+for edit in \
+  's|/usr/bin/jq -r .status|jq -r .status|' \
+  's|^\(            \)/usr/bin/curl -q|\1curl -q|' \
+  's|ask "compare/\$COMMIT...main" > compare.json|gh api "repos/$GITHUB_REPOSITORY/compare/$COMMIT...main" > compare.json|' \
+  's|id=\$("\$aws" ssm|id=$(aws ssm|' \
+  's|^        run: sh deploy/check-ubuntu-tools.sh$|        run: true|' \
+  's|^        run: sh deploy/get-aws-cli.sh "\$RUNNER_TEMP/aws-cli"$|        run: true|'; do
+  sed "$edit" "$file" > "$t/.github/workflows/deploy.yml"
+  if cmp -s "$t/.github/workflows/deploy.yml" "$file"; then echo "TAKE-OUT CAN'T RUN, its text isn't in deploy.yml: $edit"; failed=1; continue; fi
+  if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo "TAKE-OUT NOT NOTICED: $edit"; failed=1; else echo "take-out noticed: $edit"; fi
+done
+exit "$failed"

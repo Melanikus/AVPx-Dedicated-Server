@@ -16,7 +16,7 @@ Written 2026-11-08 by Melanikus; for the Java server from 2026-11-09. Nothing re
 | **CodeQL (Java)** | java.yml | GitHub's static analysis, language `java-kotlin`, the security-and-quality queries, through `build.sh` | Any result in CodeQL's own SARIF, or any tracked `.java` file CodeQL didn't read |
 | **Snyk** | snyk.yml | Snyk Code (static analysis) on the whole repository | Any issue at any severity, or no `SNYK_TOKEN` |
 | **Server blockers** | blockers.yml | `deploy/test-check-blockers.sh`: the refusal of every deploy while SERVER-BLOCKERS.md lists anything works, and its own cases would notice the checker going wrong | The refusal's test failing. (A deploy refuses on its own while anything is listed) |
-| **Deploy scripts** | blockers.yml | `deploy/test-remote-deploy.sh` (the machine's side, with stand-ins: no machine, no network, no AWS), `make-ssm-document.sh --check`, and `test-deploy-workflow.sh` (deploy.yml's shape) | Any case, take-out or rule failing |
+| **Deploy scripts** | blockers.yml | `deploy/test-remote-deploy.sh` (the machine's side, with stand-ins: no machine, no network, no AWS), `make-ssm-document.sh --check`, `test-deploy-workflow.sh` (deploy.yml's shape, the tools' rules included), `test-open-for-tester.sh`, `test-firewall.sh` and `test-get-aws-cli.sh` (with stand-ins: no firewall touched, nothing fetched), and `check-ubuntu-tools.sh` on the runner itself | Any case, take-out or rule failing |
 | **Secret scanning and push protection** | GitHub's own | Switched on for the repository | A secret in a push is refused before it lands |
 
 **What isn't a check, and why:**

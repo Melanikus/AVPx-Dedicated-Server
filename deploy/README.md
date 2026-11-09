@@ -23,7 +23,7 @@ Written 2026-11-08 by Melanikus; for the Java server only from 2026-11-09. It's 
 
 ## The first test machine, step by step (tonight)
 
-This is the machine for SERVER-BLOCKERS.md's item 5: a first deploy to a machine nobody else can reach, passing the smoke test. **It's never open to the internet:** only your own address reaches it, and only for SSH. Nothing on it is public, so it needs **no domain and no Let's Encrypt certificate**: it gets a throwaway certificate of its own, which is all the smoke test needs. GitHub's deploy workflow refuses while anything is listed in SERVER-BLOCKERS.md, so this first deploy is done by your own hand, in the AWS console. Nothing automatic goes around the blockers.
+This was the machine for what was SERVER-BLOCKERS.md's item 5: a first deploy to a machine nobody else can reach, passing the smoke test. That was shown on 2026-11-09, on a DigitalOcean machine by the path in the next section (History, at the end). **It's never open to the internet:** only your own address reaches it, and only for SSH. Nothing on it is public, so it needs **no domain and no Let's Encrypt certificate**: it gets a throwaway certificate of its own, which is all the smoke test needs. GitHub's deploy workflow refuses while anything is listed in SERVER-BLOCKERS.md, so this first deploy is done by your own hand, in the AWS console. Nothing automatic goes around the blockers.
 
 ### A. Buy the machine (Lightsail)
 
@@ -130,7 +130,7 @@ Systems Manager runs the deploy on the machine for you, with no SSH key and no p
 6. Wait for **Success** or **Failed**. It takes a few minutes: the machine fetches the commit, fetches the JDK the first time, builds, and runs every test. Then open the machine's line, **View output**:
    - **Success** ends with `deploy: <commit> is in place, and healthy`, after the smoke test's lines, each `PASS`.
    - **Failed** says why on its last `deploy:` line. Nothing broken is left running: the service is stopped, or the release before is back.
-7. **Tell PO the result,** with the output. If it passed, that's item 5 of SERVER-BLOCKERS.md shown, which PO takes off the list.
+7. **Tell PO the result,** with the output. (A first deploy like this one is what SERVER-BLOCKERS.md asked for; it came off the list on 2026-11-09, shown on the DigitalOcean machine.)
 
 ### F. What you can do on the machine afterwards
 

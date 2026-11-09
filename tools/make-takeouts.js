@@ -136,11 +136,6 @@ const rows = [
   L('every packet sent from the control port', 'relay/sockets.js', 'const socket = sockets.get(o.from);', 'const socket = sockets.get(core.controlPort);'),
   L('a port that cannot be opened not caught', 'relay/sockets.js', "socket.once('error', reject);", ''),
 
-  // tools/check-blockers.js: a deploy is let through only by "Nothing."
-  T('a deploy let through whatever is listed', 'tools/check-blockers.js', 'if (items.length === 1 && items[0] === kClear) {', 'if (true) {'),
-  T('a cut-short SERVER-BLOCKERS.md taken', 'tools/check-blockers.js', 'if (filled[filled.length - 1] !== kEnd) {', 'if (false) {'),
-  T('the heading twice taken', 'tools/check-blockers.js', 'if (headings !== 1) {', 'if (headings === 0) {'),
-
   // tools/takeouts.json itself
   T('a row added to tools/takeouts.json by hand', 'tools/takeouts.json', '"rows": [', '"rows": [\n    { "name": "by hand", "check": "tests", "file": "x", "from": "a", "to": "b" },'),
 

@@ -2,12 +2,12 @@
 
 Written 2026-11-09 by Melanikus, at the user's word: "This is a server in the wild. Tao 1 and 3. We CANNOT get it wrong."
 
-**How this file works.** Every deploy workflow, now or later, runs `node tools/check-blockers.js` as its first step. That step refuses to go on while anything is listed under the heading below. Only the word `Nothing.`, on its own, lets a deploy run. It also refuses:
+**How this file works.** Every deploy workflow, now or later, runs `sh deploy/check-blockers.sh` as its first step. That step refuses to go on while anything is listed under the heading below. Only the word `Nothing.`, on its own, lets a deploy run. It also refuses:
 - an empty list;
 - a missing heading, or the heading twice;
 - a file cut short, without its last line.
 
-An item comes off the list only when it's done, in the commit that shows it, never to let a deploy through. test/blockers.test.js proves the refusals work; GATES.md's "Server blockers" check runs it.
+An item comes off the list only when it's done, in the commit that shows it, never to let a deploy through. deploy/test-check-blockers.sh proves the refusals work; GATES.md's "Server blockers" check runs it.
 
 ## Blocking a deploy
 

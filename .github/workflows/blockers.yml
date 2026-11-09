@@ -1,0 +1,29 @@
+# Server blockers: proves deploy/check-blockers.sh refuses a deploy while SERVER-BLOCKERS.md lists anything, and shows what's listed.
+# Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
+#
+# This check doesn't fail because something is listed: that's the deploy's own first step (sh deploy/check-blockers.sh, with no --list).
+# It fails if the refusal itself doesn't work (deploy/test-check-blockers.sh, which also breaks copies of the checker and must notice).
+# Plain sh and awk: nothing is installed. The only action is checkout, pinned to a full commit hash (CODING-STANDARD.md rule 7).
+name: Server blockers
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  blockers:
+    name: Server blockers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The refusal works
+        run: sh deploy/test-check-blockers.sh
+      - name: What blocks a deploy now
+        run: sh deploy/check-blockers.sh --list

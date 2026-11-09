@@ -16,7 +16,7 @@ Written 2026-11-08 by Melanikus. Nothing reaches `main` without passing every ch
 | **No packages** | Refuses any third-party dependency: an npm `dependencies` / `devDependencies` / `node_modules` for Node, or any `require` line in `go.mod` beyond the standard library for Go | Any found |
 | **Coding standard** | CODING-STANDARD.md's checks (to come, one rule at a time, each with its reason): every file ASCII; every limit a named constant; no `eval` or `Function(` (Node), no `unsafe` or cgo (Go); no address written to a log | Any found |
 | **Secret scanning and push protection** | GitHub's own, switched on for the repository | A secret in a push is refused before it lands |
-| **Server blockers** | SERVER-BLOCKERS.md: every deploy workflow's first step is `node tools/check-blockers.js`, which refuses while anything is listed; this check runs test/blockers.test.js, which proves that refusal works | The refusal test failing. (A deploy fails on its own while anything is listed) |
+| **Server blockers** | SERVER-BLOCKERS.md: every deploy workflow's first step is `sh deploy/check-blockers.sh`, which refuses while anything is listed; this check runs deploy/test-check-blockers.sh, which proves that refusal works and that its own cases would notice the checker going wrong | The refusal test failing. (A deploy fails on its own while anything is listed) |
 | **Pinned actions** | Every `uses:` in a workflow is pinned to a full commit SHA, with the version in a comment | One that isn't |
 
 ## Which version of each check, by language

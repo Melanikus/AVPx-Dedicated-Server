@@ -65,6 +65,17 @@ No third-party crypto on the servers (AVP Tao 1). Each platform's own:
 
 The platform facts in this table were read in the official documents by PO on 2026-11-08. The two marks left are each to be confirmed once, in code, before the code relies on them.
 
+**What JDK 25 does, measured** (by Primary on the pinned Temurin 25.0.5+8, 2026-11-09). Each point is checked in the Java server's code, with a test and a take-out row:
+1. **Key generation matches NIST's vectors exactly:**
+   - ML-KEM-1024's key generation takes d and z as one 64-byte draw from the SecureRandom it's given, and gives NIST's encapsulation key exactly;
+   - ML-DSA-87's takes the 32-byte seed, and gives NIST's public key exactly.
+2. **Private keys:** PKCS#8's expandedKey form imports NIST's raw decapsulation key (3,168 bytes) and signing key (4,896 bytes). The JDK's own getEncoded writes the 64-byte seed form instead.
+3. **Where JDK 25 checks too late** (it takes the key, and throws only when it's used), so our code checks first, before the JDK sees anything:
+   - an ML-KEM encapsulation key with a coefficient of q or more (FIPS 203 section 7.2);
+   - a long-form decapsulation key whose stored hash isn't H(ek) (FIPS 203 section 7.3);
+   - a P-384 point that isn't on the curve: our code checks y^2 = x^3 + ax + b mod p before the key factory gets it.
+4. **No ML-DSA context:** it signs and verifies with the empty context only (section 5.1, point 16).
+
 **What the game does where Windows lacks ML-KEM or ML-DSA (decided below).** Neither choice falls back to classical-only. A fallback is an attack path, so there isn't one.
 - **(a) CNG only.** Online play needs a Windows that has them. Others get a plain refusal: "Online play needs Windows 11 24H2 or later, with the October 2025 update or newer." This adds no code, but players on Windows 10, or on Windows 11 before 24H2, can't play online.
 - **(b) The post-quantum half built from source into the game,** from the PQ Code Package's `mlkem-native` and `mldsa-native` (C; Apache-2.0, ISC or MIT; parts machine-proved). It's scanned and take-out tested like ENet; CNG still does the classical half and AES-GCM. One code path on every Windows, and no dependence on the OS version for decades (AVP Tao 2). It adds about 10,000 to 20,000 lines of C to review.

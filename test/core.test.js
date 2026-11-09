@@ -370,6 +370,8 @@ test('the log lines are counts and times only: no address, code, token or ticket
   const r = relay();
   const { game, port, ticket } = connected(r, 0);
   send(r, port, JOINER, Buffer.from('x'), 1);
+  send(r, port, HOST, Buffer.from('y'), 1);
+  send(r, port, HOST, Buffer.from('z'), 1);
   send(r, port, STRANGER, Buffer.from('x'), 1);
   // The game and its joiner are still alive when the line is made, so anything of theirs could get into it
   send(r, CONTROL, HOST, { type: P.TYPE.HOST_KEEP, secret: game.token }, 50000);
@@ -380,7 +382,8 @@ test('the log lines are counts and times only: no address, code, token or ticket
   assert.strictEqual(r.slots.get(port).state, 'active', 'and so is its joiner');
   assert.strictEqual(lines.length, 1);
   const line = lines[0];
-  assert.ok(/forwarded 1 packets/.test(line), line);
+  assert.ok(/forwarded 3 packets \(1 joiners to hosts, 2 hosts to joiners\)/.test(line), line);
+  assert.ok(/1 joins, 1 joiners ready,/.test(line), 'one joiner, ready once, though its READY went twice');
   for (const secret of [HOST.address, JOINER.address, STRANGER.address, game.code.toString('latin1'), game.token.toString('hex'), ticket.toString('hex')]) {
     assert.ok(!line.includes(secret), `the line has no ${secret}`);
   }

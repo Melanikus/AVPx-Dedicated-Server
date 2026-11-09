@@ -86,6 +86,10 @@ test('every setting is held to its limits', () => {
   refused(relaysWith([paris]), 'a list that doesn\'t name its own region');
   refused(relaysWith([own, paris, { ...paris, host: 'other.example.net' }]), 'one region twice');
   refused(relaysWith([own, { ...paris, host: '203.0.113.5' }]), 'an address for a host, not a name');
+  refused(relaysWith([own, { ...paris, host: '0x7f.0.0.1' }]), 'an address some resolvers read from a name with a letter in it');
+  refused(relaysWith([own, { ...paris, host: 'fe80::1' }]), 'an IPv6 address');
+  refused(relaysWith([own, { ...paris, host: 'paris.example.123' }]), 'a last part that starts with a digit');
+  assert.doesNotThrow(() => parse(relaysWith([own, { ...paris, host: '1e100.example.net' }])), 'a name may start with a digit; only its last part may not');
   refused(relaysWith([own, { ...paris, host: 'x'.repeat(64) }]), 'a host of 64');
   refused(relaysWith([own, { ...paris, host: 'paris..example.net' }]), 'an empty part in a name');
   refused(relaysWith([own, { ...paris, host: 'paris example.net' }]), 'a space in a name');

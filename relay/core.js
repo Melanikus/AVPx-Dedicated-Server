@@ -137,7 +137,7 @@ class RelayCore {
   }
 
   static zeroCounts() {
-    return { opened: 0, closed: 0, expired: 0, joins: 0, refused: 0, echoes: 0, forwardedPackets: 0, forwardedBytes: 0, tooBig: 0, overLimit: 0, notAMessage: 0, strangers: 0, portsExpired: 0 };
+    return { opened: 0, closed: 0, expired: 0, joins: 0, ready: 0, refused: 0, echoes: 0, forwardedPackets: 0, upPackets: 0, downPackets: 0, forwardedBytes: 0, tooBig: 0, overLimit: 0, notAMessage: 0, strangers: 0, portsExpired: 0 };
   }
 
   // ----- A packet in
@@ -335,6 +335,7 @@ class RelayCore {
 
     slot.trafficAt = now;
     this.counts.forwardedPackets++;
+    if (fromJoiner) this.counts.upPackets++; else this.counts.downPackets++;
     this.counts.forwardedBytes += data.length;
     const to = fromJoiner ? slot.hostEnd : slot.joinerEnd;
     return [{ from: slot.port, address: to.address, port: to.port, data }];
@@ -357,6 +358,11 @@ class RelayCore {
 
     if (slot.hostEnd === null || slot.joinerEnd === null) {
       return [];
+    }
+
+    // A joiner counts as ready once, when both its ends are first there (a READY sent again is not another joiner)
+    if (slot.state !== 'active') {
+      this.counts.ready++;
     }
 
     slot.state = 'active';
@@ -464,7 +470,8 @@ class RelayCore {
     }
 
     const line = `relay: in the last ${Math.round((now - this.statsAt) / 1000)} s: ${c.opened} games opened, ${c.closed} closed, ${c.expired} ended unkept; ` +
-      `${c.joins} joins, ${c.refused} refusals, ${c.echoes} echoes; forwarded ${c.forwardedPackets} packets, ${c.forwardedBytes} bytes; ` +
+      `${c.joins} joins, ${c.ready} joiners ready, ${c.refused} refusals, ${c.echoes} echoes; ` +
+      `forwarded ${c.forwardedPackets} packets (${c.upPackets} joiners to hosts, ${c.downPackets} hosts to joiners), ${c.forwardedBytes} bytes; ` +
       `dropped ${c.tooBig} too big, ${c.overLimit} over a limit, ${c.notAMessage} not a message, ${c.strangers} from strangers; ${c.portsExpired} ports timed out. ` +
       `Now ${this.games.size} games, ${this.slots.size - this.free.length} of ${this.slots.size} ports in use (${pending} waiting for both ends)`;
     this.statsAt = now;

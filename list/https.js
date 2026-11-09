@@ -4,7 +4,8 @@
 //
 // THE LIMITS, all from anyone on the internet (AVP Tao 3):
 // - headers at most 8 KB (Node refuses more), a body at most 1 KB (refused with 413 as soon as it's over, not after it's all come);
-// - 5 s to send the headers, and 10 s for the whole request: a sender who trickles a byte at a time is cut off;
+// - 5 s for the TLS handshake, 5 s to send the headers, and 10 s for the whole request, each checked every second: a sender who
+//   trickles a byte at a time is cut off;
 // - 200 connections at once in all, and 10 from one address;
 // - from one address, 5 requests a second (20 at once), and GET /v1/games and GET /v1/relays 1 a second (5 at once).
 // TLS is 1.2 or newer. Every answer is JSON, with headers that tell a browser to treat it as nothing but data, and HSTS.
@@ -27,9 +28,13 @@ const { kMostBodyBytes } = require('./requests');
 
 const LIMITS = {
   mostHeaderBytes: 8 * 1024,
+  handshakeMilliseconds: 5000,       // for the TLS handshake (Node's own default is 120 s)
   headersMilliseconds: 5000,
   requestMilliseconds: 10000,
   keepAliveMilliseconds: 5000,
+  // How often Node looks for requests past their time. Its default is 30 s, so a sender could hold a connection that long past its 5 s;
+  // looking every second keeps each limit within a second of what it says.
+  checkMilliseconds: 1000,
   mostConnections: 200,
   mostConnectionsPerAddress: 10,
   requestRate: 5, requestBurst: 20,
@@ -51,14 +56,24 @@ const kHeaders = {
   'Referrer-Policy': 'no-referrer',
 };
 
+// A file's bytes and when it was last changed, both through one handle, so the date is the date of the very bytes read (looking the
+// date up by name, then reading, could pair one version's date with another's bytes: CodeQL calls that a file-system race)
+function readWithDate(file) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    return { bytes: fs.readFileSync(fd), changedAt: fs.fstatSync(fd).mtimeMs };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // The certificate and key, read from their files: { cert, key, stamp }, stamp saying which version of the files they are
 function readCertificate(certFile, keyFile) {
-  const cert = fs.readFileSync(certFile);
-  const key = fs.readFileSync(keyFile);
+  const cert = readWithDate(certFile);
+  const key = readWithDate(keyFile);
   // Checks the pair can be used, before anything takes it up: this throws if the key doesn't match or either is broken
-  tls.createSecureContext({ cert, key });
-  const stamp = `${fs.statSync(certFile).mtimeMs}|${fs.statSync(keyFile).mtimeMs}`;
-  return { cert, key, stamp };
+  tls.createSecureContext({ cert: cert.bytes, key: key.bytes });
+  return { cert: cert.bytes, key: key.bytes, stamp: `${cert.changedAt}|${key.changedAt}` };
 }
 
 // The server. listings: the Listings (listings.js) it serves. certFile, keyFile: the PEM files. log(line): where its lines go. now(): the
@@ -71,6 +86,7 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
     headersTimeout: LIMITS.headersMilliseconds,
     requestTimeout: LIMITS.requestMilliseconds,
     keepAliveTimeout: LIMITS.keepAliveMilliseconds,
+    connectionsCheckingInterval: LIMITS.checkMilliseconds,
   };
 
   const perAddress = new PerSender({ rate: LIMITS.requestRate, burst: LIMITS.requestBurst, most: LIMITS.mostSenders, hasher });
@@ -89,7 +105,12 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
     };
 
     counts.requests++;
-    const [path, query = ''] = (request.url || '').split('?', 2);
+    // The path is what comes before the first ?, and the query is everything after it, a second ? and all, so routes.js sees the whole
+    // of what was sent and refuses "version=7?x" (split('?', 2) would quietly have dropped the "?x")
+    const url = request.url || '';
+    const mark = url.indexOf('?');
+    const path = mark < 0 ? url : url.slice(0, mark);
+    const query = mark < 0 ? '' : url.slice(mark + 1);
     const isList = request.method === 'GET' && (path === '/v1/games' || path === '/v1/relays');
 
     if (!perAddress.allows(address, at) || (isList && !lists.allows(address, at)) || !everyone.take(at)) {
@@ -150,7 +171,7 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
     request.on('error', () => { /* the sender went away: nothing to answer */ });
   };
 
-  const server = makeServer ? makeServer(options, onRequest) : https.createServer({ ...options, cert: certificate.cert, key: certificate.key, minVersion: 'TLSv1.2' }, onRequest);
+  const server = makeServer ? makeServer(options, onRequest) : https.createServer({ ...options, cert: certificate.cert, key: certificate.key, minVersion: 'TLSv1.2', handshakeTimeout: LIMITS.handshakeMilliseconds }, onRequest);
   server.maxConnections = LIMITS.mostConnections;
 
   // At most so many connections from one address
@@ -175,13 +196,14 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
   server.on('tlsClientError', () => { counts.refusedForLimits++; });
   server.on('clientError', (error, socket) => { socket.destroy(); });
 
-  // A renewed certificate is taken up without a restart
+  // A renewed certificate is taken up without a restart. Both files are read again each time (they're a few KB, once an hour), and used
+  // only if their dates differ from the ones in use.
   const look = makeServer ? null : setInterval(() => {
     try {
-      const stamp = `${fs.statSync(certFile).mtimeMs}|${fs.statSync(keyFile).mtimeMs}`;
+      const fresh = readCertificate(certFile, keyFile);
 
-      if (stamp !== certificate.stamp) {
-        certificate = readCertificate(certFile, keyFile);
+      if (fresh.stamp !== certificate.stamp) {
+        certificate = fresh;
         server.setSecureContext({ cert: certificate.cert, key: certificate.key, minVersion: 'TLSv1.2' });
         log('list: the certificate files changed, and the new ones are in use');
       }

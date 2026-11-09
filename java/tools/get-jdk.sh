@@ -37,8 +37,12 @@ trap 'rm -rf "$work"' EXIT
 
 # HTTPS only, TLS 1.2 or newer, and fail on any HTTP error rather than keep an error page. -q must come first: it's what keeps curl from
 # reading ~/.curlrc.
+# --retry 3: a server that's only busy for a moment (curl tries again on a timeout, or on HTTP 408, 429, 500, 502, 503 or 504, and on
+# nothing else) gets three more tries, 10 s apart, before this fails. Java's check went red on 2026-11-09 for one 504 from the download
+# server. Trying again changes nothing about what's trusted: whatever finally arrives must still pass the signature and sha256 checks
+# below, or it's thrown away.
 fetch() {
-  curl -q --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output "$2" "$1"
+  curl -q --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 --retry-delay 10 --output "$2" "$1"
 }
 
 fetch "$JDK_URL" "$work/jdk.tar.gz"

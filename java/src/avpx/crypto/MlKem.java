@@ -7,7 +7,9 @@ import java.security.KeyPairGenerator;
 import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.PublicKey;
+import java.security.ProviderException;
 import java.security.SecureRandom;
+import java.security.SecureRandomSpi;
 import java.security.spec.NamedParameterSpec;
 import java.security.spec.PKCS8EncodedKeySpec;
 import java.security.spec.X509EncodedKeySpec;
@@ -58,6 +60,82 @@ public final class MlKem {
       return generator.generateKeyPair();
     } catch (GeneralSecurityException e) {
       throw new IllegalStateException("this Java can't make an ML-KEM-1024 key", e);
+    }
+  }
+
+  public static final int SEED_BYTES = 64;
+
+  // A key pair made again from its 64-byte seed, FIPS 203's d then z (ML-KEM.KeyGen_internal(d, z)), as a relay's settings keep it: the
+  // seed is the whole secret, and one seed always makes the same pair. Java takes d and z from the SecureRandom it's given, so it's given
+  // one that holds exactly those 64 bytes and refuses to give more (NIST's own key generation cases hold Java to this: PostQuantumKatTest).
+  // Null if the seed isn't 64 bytes, or this Java asks for other than d and z.
+  public static KeyPair fromSeed(byte[] seed) {
+    if (seed == null || seed.length != SEED_BYTES) {
+      return null;
+    }
+
+    Seed given = new Seed(seed);
+
+    try {
+      KeyPair pair = generate(given);
+      return given.allTaken() ? pair : null;
+    } catch (IllegalStateException | ProviderException e) {
+      return null;
+    } finally {
+      given.wipe();
+    }
+  }
+
+  // A SecureRandom that gives exactly the bytes of a seed, once, in order, and then refuses
+  private static final class Seed extends SecureRandom {
+    private static final long serialVersionUID = 1L;
+    private final Bytes bytes;
+
+    Seed(byte[] seed) {
+      this(new Bytes(seed.clone()));
+    }
+
+    private Seed(Bytes bytes) {
+      super(bytes, null);
+      this.bytes = bytes;
+    }
+
+    boolean allTaken() {
+      return bytes.at == bytes.seed.length;
+    }
+
+    void wipe() {
+      Arrays.fill(bytes.seed, (byte) 0);
+    }
+
+    private static final class Bytes extends SecureRandomSpi {
+      private static final long serialVersionUID = 1L;
+      private final byte[] seed;
+      private int at;
+
+      Bytes(byte[] seed) {
+        this.seed = seed;
+      }
+
+      @Override
+      protected void engineSetSeed(byte[] more) {
+        // The seed is fixed: nothing is mixed in
+      }
+
+      @Override
+      protected void engineNextBytes(byte[] out) {
+        if (at + out.length > seed.length) {
+          throw new IllegalStateException("MlKem.fromSeed: Java asked for more than d and z");
+        }
+
+        System.arraycopy(seed, at, out, 0, out.length);
+        at += out.length;
+      }
+
+      @Override
+      protected byte[] engineGenerateSeed(int n) {
+        throw new IllegalStateException("MlKem.fromSeed: Java asked for a seed of its own");
+      }
     }
   }
 

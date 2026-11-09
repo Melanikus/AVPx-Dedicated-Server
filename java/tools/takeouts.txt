@@ -1282,3 +1282,40 @@ file: java/src/avpx/v2/SealedRelay.java
 <<< to
       if (answer == null || localPort != core.controlPort()) {
 >>>
+
+# A version 2 relay's settings: its static keys
+=== a P-384 number taken with any point, not only its own
+check: tests
+file: java/src/avpx/crypto/P384.java
+<<< from
+      return pair ? new KeyPair(theirs, mine) : null;
+<<< to
+      return new KeyPair(theirs, mine);
+>>>
+
+=== a P-384 number of 0, or past the curve's order, taken
+check: tests
+file: java/src/avpx/crypto/P384.java
+<<< from
+    if (s.signum() == 0 || s.compareTo(CURVE.getOrder()) >= 0) {
+<<< to
+    if (false) {
+>>>
+
+=== protocol 2 with no static keys, without saying so
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (protocol == 2 && !given.containsKey("staticKeys")) {
+<<< to
+    if (false) {
+>>>
+
+=== static keys taken, and kept unused, with protocol 1
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (protocol == 1 && given.containsKey("staticKeys")) {
+<<< to
+    if (false) {
+>>>

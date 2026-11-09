@@ -6,6 +6,7 @@ import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.SecureRandom;
 import java.security.interfaces.ECPublicKey;
@@ -13,6 +14,7 @@ import java.security.spec.ECFieldFp;
 import java.security.spec.ECGenParameterSpec;
 import java.security.spec.ECParameterSpec;
 import java.security.spec.ECPoint;
+import java.security.spec.ECPrivateKeySpec;
 import java.security.spec.ECPublicKeySpec;
 import java.util.Arrays;
 import javax.crypto.KeyAgreement;
@@ -121,6 +123,37 @@ public final class P384 {
       return secret;
     } catch (GeneralSecurityException e) {
       throw new IllegalStateException("this Java's P-384 agreement failed", e);
+    }
+  }
+
+  // A key pair from its two halves, as a relay's settings keep it (its private number, 48 bytes, and its public key, 97 bytes), or null
+  // if they aren't one pair. Java can't work the public half out from the private one, so both are given, and held to each other: an
+  // ECDH with a fresh key must agree both ways (ours with its public half, and its private half with our public key), which only the two
+  // halves of one pair can do. The number must be from 1 to the curve's order less 1, and the point on the curve (decode).
+  public static KeyPair pair(byte[] privateNumber, byte[] publicKey) {
+    ECPublicKey theirs = decode(publicKey);
+
+    if (privateNumber == null || privateNumber.length != SECRET_BYTES || theirs == null) {
+      return null;
+    }
+
+    BigInteger s = new BigInteger(1, privateNumber);
+
+    if (s.signum() == 0 || s.compareTo(CURVE.getOrder()) >= 0) {
+      return null;
+    }
+
+    try {
+      PrivateKey mine = KeyFactory.getInstance("EC").generatePrivate(new ECPrivateKeySpec(s, CURVE));
+      KeyPair fresh = generate(new SecureRandom());
+      byte[] one = agree(mine, (ECPublicKey) fresh.getPublic());
+      byte[] two = agree(fresh.getPrivate(), theirs);
+      boolean pair = MessageDigest.isEqual(one, two);
+      Arrays.fill(one, (byte) 0);
+      Arrays.fill(two, (byte) 0);
+      return pair ? new KeyPair(theirs, mine) : null;
+    } catch (GeneralSecurityException e) {
+      return null;
     }
   }
 }

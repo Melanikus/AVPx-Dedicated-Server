@@ -10,8 +10,10 @@ import static avpx.testing.Tests.test;
 import avpx.testing.ScriptedRandom;
 import java.math.BigInteger;
 import java.security.KeyPair;
+import java.security.interfaces.ECPrivateKey;
 import java.security.interfaces.ECPublicKey;
 import java.util.Arrays;
+import java.util.HexFormat;
 
 // The tests of the primitives' own behaviour (Gcm, P384, MlKem, Signatures): what each seals, agrees or signs comes back only exactly as
 // it was made, and anything else is refused. Written 2026-11-09 by Melanikus for AVPx Dedicated Server. NIST's and Wycheproof's own
@@ -165,6 +167,38 @@ public final class PrimitivesTest {
       ok(kemKey.length == 1568 && dsaKey.length == 2592, "FIPS 203's and FIPS 204's sizes");
       ok(!hex(kemKey).startsWith("3082"), "no DER left in front of the ML-KEM key");
       ok(!hex(dsaKey).startsWith("3082"), "nor the ML-DSA key");
+    });
+
+    test("P384.pair takes the two halves of one key only: never a number with another key's point, 0, the order, or a point off the curve", () -> {
+      KeyPair a = P384.generate(ScriptedRandom.seeded(30));
+      KeyPair b = P384.generate(ScriptedRandom.seeded(31));
+      BigInteger order = ((ECPublicKey) a.getPublic()).getParams().getOrder();
+      byte[] number = HexFormat.of().parseHex(String.format("%096x", ((ECPrivateKey) a.getPrivate()).getS()));
+      byte[] point = P384.encode((ECPublicKey) a.getPublic());
+      KeyPair back = P384.pair(number, point);
+      ok(back != null, "its own two halves");
+      same(P384.agree(back.getPrivate(), (ECPublicKey) b.getPublic()), P384.agree(a.getPrivate(), (ECPublicKey) b.getPublic()),
+          "and the pair agrees just as the key itself does");
+      same(P384.pair(number, P384.encode((ECPublicKey) b.getPublic())), null, "a number with another key's point");
+      same(P384.pair(new byte[48], point), null, "0");
+      same(P384.pair(HexFormat.of().parseHex(String.format("%096x", order)), point), null, "the curve's order itself");
+      same(P384.pair(Arrays.copyOf(number, 47), point), null, "47 bytes");
+      byte[] off = point.clone();
+      off[96] ^= 1;
+      same(P384.pair(number, off), null, "a point off the curve");
+    });
+
+    test("MlKem.fromSeed makes FIPS 203's KeyGen(d, z) pair, the same every time, and nothing from a seed that isn't 64 bytes", () -> {
+      byte[] seed = bytes(64, 0x42);
+      KeyPair made = MlKem.fromSeed(seed);
+      same(MlKem.encode(made.getPublic()), MlKem.encode(MlKem.generate(ScriptedRandom.of(seed)).getPublic()),
+          "the pair d and z make (PostQuantumKatTest holds that to NIST's own)");
+      same(MlKem.encode(MlKem.fromSeed(seed).getPublic()), MlKem.encode(made.getPublic()), "the same seed, the same pair, every time");
+      same(seed, bytes(64, 0x42), "the seed given is left as it was");
+      MlKem.Encapsulated sealed = MlKem.encapsulate(made.getPublic(), ScriptedRandom.seeded(32));
+      same(MlKem.decapsulate(made.getPrivate(), sealed.ciphertext()), sealed.secret(), "and its private half opens what's sealed to it");
+      same(MlKem.fromSeed(new byte[63]), null, "a seed of 63 bytes");
+      same(MlKem.fromSeed(null), null, "no seed");
     });
   }
 }

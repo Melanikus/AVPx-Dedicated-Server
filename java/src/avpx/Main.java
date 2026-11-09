@@ -3,10 +3,13 @@ package avpx;
 import avpx.list.ListServer;
 import avpx.list.Listings;
 import avpx.relay.RandomBytes;
+import avpx.relay.Relay;
 import avpx.relay.RelayCore;
 import avpx.relay.RelaySockets;
+import avpx.v2.SealedRelay;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.time.Instant;
 
 // AVPx Dedicated Server: a relay, and the list if the settings say so, started together. Written 2026-11-08 by Melanikus for AVPx
@@ -61,11 +64,22 @@ public final class Main {
     }
 
     Log log = new Log(settings.logFile().isEmpty() ? null : Path.of(settings.logFile()), Instant::now, Log.SCREEN);
-    RelayCore core = new RelayCore(settings.controlPort(), settings.relayPorts(), settings.region(), settings.passKey(),
-        RandomBytes.secure(), new RelayCore.Limits(), System.currentTimeMillis());
+    // The relay speaks one protocol: version 1 (PROTOCOL.md), or version 2 (CRYPTO.md: handshake A, then everything sealed, in front of
+    // the same games)
+    Relay core;
+
+    if (settings.protocol() == 2) {
+      core = new SealedRelay(settings.controlPort(), settings.relayPorts(), settings.region(), settings.passKey(), settings.staticKeys(),
+          RandomBytes.secure(), new SecureRandom(), new RelayCore.Limits(), new SealedRelay.Limits(), System.currentTimeMillis());
+    } else {
+      core = new RelayCore(settings.controlPort(), settings.relayPorts(), settings.region(), settings.passKey(), RandomBytes.secure(),
+          new RelayCore.Limits(), System.currentTimeMillis());
+    }
+
     Settings.ListSettings listSettings = settings.list();
-    log.line("server: starting the " + settings.region() + " relay, version 1 of the relay's messages, " + settings.relayPorts().length
-        + " relay ports" + (listSettings != null ? ", and the list for " + listSettings.relays().size() + " relays" : ", and no list"));
+    log.line("server: starting the " + settings.region() + " relay, version " + settings.protocol() + " of the relay's messages, "
+        + settings.relayPorts().length + " relay ports"
+        + (listSettings != null ? ", and the list for " + listSettings.relays().size() + " relays" : ", and no list"));
 
     ListServer list = null;
 

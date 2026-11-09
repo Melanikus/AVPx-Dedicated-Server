@@ -8,6 +8,8 @@ import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.text;
 import static avpx.testing.Tests.throwsWith;
 
+import avpx.crypto.MlKem;
+import avpx.crypto.P384;
 import avpx.list.Json;
 import avpx.list.ListServer;
 import avpx.list.Listings;
@@ -18,6 +20,10 @@ import avpx.relay.RandomBytes;
 import avpx.relay.RelayCore;
 import avpx.relay.RelaySockets;
 import avpx.testing.Tests;
+import avpx.v2.Channel;
+import avpx.v2.Fragments;
+import avpx.v2.HandshakeA;
+import avpx.v2.SealedRelay;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -33,8 +39,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
 import java.security.PrivateKey;
+import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -330,6 +338,47 @@ public final class LiveTest {
         RelaySockets again = RelaySockets.start(LOOPBACK, core(new int[] {PORTS[0]}), line -> { }, System::currentTimeMillis);
         again.stop();
         ok(!blocker.isClosed(), "the port it couldn't have is still the other socket's");
+      }
+    });
+
+    liveTest("a version 2 relay over its real UDP ports: handshake A, a sealed HOST_OPEN answered sealed, and version 1 refused", () -> {
+      HandshakeA.RelayKeys keys = HandshakeA.RelayKeys.of(P384.generate(new SecureRandom()), MlKem.generate(new SecureRandom()));
+      SealedRelay sealed = new SealedRelay(CONTROL, PORTS, REGION, KEY, keys, RandomBytes.secure(), new SecureRandom(),
+          new RelayCore.Limits(), new SealedRelay.Limits(), System.currentTimeMillis());
+      RelaySockets relay = RelaySockets.start(LOOPBACK, sealed, line -> { }, System::currentTimeMillis);
+
+      try (DatagramSocket game = socket()) {
+        byte[] id = RandomBytes.secure().next(8);
+        byte[] cookieAnswer = ask(game, CONTROL, Fragments.cut(Fragments.toRelay(), 1, id, new byte[16], new byte[0]).get(0));
+        ok(cookieAnswer != null && cookieAnswer.length == 64, "A0': 64 bytes back, for A0's 1,200");
+        byte[] cookie = Arrays.copyOfRange(cookieAnswer, 16, 32);
+
+        HandshakeA.Initiator initiator = HandshakeA.writeA1(REGION, keys.p384Public(), keys.kemPublic(), new SecureRandom());
+
+        for (byte[] d : Fragments.cut(Fragments.toRelay(), 3, id, cookie, initiator.a1())) {
+          sendTo(game, CONTROL, d);
+        }
+
+        byte[] first = next(game);
+        byte[] second = next(game);
+        ok(first != null && second != null && first.length == 1200 && second.length == 1200, "A2: two datagrams of 1,200 bytes");
+        Fragments.Assembly a2 = new Fragments.Assembly(Fragments.read(Fragments.toRelay(), first));
+        ok(a2.add(Fragments.read(Fragments.toRelay(), first)) && a2.add(Fragments.read(Fragments.toRelay(), second)), "A2's fragments fit");
+        HandshakeA.Initiator.Done done = initiator.readA2(a2.message());
+        ok(done != null, "the game takes A2: the relay is proved, over the network");
+        sendTo(game, CONTROL, Fragments.cut(Fragments.toRelay(), 5, id, cookie, done.a3()).get(0));
+
+        long now = System.currentTimeMillis();
+        Channel channel = Channel.gameSide(done.keys(), now);
+        byte[] answer = ask(game, CONTROL, channel.seal(Protocol.encode(Message.of(Type.HOST_OPEN)), now));
+        ok(answer != null && answer.length == 104, "a sealed answer, of 104 bytes");
+        byte[] opened = channel.open(answer, System.currentTimeMillis());
+        ok(opened != null && Protocol.decode(opened).type() == Type.HOST_OPENED, "HOST_OPENED, opened by the game");
+
+        same(ask(game, CONTROL, Protocol.encode(Message.of(Type.ECHO).secret(Tests.bytes(16, 1)).number(1))), null,
+            "a version 1 ECHO gets nothing from a version 2 relay");
+      } finally {
+        relay.stop();
       }
     });
 

@@ -7,14 +7,21 @@ import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.test;
 import static avpx.testing.Tests.throwsWith;
 
+import avpx.crypto.MlKem;
+import avpx.crypto.P384;
 import avpx.list.Json;
 import avpx.list.Listings;
+import avpx.testing.ScriptedRandom;
 import avpx.testing.Stringify;
+import avpx.v2.HandshakeA;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyPair;
+import java.security.interfaces.ECPrivateKey;
+import java.security.interfaces.ECPublicKey;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -185,6 +192,43 @@ public final class SettingsTest {
       throwsWith(() -> Settings.parse(latin1("{")), "must be JSON", "not JSON");
       throwsWith(() -> Settings.parse(latin1("[]")), "JSON object", "not an object");
       throwsWith(() -> Settings.parse(latin1(" ".repeat(16 * 1024 + 1))), "at most 16 KB", "too big");
+    });
+
+    test("protocol 2: its static keys are needed, each held to what it must be, and the relay's keys are the ones written", () -> {
+      KeyPair p384 = P384.generate(ScriptedRandom.seeded(40));
+      byte[] number = HexFormat.of().parseHex(String.format("%096x", ((ECPrivateKey) p384.getPrivate()).getS()));
+      String point = HexFormat.of().formatHex(P384.encode((ECPublicKey) p384.getPublic()));
+      String seed = "3c".repeat(64);
+      Map<String, Object> keys = object("p384Private", HexFormat.of().formatHex(number), "p384Public", point, "mlkemSeed", seed);
+      Settings s = parse(with(relayOnly(), "protocol", 2, "staticKeys", keys));
+      same(s.protocol(), 2, "protocol 2");
+      same(HexFormat.of().formatHex(s.staticKeys().p384Public()), point, "its P-384 public key, as written");
+      same(s.staticKeys().kemPublic(), MlKem.encode(MlKem.fromSeed(HexFormat.of().parseHex(seed)).getPublic()),
+          "its ML-KEM key, made from the seed");
+      HandshakeA.Initiator game = HandshakeA.writeA1("virginia", s.staticKeys().p384Public(), s.staticKeys().kemPublic(),
+          ScriptedRandom.seeded(41));
+      ok(HandshakeA.readA1(s.staticKeys(), "virginia", game.a1(), ScriptedRandom.seeded(42)) != null,
+          "and they work: a game's A1 to those public keys is read with them");
+      same(parse(relayOnly()).protocol(), 1, "protocol 1 when none is named");
+      same(parse(relayOnly()).staticKeys(), null, "with no static keys");
+
+      Map<String, Object> two = with(relayOnly(), "protocol", 2);
+      String other = HexFormat.of().formatHex(P384.encode((ECPublicKey) P384.generate(ScriptedRandom.seeded(43)).getPublic()));
+      refused(with(relayOnly(), "protocol", 3), "protocol 3");
+      refused(with(relayOnly(), "protocol", "2"), "protocol as text");
+      throwsWith(() -> parse(two), "staticKeys are needed for protocol 2", "protocol 2 with no static keys, said plainly");
+      throwsWith(() -> parse(with(relayOnly(), "staticKeys", keys)), "for protocol 2 only", "static keys with protocol 1");
+      refused(with(two, "staticKeys", "keys"), "static keys that aren't an object");
+      refused(with(two, "staticKeys", with(keys, "p384Public", other)), "a P-384 number with another key's point");
+      refused(with(two, "staticKeys", with(keys, "p384Private", "00".repeat(48))), "a P-384 number of 0");
+      refused(with(two, "staticKeys", with(keys, "p384Private", "ff".repeat(48))), "a P-384 number past the curve's order");
+      refused(with(two, "staticKeys", with(keys, "p384Private", HexFormat.of().formatHex(number).toUpperCase())), "capitals");
+      refused(with(two, "staticKeys", with(keys, "p384Public", point.substring(0, 192) + (point.endsWith("0") ? "1" : "0"))),
+          "a point off the curve (its last digit changed)");
+      refused(with(two, "staticKeys", with(keys, "mlkemSeed", "00".repeat(64))), "an ML-KEM seed of all 0, as one left unset would be");
+      refused(with(two, "staticKeys", with(keys, "mlkemSeed", seed.substring(2))), "a seed of 63 bytes");
+      refused(with(two, "staticKeys", with(keys, "mlkemPrivate", "ab")), "a name staticKeys doesn't have");
+      refused(with(two, "staticKeys", with(keys, "mlkemSeed", LEAVE_OUT)), "no seed");
     });
 
     test("deploy/settings.example.json is refused as it is, until a real pass key is put in", () -> {

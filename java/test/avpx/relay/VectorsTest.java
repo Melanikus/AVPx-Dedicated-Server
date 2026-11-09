@@ -1,83 +1,124 @@
 package avpx.relay;
 
-import static avpx.testing.Tests.bytes;
 import static avpx.testing.Tests.hex;
 import static avpx.testing.Tests.latin1;
+import static avpx.testing.Tests.ok;
 import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.test;
 import static avpx.testing.Tests.text;
 
-import avpx.relay.Protocol.Field;
+import avpx.list.Json;
 import avpx.testing.SeededRandom;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.HexFormat;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
-// The same bytes as the Node version, byte for byte. Written 2026-11-08 by Melanikus for AVPx Dedicated Server.
+// The same bytes as every other implementation, byte for byte. Written 2026-11-08 by Melanikus for AVPx Dedicated Server.
 //
-// The server was first written in Node (at commit f37b495), and games already speak to it. So this one must write exactly the same
-// messages and passes from the same fields, and the tests' seeded random must give exactly the same bytes, or a test that passes here
-// could mean something else than the Node test it was ported from. Each value below was made by the Node version's own code (its
-// relay/protocol.js, relay/pass.js, relay/core.js, relay/limits.js and support/seeded-random.js, at f37b495), and is written here as it
-// came out. Nothing here is from the network; these are the reference, and a change to any of them is a change to PROTOCOL.md.
+// test-vectors/relay-v1.json, at the top of the repository, holds the relay's messages as exact bytes, with their fields; byte strings
+// that are no message, each with the reason; and passes, with what they were made from. The Node version made it and checks it, and the
+// game reads it too, so all three hold to the one file and can't drift apart. Here it's read with the server's own strict JSON reader,
+// and every vector is checked both ways: the bytes read back as the fields, and the fields write the bytes.
+//
+// The last test holds the tests' own seeded random, and the codes and address hashes made from it, to what the Node version's code made
+// from the same seeds (at f37b495), so a ported test that relies on them means what its Node original meant.
 public final class VectorsTest {
   private VectorsTest() {
   }
 
-  // Each type, with every field it uses filled in as test/protocol.test.js fills them (full()): secret '0123456789abcdef', code
-  // 'ABCD2345', port 27501, number 3, pass 'fedcba9876543210' with pass time 1794268800
-  private static final String[] MESSAGES = {
-    "41565052010100003031323334353637383961626364656600000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    "41565052010200003031323334353637383961626364656641424344323334350000000066656463626139383736353433323130805ef26a0000000000000000",
-    "41565052010300003031323334353637383961626364656600000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    "41565052010400003031323334353637383961626364656600000000000000000000030066656463626139383736353433323130805ef26a0000000000000000",
-    "41565052010500003031323334353637383961626364656600000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    "41565052010600003031323334353637383961626364656641424344323334350000000000000000000000000000000000000000000000000000000000000000",
-    "41565052010700003031323334353637383961626364656641424344323334356d6b000000000000000000000000000000000000000000000000000000000000",
-    "41565052010800003031323334353637383961626364656600000000000000006d6b000000000000000000000000000000000000000000000000000000000000",
-    "41565052010900003031323334353637383961626364656600000000000000006d6b000000000000000000000000000000000000000000000000000000000000",
-    "41565052010a00003031323334353637383961626364656600000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    "41565052010b00003031323334353637383961626364656600000000000000006d6b000000000000000000000000000000000000000000000000000000000000",
-    "41565052010c00000000000000000000000000000000000000000000000000000000030000000000000000000000000000000000000000000000000000000000",
-    "41565052010d00003031323334353637383961626364656600000000000000000000000000000000000000000000000000000000000000000000000000000000",
-    "41565052010e00003031323334353637383961626364656600000000000000000000030000000000000000000000000000000000000000000000000000000000",
-    "41565052010f00003031323334353637383961626364656600000000000000000000030000000000000000000000000000000000000000000000000000000000",
-  };
+  // The tests run in java/, so the file is one folder up
+  private static final Path FILE = Path.of("..", "test-vectors", "relay-v1.json");
+
+  // Root object, the lists in it, the vectors in those, and a message's fields
+  private static final int FILE_DEPTH = 4;
+
+  private static Map<String, Object> vectors() throws Exception {
+    return Json.readObject(Files.readAllBytes(FILE), FILE_DEPTH);
+  }
+
+  private static List<Map<String, Object>> all(Map<String, Object> v, String name) {
+    List<Map<String, Object>> out = new ArrayList<>();
+
+    for (Object item : Json.list(v.get(name))) {
+      out.add(Json.object(item));
+    }
+
+    return out;
+  }
+
+  private static byte[] hexOrNull(Object value) {
+    String text = (String) value;
+    return text.isEmpty() ? null : HexFormat.of().parseHex(text);
+  }
+
+  private static int whole(Object value) {
+    return ((Long) value).intValue();
+  }
 
   public static void register() {
-    test("every type's message is the Node version's, byte for byte", () -> {
-      same(Protocol.types().size(), MESSAGES.length, "one for each type");
+    test("every message in test-vectors/relay-v1.json reads back as its fields, and its fields write it", () -> {
+      Set<Integer> types = new HashSet<>();
 
-      for (int type : Protocol.types()) {
-        Set<Field> uses = Protocol.uses(type);
-        Message m = Message.of(type);
+      for (Map<String, Object> m : all(vectors(), "messages")) {
+        String name = (String) m.get("name");
+        byte[] bytes = HexFormat.of().parseHex((String) m.get("hex"));
+        same(bytes.length, 64, name);
+        Message d = Protocol.decode(bytes);
+        ok(d != null, name + " is a message");
 
-        if (uses.contains(Field.SECRET)) {
-          m.secret(latin1("0123456789abcdef"));
-        }
+        Map<String, Object> got = new LinkedHashMap<>();
+        got.put("type", d.type());
+        got.put("secret", d.secret() == null ? "" : hex(d.secret()));
+        got.put("code", d.code() == null ? "" : text(d.code()));
+        got.put("port", d.port());
+        got.put("number", d.number());
+        got.put("pass", d.pass() == null ? "" : hex(d.pass()));
+        got.put("passTime", d.passTime());
+        Map<String, Object> fields = Json.object(m.get("fields"));
+        same(got, fields, name + ": its fields");
 
-        if (uses.contains(Field.CODE)) {
-          m.code(latin1("ABCD2345"));
-        }
-
-        if (uses.contains(Field.PORT)) {
-          m.port(27501);
-        }
-
-        if (uses.contains(Field.NUMBER)) {
-          m.number(3);
-        }
-
-        if (uses.contains(Field.PASS)) {
-          m.pass(latin1("fedcba9876543210"), 1794268800L);
-        }
-
-        same(hex(Protocol.encode(m)), MESSAGES[type - 1], "type " + type);
+        String code = (String) fields.get("code");
+        Message written = Message.of(whole(fields.get("type"))).secret(hexOrNull(fields.get("secret")))
+            .code(code.isEmpty() ? null : latin1(code)).port(whole(fields.get("port"))).number(whole(fields.get("number")))
+            .pass(hexOrNull(fields.get("pass")), (Long) fields.get("passTime"));
+        same(hex(Protocol.encode(written)), m.get("hex"), name + ": written from its fields");
+        types.add(d.type());
       }
+
+      same(types.size(), Protocol.types().size(), "every type has a message");
     });
 
-    test("a pass is the Node version's, byte for byte", () -> {
-      same(hex(Pass.make(bytes(32, 7), "virginia", latin1("ABCD2345"), 1794268800L)), "da4328405a74a021fcf7c40db8d768ae", "the pass");
+    test("every refused vector is not a message, and every reason is one of the eight words", () -> {
+      Set<String> whys = Set.of("size", "magic", "version", "type", "zero", "unused", "code", "passtime");
+      int unused = 0;
+
+      for (Map<String, Object> r : all(vectors(), "refused")) {
+        ok(whys.contains((String) r.get("why")), r.get("name") + ": its reason");
+        same(Protocol.decode(HexFormat.of().parseHex((String) r.get("hex"))), null, (String) r.get("name"));
+
+        if ("unused".equals(r.get("why"))) {
+          unused++;
+        }
+      }
+
+      ok(unused > 40, "every unused field of every type");
+    });
+
+    test("every pass in test-vectors/relay-v1.json is the one a relay makes", () -> {
+      List<Map<String, Object>> passes = all(vectors(), "passes");
+      ok(!passes.isEmpty(), "there are passes");
+
+      for (Map<String, Object> p : passes) {
+        byte[] made = Pass.make(HexFormat.of().parseHex((String) p.get("key")), (String) p.get("region"), latin1((String) p.get("code")),
+            (Long) p.get("passTime"));
+        same(hex(made), p.get("pass"), "the pass for " + p.get("region") + " " + p.get("code"));
+      }
     });
 
     test("the tests' seeded random, the codes it makes, and an address's hash are the Node version's", () -> {

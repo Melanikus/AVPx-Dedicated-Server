@@ -21,6 +21,12 @@ public final class AllTests {
     avpx.relay.LimitsTest.register();
     Tests.file("CoreTest");
     avpx.relay.CoreTest.register();
+    Tests.file("JsonTest");
+    avpx.list.JsonTest.register();
+    Tests.file("StrictJsonTest");
+    avpx.list.StrictJsonTest.register();
+    Tests.file("ListTest");
+    avpx.list.ListTest.register();
     System.exit(Tests.runAll());
   }
 }

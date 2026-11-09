@@ -155,9 +155,12 @@ public final class RelayCore {
     long closed;
     long expired;
     long joins;
+    long ready;
     long refused;
     long echoes;
     long forwardedPackets;
+    long upPackets;
+    long downPackets;
     long forwardedBytes;
     long tooBig;
     long overLimit;
@@ -429,6 +432,13 @@ public final class RelayCore {
 
     slot.trafficAt = now;
     counts.forwardedPackets++;
+
+    if (fromJoiner) {
+      counts.upPackets++;
+    } else {
+      counts.downPackets++;
+    }
+
     counts.forwardedBytes += data.length;
     End to = fromJoiner ? slot.hostEnd : slot.joinerEnd;
     return List.of(new Out(slot.port, to.address(), to.port(), data));
@@ -451,6 +461,11 @@ public final class RelayCore {
 
     if (slot.hostEnd == null || slot.joinerEnd == null) {
       return List.of();
+    }
+
+    // A joiner counts as ready once, when both its ends are first there (a READY sent again is not another joiner)
+    if (slot.state != Slot.State.ACTIVE) {
+      counts.ready++;
     }
 
     slot.state = Slot.State.ACTIVE;
@@ -574,8 +589,9 @@ public final class RelayCore {
     }
 
     String line = "relay: in the last " + Math.round((now - statsAt) / 1000.0) + " s: " + c.opened + " games opened, " + c.closed
-        + " closed, " + c.expired + " ended unkept; " + c.joins + " joins, " + c.refused + " refusals, " + c.echoes + " echoes; forwarded "
-        + c.forwardedPackets + " packets, " + c.forwardedBytes + " bytes; dropped " + c.tooBig + " too big, " + c.overLimit
+        + " closed, " + c.expired + " ended unkept; " + c.joins + " joins, " + c.ready + " joiners ready, " + c.refused + " refusals, "
+        + c.echoes + " echoes; forwarded " + c.forwardedPackets + " packets (" + c.upPackets + " joiners to hosts, " + c.downPackets
+        + " hosts to joiners), " + c.forwardedBytes + " bytes; dropped " + c.tooBig + " too big, " + c.overLimit
         + " over a limit, " + c.notAMessage + " not a message, " + c.strangers + " from strangers; " + c.portsExpired
         + " ports timed out. Now " + games.size() + " games, " + (slots.size() - free.size()) + " of " + slots.size()
         + " ports in use (" + pending + " waiting for both ends)";

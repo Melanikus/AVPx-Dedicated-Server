@@ -531,6 +531,8 @@ public final class CoreTest {
       RelayCore r = relay();
       Connected c = connected(r, 0);
       sendRaw(r, c.port(), JOINER, latin1("x"), 1);
+      sendRaw(r, c.port(), HOST, latin1("y"), 1);
+      sendRaw(r, c.port(), HOST, latin1("z"), 1);
       sendRaw(r, c.port(), STRANGER, latin1("x"), 1);
       // The game and its joiner are still alive when the line is made, so anything of theirs could get into it
       send(r, CONTROL, HOST, keep(c.game().token()), 50000);
@@ -541,7 +543,8 @@ public final class CoreTest {
       same(r.slots.get(c.port()).state, Slot.State.ACTIVE, "and so is its joiner");
       same(lines.size(), 1, "one line");
       String line = lines.get(0);
-      matches(line, "forwarded 1 packets", "the packet passed on is counted");
+      matches(line, "forwarded 3 packets \\(1 joiners to hosts, 2 hosts to joiners\\)", "the packets passed on, each way");
+      matches(line, "1 joins, 1 joiners ready,", "one joiner, ready once, though its READY went twice");
 
       for (String secret : List.of(HOST.address(), JOINER.address(), STRANGER.address(), text(c.game().code()), hex(c.game().token()),
           hex(c.ticket()))) {

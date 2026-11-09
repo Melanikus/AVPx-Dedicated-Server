@@ -31,9 +31,14 @@ fi
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# HTTPS only, TLS 1.2 or newer, and fail on any HTTP error rather than keep an error page
+# NOTHING FROM THE USER'S HOME is used, so it runs the same as a user with no home folder at all (the deploy's avpx-build, ProtectHome):
+# curl is told -q first, so it reads no ~/.curlrc, and gpg gets a home of its own in the work folder (below), never ~/.gnupg. java.yml's
+# tests run this with a home that holds a .curlrc and a gpg.conf that would each break it, to prove neither is read.
+
+# HTTPS only, TLS 1.2 or newer, and fail on any HTTP error rather than keep an error page. -q must come first: it's what keeps curl from
+# reading ~/.curlrc.
 fetch() {
-  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output "$2" "$1"
+  curl -q --fail --silent --show-error --location --proto '=https' --tlsv1.2 --output "$2" "$1"
 }
 
 fetch "$JDK_URL" "$work/jdk.tar.gz"

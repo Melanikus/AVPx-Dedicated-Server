@@ -17,9 +17,10 @@ import java.util.stream.Stream;
 //
 //   java -cp java/build/tools avpx.tools.CheckStandard       run from the repository's top folder (build.sh compiles it)
 //
-// It checks the folder it's run in, and nothing given on its command line, so nothing can point it anywhere else. It exits 1 if any rule
-// is broken, 0 if none. Rules 1, 2 (no compiled code, no package-fetching build file), 6 and 7 hold for every file in the repository;
-// the others for the Java code:
+// It checks the folder it's run in, and nothing given on its command line, so nothing can point it anywhere else (Takeouts.java, which is
+// in this package, has it check Takeouts' own copies, from inside Takeouts' program). It exits 1 if any rule is broken, 0 if none.
+// Rules 1, 2 (no compiled code, no package-fetching build file), 6 and 7 hold for every file in the repository; the others for the Java
+// code:
 //
 //   1. Every file is ASCII: every byte of every file in the repository.
 //   2. No third-party code: module-info.java names no module it needs, so javac itself can use nothing but java.base; every import is
@@ -78,14 +79,40 @@ public final class CheckStandard {
   // Rule 8
   private static final String ALL_TESTS = "java/test/avpx/AllTests.java";
 
-  private static final List<String> problems = new ArrayList<>();
+  // What one check found, and how much it looked at. Each check has its own, so Takeouts.java can check several copies at once.
+  private final List<String> problems = new ArrayList<>();
+  private int filesChecked;
+  private int javaFilesChecked;
 
-  private static void say(String file, int line, String words) {
+  private void say(String file, int line, String words) {
     problems.add(file + (line > 0 ? ":" + line : "") + ": " + words);
   }
 
   public static void main(String[] args) throws IOException {
-    Path root = Path.of("").toAbsolutePath();
+    CheckStandard found = check(Path.of("").toAbsolutePath());
+
+    for (String p : found.problems) {
+      System.out.println(p);
+    }
+
+    System.out.println("Checked " + found.filesChecked + " files (" + found.javaFilesChecked + " Java) against CODING-STANDARD.md: "
+        + found.problems.size() + " problems");
+    System.exit(found.problems.isEmpty() ? 0 : 1);
+  }
+
+  // Every rule, on every file in the folder given: main gives it the folder it's run in, and Takeouts.java its copies
+  static CheckStandard check(Path root) throws IOException {
+    CheckStandard found = new CheckStandard();
+    found.checkAll(root);
+    return found;
+  }
+
+  // Each rule broken, as "file:line: which rule, and why"; none at all when every rule holds
+  List<String> problems() {
+    return List.copyOf(problems);
+  }
+
+  private void checkAll(Path root) throws IOException {
     List<String> files = new ArrayList<>();
 
     try (Stream<Path> all = Files.walk(root)) {
@@ -127,17 +154,12 @@ public final class CheckStandard {
       problems.add("no Java files were found to check, which would mean nothing was checked");
     }
 
-    for (String p : problems) {
-      System.out.println(p);
-    }
-
-    System.out.println("Checked " + files.size() + " files (" + javaFiles + " Java) against CODING-STANDARD.md: " + problems.size()
-        + " problems");
-    System.exit(problems.isEmpty() ? 0 : 1);
+    filesChecked = files.size();
+    javaFilesChecked = javaFiles;
   }
 
   // Rules 1, 2, 6 and 7, on every file in the repository
-  private static void checkAnyFile(Path root, String file) throws IOException {
+  private void checkAnyFile(Path root, String file) throws IOException {
     byte[] bytes = Files.readAllBytes(root.resolve(file));
     int line = 1;
 
@@ -194,7 +216,7 @@ public final class CheckStandard {
   }
 
   // Rules 2 to 5 on a Java file under java/
-  private static void checkJavaFolderFile(Path root, String file) throws IOException {
+  private void checkJavaFolderFile(Path root, String file) throws IOException {
     if (!file.endsWith(".java") || file.equals(SELF) || file.equals(ROWS)) {
       return;
     }
@@ -248,7 +270,7 @@ public final class CheckStandard {
   }
 
   // Rule 8: every test file is named in AllTests.java
-  private static void checkEveryTestRuns(Path root, List<String> files) throws IOException {
+  private void checkEveryTestRuns(Path root, List<String> files) throws IOException {
     if (!files.contains(ALL_TESTS)) {
       say(ALL_TESTS, 0, "rule 8: AllTests.java isn't there, so no test would run");
       return;

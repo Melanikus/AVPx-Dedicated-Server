@@ -45,7 +45,8 @@ import java.util.stream.Stream;
 // file exactly once.
 //
 // The checks: "tests" runs java/build.sh in the copy without the live tests; "live" runs it with them (AVPX_LIVE=1), one row at a time,
-// because the live tests use fixed ports; "standard" runs CheckStandard in the copy. "tests" and "standard" rows run several at once.
+// because the live tests use fixed ports; "standard" runs CheckStandard on the copy, inside this program. "tests" and "standard" rows run
+// several at once.
 public final class Takeouts {
   private Takeouts() {
   }
@@ -210,12 +211,15 @@ public final class Takeouts {
 
   // ----- Checks
 
-  // Runs a check in a copy, and says whether it passed
-  private static boolean passes(Path copy, String check, Path tools) throws IOException, InterruptedException {
-    String java = Path.of(System.getenv("JAVA_HOME"), "bin", "java").toString();
-    ProcessBuilder builder = check.equals("standard")
-        ? new ProcessBuilder(java, "-cp", tools.toString(), "avpx.tools.CheckStandard")
-        : new ProcessBuilder(SHELL, "java/build.sh");
+  // Runs a check in a copy, and says whether it passed. The standard check runs here, inside this program, on the copy. The tests run in a
+  // program of their own, and nothing in what's started comes from outside: the shell by its fixed full path, and the copy's own build.sh
+  // as an argument of its own, in the copy's folder (build.sh reads JAVA_HOME for itself).
+  private static boolean passes(Path copy, String check) throws IOException, InterruptedException {
+    if (check.equals("standard")) {
+      return CheckStandard.check(copy).problems().isEmpty();
+    }
+
+    ProcessBuilder builder = new ProcessBuilder(SHELL, "java/build.sh");
     builder.directory(copy.toFile());
     builder.redirectErrorStream(true);
     builder.redirectOutput(ProcessBuilder.Redirect.DISCARD);
@@ -241,7 +245,7 @@ public final class Takeouts {
   private record Result(String line, boolean bad) {
   }
 
-  private static Result run(Path root, Row row, Path tools) throws IOException, InterruptedException {
+  private static Result run(Path root, Row row) throws IOException, InterruptedException {
     Path copy = makeCopy(root);
 
     try {
@@ -264,7 +268,7 @@ public final class Takeouts {
         Files.writeString(file, text.replace(row.from(), row.to()), StandardCharsets.ISO_8859_1);
       }
 
-      boolean passed = passes(copy, row.check(), tools);
+      boolean passed = passes(copy, row.check());
       return new Result("row " + row.number() + " " + (passed ? "NOT NOTICED" : "noticed") + " (" + row.check() + "): " + row.name(), passed);
     } finally {
       remove(copy);
@@ -273,7 +277,6 @@ public final class Takeouts {
 
   public static void main(String[] args) throws Exception {
     Path root = Path.of("").toAbsolutePath();
-    Path tools = root.resolve(Path.of("java", "build", "tools"));
     List<Row> rows = read(Files.readAllLines(root.resolve(ROWS), StandardCharsets.US_ASCII));
 
     // The unbroken copy first: its tests (with the live ones) and its standard must pass
@@ -282,8 +285,8 @@ public final class Takeouts {
     boolean baseStandard;
 
     try {
-      baseLive = passes(base, "live", tools);
-      baseStandard = passes(base, "standard", tools);
+      baseLive = passes(base, "live");
+      baseStandard = passes(base, "standard");
     } finally {
       remove(base);
     }
@@ -310,7 +313,7 @@ public final class Takeouts {
       List<Future<Result>> pending = new ArrayList<>();
 
       for (Row row : together) {
-        pending.add(pool.submit(() -> run(root, row, tools)));
+        pending.add(pool.submit(() -> run(root, row)));
       }
 
       for (Future<Result> f : pending) {
@@ -325,7 +328,7 @@ public final class Takeouts {
     }
 
     for (Row row : oneAtATime) {
-      results.add(run(root, row, tools));
+      results.add(run(root, row));
     }
 
     int bad = 0;

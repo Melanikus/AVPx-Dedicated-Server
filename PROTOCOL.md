@@ -53,7 +53,7 @@ Every message is exactly **64 bytes**, questions and answers alike, so the relay
 
 **Code letters:** `23456789ABCDEFGHJKLMNPQRSTUVWXYZ`. That's 32 of them, with no 0, 1, I or O, so a code can be read aloud. A code is 8 of them, 40 bits.
 
-**Not a message, and dropped:** not exactly 64 bytes; another magic or version; an unknown type; a reserved or padding byte not 0; a field its type doesn't use not 0; a code that's neither all code letters nor all 0.
+**Not a message, and dropped:** not exactly 64 bytes; another magic or version; an unknown type; a reserved or padding byte not 0; a field its type doesn't use not 0; a code that's neither all code letters nor all 0; a pass time past 9,007,199,254,740,991 (2^53 - 1, the most a JSON number holds exactly; added 2026-11-08 as a fix, since the code and test-vectors/relay-v1.json already refused it).
 
 | Type | Name | From, to | Secret | Code | Port | Number | Pass and pass time |
 |---|---|---|---|---|---|---|---|

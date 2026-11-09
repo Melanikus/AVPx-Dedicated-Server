@@ -16,6 +16,14 @@ public final class ReplayWindowTest {
   }
 
   public static void register() {
+    test("the very top: the window moves to the largest long and the call comes back, the counters between still new", () -> {
+      ReplayWindow w = new ReplayWindow();
+      w.take(Long.MAX_VALUE - 5);
+      w.take(Long.MAX_VALUE);
+      ok(!w.isNew(Long.MAX_VALUE) && !w.isNew(Long.MAX_VALUE - 5), "both taken");
+      ok(w.isNew(Long.MAX_VALUE - 1), "one between, still new");
+    });
+
     test("a counter is new once: taken, it's refused after", () -> {
       ReplayWindow w = new ReplayWindow();
       ok(w.isNew(0), "0, at the start");

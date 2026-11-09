@@ -35,12 +35,15 @@ public final class ReplayWindow {
     if (counter > highest) {
       long ahead = highest < 0 ? WINDOW : counter - highest;
 
-      // The counters that fall out of the window as it moves up are cleared
+      // The counters that fall out of the window as it moves up are cleared. The move is counted in steps, fewer than WINDOW, and
+      // never as "c <= counter": with a counter of the largest long, that is always true, so the loop would never end. Channel takes no
+      // counter past 2^32, so nothing reaches that today; this keeps the window safe by itself, whoever uses it (the game's own does
+      // the same, 3dc/net_v2_replay.h).
       if (ahead >= WINDOW) {
         Arrays.fill(seen, 0L);
       } else {
-        for (long c = highest + 1; c <= counter; c++) {
-          clear(c);
+        for (long step = 1; step <= ahead; step++) {
+          clear(highest + step);
         }
       }
 

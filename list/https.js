@@ -95,7 +95,12 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
     };
 
     counts.requests++;
-    const [path, query = ''] = (request.url || '').split('?', 2);
+    // The path is what comes before the first ?, and the query is everything after it, a second ? and all, so routes.js sees the whole
+    // of what was sent and refuses "version=7?x" (split('?', 2) would quietly have dropped the "?x")
+    const url = request.url || '';
+    const mark = url.indexOf('?');
+    const path = mark < 0 ? url : url.slice(0, mark);
+    const query = mark < 0 ? '' : url.slice(mark + 1);
     const isList = request.method === 'GET' && (path === '/v1/games' || path === '/v1/relays');
 
     if (!perAddress.allows(address, at) || (isList && !lists.allows(address, at)) || !everyone.take(at)) {

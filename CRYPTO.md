@@ -155,7 +155,7 @@ This comes from Fourth's list (AvP-docs, engine/pq-native-needs.md). The names o
 | **Directory key** | ECDSA plus ML-DSA | offline, beside the root | signs the relays directory (section 12) |
 | **List key** | ECDSA plus ML-DSA | on the list's machine | signs each answer of `GET /v1/games` |
 | **A relay's static key** | ECDH P-384 plus ML-KEM-1024 | on that relay's machine | proves the relay, in handshake A |
-| **A player's identity key** | ECDH P-384 plus ML-KEM-1024 | made on first run, in the player's save folder, sealed with Windows' DPAPI (section 4.1) | proves a host or joiner, in handshake B |
+| **A player's identity key** | ECDH P-384 plus ML-KEM-1024 | made on first run, in the player's own LocalAppData folder, which never roams, sealed with Windows' DPAPI (section 4.1) | proves a host or joiner, in handshake B |
 | **Session keys** | AES-256 per direction | memory only, wiped at the end (section 9) | seal the messages |
 
 **Pinned in the game:** the root's public keys. There are two roots: the one in use, and the next one, made at the same time and kept offline apart. So a root can be replaced without the game being left with none.
@@ -169,8 +169,22 @@ This was Fourth's suggestion, and it's taken as the secure option: it's Windows'
   - for **this Windows user only** (never `CRYPTPROTECT_LOCAL_MACHINE`);
   - with `CRYPTPROTECT_UI_FORBIDDEN`;
   - with the optional entropy `AVPX identity v2`.
-  - The sealed blob and the public halves go in the save folder. The plain private keys exist only in memory while the game runs, and are wiped (`SecureZeroMemory`) when it ends.
-- **What it protects against:** someone who copies the save folder, a backup, or the disk. Only the same Windows user can open it.
+  - The plain private keys exist only in memory while the game runs, and are wiped (`SecureZeroMemory`) when it ends.
+- **Where it's kept:** the sealed blob and the public halves are one file, `%LOCALAPPDATA%AVPxidentity-v2.bin` (the folder from
+  `SHGetKnownFolderPath` with `FOLDERID_LocalAppData`), laid out as `net_identity_file.h` says. A `-dev -secondcopy` game keeps
+  `identity-v2-second-copy.bin` there, so two copies on one PC are still two players.
+  - **Not the save folder,** because Windows often moves Documents into OneDrive and copies it to the player's other PCs, where the
+    seal won't open. Each PC would make a new identity and copy it back, and two PCs would keep replacing each other's. LocalAppData
+    never roams.
+  - **Only the player's own file is read.** The file is opened once, and its owner is checked through that same handle
+    (`GetSecurityInfo`) before a byte of it is read. Anyone else's file is refused. The reason: `CryptUnprotectData` opens a blob
+    sealed with `CRYPTPROTECT_LOCAL_MACHINE` for any account on the machine, and the entropy is no secret, so a file planted by
+    someone else, with keys they know, would otherwise open. The game writes the file owned by this user, with one entry in its
+    access list, this user, and nothing inherited (a protected DACL).
+  - **On the disk before it's in place:** a new file is written with `CreateFileW` and `FlushFileBuffers`, then moved over the old
+    one in one step (`MoveFileEx`). After a power cut the file is either the old one or the whole new one, never one full of zeros,
+    which would cost the player their identity and their approval.
+- **What it protects against:** someone who copies the file, a backup, or the disk. Only the same Windows user can open it.
 - **What it can't:** a program running as that same user can unseal the blob too, and so can malware with the user's rights. That's true of every key a program keeps for its user.
 - **When it fails:** when `CryptUnprotectData` refuses, because the profile moved to another machine, the password was reset by an administrator, or the file is damaged. The game then:
   - makes a **new identity**;
@@ -184,7 +198,7 @@ This was Fourth's suggestion, and it's taken as the secure option: it's Windows'
 - A player's identity key changes only if they ask, and their friends then see a new fingerprint.
 
 **Revocation:**
-- The signed directory carries a list of revoked key fingerprints. The game refuses anything signed by one of them.
+- The signed directory carries a list of revoked keys, each by the whole SHA-384 of its public key (section 8's rule: a machine compares the whole digest). The game refuses anything signed by one of them.
 - A root is revoked only by a game update that pins the next root alone.
 
 **Decided 2026-11-08: the user signs each release by hand,** on their own machine, with the release key offline. A CI secret was the first brief: any code that runs in that job can read it. The release workflow builds the files and the unsigned `manifest.txt`. The user checks it, signs it, and attaches `manifest.sig`, and only then is the release published.
@@ -261,7 +275,7 @@ Every implementation must make the same bytes. Where Noise leaves a choice, or w
 17. **Handshake B's prologue** is three MixHashes, in this order:
     - the region's name in ASCII, then one 0 byte (as A's);
     - the joiner's relay port, as 2 bytes little-endian (the joiner has it from JOIN_PORT, the host from NEW_JOINER);
-    - the host's fingerprint as the listing gives it, 16 bytes.
+    - the host's id as the listing gives it, 48 bytes (section 8). Until section 8's third change is built, the code mixes the 16-byte fingerprint here; that change remakes handshake B's vectors and proofs/pqxx.pv with the id.
     There's no pre-message: XX has none. The region binds B to the relay as well as to the port, at no cost. Settled 2026-11-09 with Primary; proofs/pqxx.pv has the same three.
 18. **Handshake B's datagrams** are `AVPE` both ways, never the relay's `AVPR`. They use kinds 16 to 20, the handshake id the joiner chose, a cookie of 16 zero bytes (the relay checks none), and point 10's fragments. On a joiner's port the relay passes them on unread (section 7).
 19. **The check code, committed before it's made.** Each side puts in 32 random bytes that the other can't see until it's too late to steer the code:
@@ -272,7 +286,7 @@ Every implementation must make the same bytes. Where Noise leaves a choice, or w
     - **Why the commitment:** made from the transcript alone, the code could be ground by someone in the middle. On one of its two sides, it's always the last to add randomness (its B4 to the joiner, or its B3 to the host). So it could try a million values in the seconds a handshake allows, until both screens showed the same 6 digits. With the commitment, every choice it can make is fixed before the value that decides each side's code is shown: `nJ` on the joiner's side, which it saw only as a hash; `nH` on the host's side, which comes after its last move. So one handshake is one try, at one in a million, and a failed try is seen. This is ZRTP's commit-then-reveal (RFC 6189), for the same reason.
     - Settled 2026-11-09, by Third, on Tao 1 grounds, when Primary asked for the code's exact form.
 20. **Split's info for B** is the same `"AVPX split v2"` as A's. The two never collide: each starts from the hash of its own protocol name.
-21. **Handshake A's `s` (A1):** one EncryptAndHash of the game's two static public keys, one after the other: the P-384 key (97 bytes, 0x04 then X then Y), then the ML-KEM-1024 encapsulation key (1,568). Those are net_identity.h's 1,665 public bytes, the same bytes the access request sends (PROTOCOL.md). It's sealed under the `k` that A1's `skem` made, at nonce 0. The player's fingerprint is section 8's, of those same 1,665 bytes. The relay checks them in section 6's order: the P-384 key on the curve and not the point at infinity, and the ML-KEM key passing FIPS 203's encapsulation key check (refusal 23), then the fingerprint approved (refusal 22). Both come before `ss`. Then `ss` is MixKey(ECDH(the game's static P-384 key, the relay's static P-384 key)), and A1 ends with an empty EncryptAndHash under the `k` `ss` made, at nonce 0. Settled 2026-11-09 by Third, for server #24.
+21. **Handshake A's `s` (A1):** one EncryptAndHash of the game's two static public keys, one after the other: the P-384 key (97 bytes, 0x04 then X then Y), then the ML-KEM-1024 encapsulation key (1,568). Those are net_identity.h's 1,665 public bytes, the same bytes the access request sends (PROTOCOL.md). It's sealed under the `k` that A1's `skem` made, at nonce 0. The player's id is section 8's, of those same 1,665 bytes. The relay checks them in section 6's order: the P-384 key on the curve and not the point at infinity, and the ML-KEM key passing FIPS 203's encapsulation key check (refusal 23), then the id approved (refusal 22). Both come before `ss`. Then `ss` is MixKey(ECDH(the game's static P-384 key, the relay's static P-384 key)), and A1 ends with an empty EncryptAndHash under the `k` `ss` made, at nonce 0. Settled 2026-11-09 by Third, for server #24.
 22. **Handshake A's A2 tokens,** in order: `e` (MixHash of the relay's ephemeral P-384 key only, point 6), `ee`, `se` (MixKey(ECDH(the relay's ephemeral key, the game's static P-384 key))), `ekem` (to the game's ephemeral ML-KEM key), `skem` (to the game's static ML-KEM key: its ciphertext is MixHashed, then MixKey of its secret), then EncryptAndHash(the session id) at nonce 0. A3 is then an empty EncryptAndHash at nonce 1, under that same `k`. Each ciphertext is MixHashed before its secret is mixed in, as section 5's `ekem` and `skem` say.
 
 ## 6. Handshake A: a game and its relay (pattern pqIK, hybrid)
@@ -313,13 +327,14 @@ to the other: the relay to the game by A2, and the game to the relay by A3.
 
 **Who may come in: approval.** A version 2 relay takes approved players only: there's no open mode. A relay open to anyone would need
 a pattern of its own, written here first, and a model of its own (section 14).
-- The relay keeps the approved players' fingerprints (section 8's fingerprint of the two static keys), and nothing else about them:
-  each fingerprint, and the owner's note of who it is. They come from the access requests the owner approved (PROTOCOL.md,
+- The relay keeps, for each approved player, their id and fingerprint (section 8) and the owner's note of who it is, and nothing
+  else about them. They come from the access requests the owner approved (PROTOCOL.md,
   `POST /v1/access-requests`).
 - **The checks on A1, in this order, right after A1's `s` opens:**
   1. the P-384 key is on the curve and not the point at infinity, and the ML-KEM key passes FIPS 203's encapsulation key check
      (refusal 23);
-  2. the fingerprint of those 1,665 bytes is an approved player's (refusal 22).
+  2. the id of those 1,665 bytes, the whole SHA-384 of section 8, is an approved player's (refusal 22). Never the 16-byte fingerprint
+     alone (section 8 says why): the fingerprint is for people, in the access code and the owner's decisions.
   Either refusal comes before `ss`, before any session is kept, and before A2's work.
 - A refused game is answered with nothing, like every refusal (section 16). Its player learns their state from the list, not from
   the relay. No answer differs, and what the time taken could show, the list already tells anyone with the keys: an A1 naming an
@@ -329,7 +344,7 @@ a pattern of its own, written here first, and a model of its own (section 14).
   does.
 - **One relay, one list, for now (a known limit):** the approved set is the list's own store, on the relay's machine. On nyc3 the list
   and the relay are one program, so one store serves both. A relay on another machine never sees the requests or the owner's
-  decisions, so it would take nobody. Before a second machine's relay takes players, the way the approved fingerprints reach it is
+  decisions, so it would take nobody. Before a second machine's relay takes players, the way the approved ids reach it is
   written here first: signed by the owner, or put on each machine by his approval kit.
 - **A revoked player** can start no new handshake, and every session of theirs that's open ends, seats and rooms included, as soon
   as the relay applies the revoke: at its next turn after the owner's decision. A1 checks the approved set as the last decision left
@@ -337,7 +352,7 @@ a pattern of its own, written here first, and a model of its own (section 14).
 
 **What the relay learns, said plainly:** an approved player's sessions can be linked to each other, because each names the same
 static keys. Before, they couldn't. The relay keeps no record of a session's player beyond the session itself, and its log has counts
-only, never a fingerprint. The approved list holds the fingerprint and the note.
+only, never an id or a fingerprint. The approved list holds the id, the fingerprint and the note.
 
 **Who else learns it:**
 - **Someone watching the network:** not the player's identity, because `s` is sealed under keys from `es` and `skem`, which need the
@@ -397,7 +412,15 @@ Every control message of PROTOCOL.md (the 64-byte HOST_OPEN, JOIN, hellos and th
 
 ## 8. Handshake B: a joiner and its host, end to end (pattern pqXX, hybrid)
 
-This runs on the joiner's relay port after READY, from game to game. The relay forwards these datagrams as it forwards any game packet: it can't read them, and it never answers them. Each player has an identity key (section 4). A **fingerprint** is the first 16 bytes of `SHA-384("AVPX-ID-2" || its P-384 key || its ML-KEM key)`: the 9 ASCII bytes of "AVPX-ID-2" with nothing after them, then the raw keys as they travel (97 bytes, then 1,568). It's shown as 32 hex digits, and the host's goes in its listing (version 2 of the list).
+This runs on the joiner's relay port after READY, from game to game. The relay forwards these datagrams as it forwards any game packet: it can't read them, and it never answers them. Each player has an identity key (section 4). A player's **id** is the whole of `SHA-384("AVPX-ID-2" || its P-384 key || its ML-KEM key)`: the 9 ASCII bytes of "AVPX-ID-2" with nothing after them, then the raw keys as they travel (97 bytes, then 1,568). It's 48 bytes, written as 96 hex digits. Its **fingerprint** is the id's first 16 bytes, written as 32 hex digits: the short form, for people. The host's id goes in its listing (version 2 of the list).
+
+**Ids and fingerprints: whatever a machine compares is the whole id** (decided 2026-11-09, by PO with Primary and Third). Only what people read stays short: the fingerprint a player is shown, and the access code made from it (PROTOCOL.md).
+- **Why:** to pass as someone, it's enough to make a key pair of your own whose digest matches theirs: a second preimage. Against 16 bytes that's 2^128 tries, but only about 2^64 for a quantum search, below the rest of this design (ML-KEM-1024, ML-DSA-87, AES-256 and SHA-384 are CNSA 2.0's level 5). Against the whole 48 bytes it's 2^384, and about 2^192. It matters most at the relay: pqIK proves the key in `s`, not the person, so a key pair made to match an approved player's 16 bytes could finish A3 as them.
+- **The three places, what each costs, and when each is built:**
+  1. **The approved players** (section 6): the store keeps each one's id, and the relay compares A1's `s` by it. The fingerprint stays for the access code and the owner's decision files. Cost: 96 more hex digits a record. Primary, 2026-11-09.
+  2. **A relay's keys against the game's setting** (section 12.1): the setting names the relay's whole id, 96 hex digits. Cost: a longer `-dev` line, copied as MakeRelayKeys prints it. Fifth (the game's setting) and Primary (MakeRelayKeys and the vectors).
+  3. **The listing's host against the keys in B2** (this section): the listing carries the host's id in place of its fingerprint, and handshake B's prologue mixes the id (5.1 point 17). Cost: 55 more bytes a listed game, so `GET /v1/games`' worst case goes from 46,011 to 51,511 bytes and its cap from 48 KB to 56 KB (PROTOCOL.md). Handshake B's vectors and `proofs/pqxx.pv` change with it. Fifth (the game) and Primary (the list), after Fifth's step 7.
+  Until all three are built, SERVER-BLOCKERS.md item 6 keeps every tester off.
 
 | Step | From, to | Kind | Tokens | Size |
 |---|---|---|---|---|
@@ -408,8 +431,8 @@ This runs on the joiner's relay port after READY, from game to game. The relay f
 | B5 | joiner to host | 20 | EncryptAndHash(`nJ`, the joiner's 32 bytes, which its commitment in B1 promised) | 32 + 16 = 48 bytes: 1 datagram |
 
 **Who is proved to whom:**
-- **The host to the joiner:** by `es` (classical) and the joiner's `skem` to the host's static ML-KEM key (post-quantum). The joiner also checks that the fingerprint of the static keys in B2 matches the listing's. If it doesn't, nothing more is sent, and the reason is "this isn't the host the list named".
-- **The joiner to the host:** by `se` and the host's `skem` to the joiner's static key. The host may remember joiners' fingerprints, to welcome back or to ban.
+- **The host to the joiner:** by `es` (classical) and the joiner's `skem` to the host's static ML-KEM key (post-quantum). The joiner also checks that the id of the static keys in B2 matches the listing's (the whole id: see above). If it doesn't, nothing more is sent, and the reason is "this isn't the host the list named".
+- **The joiner to the host:** by `se` and the host's `skem` to the joiner's static key. The host may remember joiners' ids, to welcome back or to ban.
 - **Key confirmation:**
   - B4's tag is the host's: the joiner sends no game byte before B4 checks.
   - B5's tag is the joiner's, made after the host's `skem` to the joiner's static ML-KEM key. Before B5, the host had proof only of the joiner's classical key (from `se`, in B3's tag). So the host sends no game byte before B5 checks.
@@ -417,7 +440,7 @@ This runs on the joiner's relay port after READY, from game to game. The relay f
 
 **The check code:**
 - Both screens show **6 digits made from the transcript** (exactly as 5.1 point 19 writes it), the same on both only if no one is in the middle. **It's always shown on the join screen** (decided 2026-11-08).
-- Two players who read them to each other (voice, chat) catch even a list that lied about the fingerprint.
+- Two players who read them to each other (voice, chat) catch even a list that lied about the host's id.
 - **One handshake is one try, at one in a million,** and a failed try is seen. That holds only because of the commitment in B1: without it, someone in the middle could steer both codes to match (5.1 point 19 says how, and why the commitment stops it).
 
 **Losses:** the same rule as handshake A. The joiner resends B1 and B3 on the same schedule. The host keeps its B2 and B4 for 10 s and sends them again byte for byte. **B5 can't be stood in for,** unlike A3, because it holds `nJ`, which the host needs for the check code. So the joiner sends B5 again on the same schedule until the host's first sealed datagram comes in, which the host sends only once B5 has checked.
@@ -452,13 +475,13 @@ After the handshake (B4 checked on the joiner's side, B5 on the host's), every d
 
 ## 10. Proving the host: a PAKE, or a signed identity
 
-| | (a) A PAKE (CPace, or SPAKE2 of RFC 9382) keyed on a secret both know | (b) A host identity, its fingerprint in the listing, and the check code (section 8) |
+| | (a) A PAKE (CPace, or SPAKE2 of RFC 9382) keyed on a secret both know | (b) A host identity, its id in the listing, and the check code (section 8) |
 |---|---|---|
-| What it proves | that both know the game's password, with nothing the relay or list can use to guess it | that the host holds the identity whose fingerprint the joiner was given |
+| What it proves | that both know the game's password, with nothing the relay or list can use to guess it | that the host holds the identity whose id the joiner was given |
 | What it needs | **a secret the players share beforehand.** A listed public game has none: its code is public, and a PAKE keyed on a public value proves nothing | nothing beforehand |
 | Post-quantum | no standard post-quantum PAKE exists yet (still research) | yes: ML-KEM inside the handshake |
 | Code | CNG has no raw curve arithmetic, so the game needs a library built from source (such as Monocypher, one C file) | CNG only (plus section 3's choice) |
-| Weak spot | none, if the password is good | a lying list can swap the fingerprint. The signed list answers (section 12) and the check code catch that |
+| Weak spot | none, if the password is good | a lying list can swap the id. The signed list answers (section 12) and the check code catch that |
 
 **I recommend (b) for every game, now.** Later, for private games with a password, add (a) as well: CPace run *inside* the finished pqXX channel, so the password is protected by the post-quantum keys and adds a second factor. A post-quantum PAKE waits until one is standardised.
 
@@ -504,7 +527,7 @@ This is already in the handshakes: A2 and A3, and B3, B4 and B5. Each is a **cha
 - its static ECDH and ML-KEM keys;
 - the directory's **serial number** and **end date** (30 days);
 - the list key's certificate;
-- the revoked fingerprints.
+- the revoked keys, each by its whole SHA-384 (section 4).
 
 The game refuses:
 - a directory with a serial number lower than the highest it has seen, so an old directory can't be replayed;
@@ -513,22 +536,22 @@ The game refuses:
 
 So a hijacked DNS name or certificate can't feed the game false relays.
 
-**The list's answers:** `GET /v2/games` answers are signed by the list key, with the time. The game refuses an answer more than 60 s old, or one with a bad signature. That protects the host fingerprints the joiner trusts (section 8). The list's own machine could still lie, so the check code (section 8) remains the last line.
+**The list's answers:** `GET /v2/games` answers are signed by the list key, with the time. The game refuses an answer more than 60 s old, or one with a bad signature. That protects the host ids the joiner trusts (section 8). The list's own machine could still lie, so the check code (section 8) remains the last line.
 
-### 12.1 Until the relays directory exists: each relay's keys from the list, held to a fingerprint (the interim, decided 2026-11-09)
+### 12.1 Until the relays directory exists: each relay's keys from the list, held to its id (the interim, decided 2026-11-09)
 
 The relays directory above isn't built yet. Until it is, a game gets a relay's two static public keys this way, and no other:
 - **The list gives them, one relay at a time:** `GET /v1/relay-keys?region=<region>` answers `{"region", "p384", "mlkem"}`. `p384` is the relay's static P-384 key, 194 hex digits (the 97-byte point, 0x04 then X and Y); `mlkem` is its static ML-KEM-1024 encapsulation key, 3,136 hex digits (1,568 bytes); small letters both. The query has one form: `region=` and nothing else, or `400`. A region the list doesn't know, or a version 1 relay (one with no static keys), is `404`. Asking is limited per address as `GET /v1/relays` is, the answer is at most 4 KB (its worst case is in a test), and the list's log keeps counts only, never who asked for what. PROTOCOL.md section 4 gets its row when the list's code serves it. `GET /v1/relays` stays as it is: the picker needs no keys, since a version 2 relay is timed by A0 and A0' (5.1 point 11), and only the relay a game will use needs its keys, for A1.
-- **The game holds them to a fingerprint it already has.** A relay's fingerprint is the first 16 bytes of `SHA-384("AVPX relay keys v2" || the p384 bytes || the mlkem bytes)`, written as 32 hex digits. The game's settings, under `-dev` only, name one for each region it may use: `relaykey=<region>:<fingerprint>`. The game checks the keys against it before A1. Keys that don't give it, or a region with none named, and that relay isn't used at all: nothing is sent to it, there's no going back to version 1 for it, and no going on without the check.
-- **Why the fingerprint, and not the keys, in the setting:** 3,330 hex digits are a settings line nobody can check by eye; 32 can be read aloud. The way to the list is HTTPS that Windows checks (the game's relay_list.cpp), with no pin of its own, so a certificate wrongly given out for the list's name would get past it. The fingerprint is what makes the keys this relay's, even then, and even if the list's machine lies.
-- **When the directory lands,** it takes the setting's place. A relay's fingerprint is made the same way, so the same setting can be checked against it.
+- **The game holds them to an id it already has.** A relay's id is the whole `SHA-384("AVPX relay keys v2" || the p384 bytes || the mlkem bytes)`, written as 96 hex digits. The game's settings, under `-dev` only, name one for each region it may use: `relaykey=<region>:<id>`. The game checks the keys against it before A1. Keys that don't give it, or a region with none named, and that relay isn't used at all: nothing is sent to it, there's no going back to version 1 for it, and no going on without the check.
+- **Why the id, and not the keys, in the setting:** 3,330 hex digits are a settings line nobody can check by eye; 96 can be, and are copied as MakeRelayKeys prints them. The first choice that day was the id's first 16 bytes, which can be read aloud; the whole id replaced it the same day, because the game, a machine, is what compares it (section 8). The way to the list is HTTPS that Windows checks (the game's relay_list.cpp), with no pin of its own, so a certificate wrongly given out for the list's name would get past it. The id is what makes the keys this relay's, even then, and even if the list's machine lies.
+- **When the directory lands,** it takes the setting's place. A relay's id is made the same way, so the same setting can be checked against it.
 
 ## 13. The properties the user asked for, how each is met, and what tries to break it
 
 | # | Property | How it's met | What tries to break it |
 |---|---|---|---|
 | 1 | A published, analysed pattern | Noise IK and XX (rev 34), made post-quantum as PQNoise does; Rosenpass as the precedent | the formal model (section 14) |
-| 2 | Mutual authentication before any game byte | A1 to A3 (section 6): the relay by A2, the approved player by A3; B2 to B5 (section 8); neither side sends a game byte before the other's last confirmation checks | tests: a wrong relay or host static key, a player not approved, a wrong fingerprint, a broken A3 or B3 tag. All refused, nothing sent. Model: injective agreement both ways, for A and for B |
+| 2 | Mutual authentication before any game byte | A1 to A3 (section 6): the relay by A2, the approved player by A3; B2 to B5 (section 8); neither side sends a game byte before the other's last confirmation checks | tests: a wrong relay or host static key, a player not approved, a wrong id, a broken A3 or B3 tag. All refused, nothing sent. Model: injective agreement both ways, for A and for B |
 | 3 | Forward secrecy | fresh ephemeral ECDH and ML-KEM keys every session (`ee`, `ekem`) | test: record a session, then give the test both sides' static keys; the recording still can't be opened. Model: secrecy after the statics leak |
 | 4 | Hybrid post-quantum | every MixKey of ECDH and of ML-KEM is in one chain | test: change either secret alone, and every key after it changes. Model: secrecy if only ECDH holds, and if only ML-KEM holds |
 | 5 | Transcript binding | every byte goes through MixHash; tags use `h` as AAD | test: flip each bit of each handshake message, one at a time; every flip fails |
@@ -583,7 +606,7 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 7. A handshake not finished in time (P: "the relay doesn't answer").
 8. A tag that fails.
 9. A counter seen already, or below the window.
-10. The wrong host: the fingerprint doesn't match (P: "this isn't the host the list named").
+10. The wrong host: the id doesn't match (P: "this isn't the host the list named").
 11. A bad signature on the manifest, directory or list answer (P: "the game's files can't be checked" / "the list can't be trusted").
 12. A directory too old, or past its end date (P).
 13. Changed files in multiplayer (P: names the first).
@@ -595,7 +618,7 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 19. On a joiner's port, anything but a sealed game datagram, a handshake B datagram, or a sealed hello (section 7).
 20. Too many sessions: 10,000 in all, or 64 from one address (section 17). A new handshake is refused at A1; no session already open is ended for it.
 21. Handshake B's `nJ` in B5 doesn't match the joiner's commitment in B1 (5.1 point 19): the host ends the handshake.
-22. Handshake A's player isn't approved: the fingerprint of A1's `s` isn't in the approved set (section 6). Nothing is kept, and nothing answered. The game learns its state from the list, not from this.
+22. Handshake A's player isn't approved: the id of A1's `s` isn't in the approved set (section 6). Nothing is kept, and nothing answered. The game learns its state from the list, not from this.
 23. Handshake A's `s` isn't two keys: its P-384 key isn't on the curve, or is the point at infinity, or its ML-KEM key fails FIPS 203's encapsulation key check (5.1 point 21).
 
 ## 17. Every timer and limit

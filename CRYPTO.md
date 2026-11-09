@@ -66,10 +66,47 @@ No third-party crypto on the servers (AVP Tao 1). Each platform's own:
 
 The platform facts in this table were read in the official documents by PO on 2026-11-08. The two marks left are each to be confirmed once, in code, before the code relies on them.
 
-**[DECIDE] What the game does where Windows lacks ML-KEM or ML-DSA.** Neither choice falls back to classical-only. A fallback is an attack path, so there isn't one.
+**What the game does where Windows lacks ML-KEM or ML-DSA (decided below).** Neither choice falls back to classical-only. A fallback is an attack path, so there isn't one.
 - **(a) CNG only.** Online play needs a Windows that has them. Others get a plain refusal: "Online play needs Windows 11 24H2 or later, with the October 2025 update or newer." This adds no code, but players on Windows 10, or on Windows 11 before 24H2, can't play online.
 - **(b) The post-quantum half built from source into the game,** from the PQ Code Package's `mlkem-native` and `mldsa-native` (C; Apache-2.0, ISC or MIT; parts machine-proved). It's scanned and take-out tested like ENet; CNG still does the classical half and AES-GCM. One code path on every Windows, and no dependence on the OS version for decades (AVP Tao 2). It adds about 10,000 to 20,000 lines of C to review.
-- **I recommend (b)**: it keeps every player and one code path, and the extra code is reviewable C under a permissive licence. Both are secure, but their risks differ, so the choice is the user's. PO put it to the user on 2026-11-08, and the answer goes here.
+- **I recommend (b)**: it keeps every player and one code path, and the extra code is reviewable C under a permissive licence. Both are secure, but their risks differ, so the choice was the user's.
+
+**Decided 2026-11-08 by the user: (b). Windows 10 plays, with the post-quantum half built from source.**
+
+### 3.1 The post-quantum library: what comes in, and how
+
+- **Upstream:** the PQ Code Package (PQCA, a Linux Foundation project), github.com/pq-code-package:
+  - `mlkem-native`, for ML-KEM-1024;
+  - `mldsa-native`, for ML-DSA-87.
+- **Licence:** each repository's own LICENSE file. **[CHECK]** I believe both offer Apache-2.0, ISC or MIT, at the user's choice. Whichever we take is written into the game's licence notices, beside ENet's.
+- **The exact version:** the release tag, its full commit hash, and the SHA-256 of the source archive, for each of the two. **[CHECK, and nothing is fetched until it's done]:**
+  - Each must be taken from upstream's own release page.
+  - Each must be at least two weeks old.
+  - Each must be written here before any code. Until then, the pins in the build are empty and the build refuses to fetch.
+  - **If `mldsa-native` has no stable release (a 1.x), say so here,** and the user decides whether a pre-release commit may be pinned, or whether to wait.
+- **How it comes in:** as source only, never a built library (AVP Tao 1), the same way ENet does:
+  - **a vcpkg overlay port, or the source kept in the repository;** the game's maintainers choose, as they did for ENet;
+  - **pinned** by the commit hash and the archive's SHA-256;
+  - **read first:** a person reads the whole of it before it's built or run, and records that in the AvP docs. Nothing in it runs before that;
+  - **built** with the game's own flags;
+  - **checked like our own code:** CodeQL C/C++, Snyk Code, the sanitizer run (AddressSanitizer and UndefinedBehaviorSanitizer), and take-out rows on the parts we call. Upstream's own test vectors, and the NIST ACVP vectors for ML-KEM-1024 and ML-DSA-87, run in the game's tests.
+  - **Only the C is built,** with no assembly. The assembly paths are where upstream has some of its proofs, but the plain C is the same on every machine, and the game's x86 build is 32-bit.
+- **What upstream has proved by machine, and what it hasn't.** **[CHECK] against each project's README and its proofs folder, from memory:**
+  - **mlkem-native:**
+    - CBMC proofs that its C code is free of memory-safety and type-safety faults (no reads or writes out of bounds, no overflow);
+    - HOL Light proofs of functional correctness for its AArch64, and some x86_64, assembly.
+    - **Not proved:** that the C as a whole computes ML-KEM exactly as FIPS 203 says. That rests on tests and vectors.
+  - **mldsa-native:** I believe CBMC proofs are in progress, and less complete than mlkem-native's.
+  - **In neither:** nothing is proved about the whole program the game builds, or about side channels beyond upstream's own constant-time testing.
+  - So the game's own tests (the vectors above) and checks (the sanitizers, CodeQL, the take-outs) stand on their own, with no "already proved" credit.
+
+### 3.2 One code path: the game never uses CNG for ML-KEM or ML-DSA, even where Windows has them
+
+- **Two paths mean twice the bugs.** Each path would need its own tests, its own reading, and its own failure modes in the field. A fault in the path most players don't use would hide the longest.
+- **Two paths make a choice, and a choice can be steered.** Whatever picks the path ("does this Windows have ML-KEM?") is something an attacker on the machine, or a broken Windows update, can change. One path has nothing to choose.
+- **One path behaves the same for every player,** so a bug report from one is a bug report for all, and the test vectors prove every player's build at once.
+- **The cost:** on Windows 11 24H2 and later, the OS's own ML-KEM goes unused. That gives up nothing in security: both implement the same standard, and both are checked against the same vectors.
+- **CNG still does the classical half** (P-384, ECDSA, AES-GCM, SHA-384, HKDF over HMAC) on every Windows, because it has done that on every Windows since Windows 7. That's one path too.
 
 ## 4. The keys: who holds what
 
@@ -402,6 +439,8 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 
 ## 19. For the user to decide
 
-1. **The game's post-quantum half: CNG only (a), or built from source (b)** (section 3). I recommend (b). **Open:** PO put it to the user on 2026-11-08.
+1. **The game's post-quantum half: built from source,** so Windows 10 plays. Decided by the user on 2026-11-08 (section 3, 3.1 and 3.2): one code path everywhere, with CNG never used for ML-KEM or ML-DSA.
+
+All three are decided. What's left before code is the [CHECK] marks, and section 3.1's pins.
 2. **The release key: signed by hand.** Decided 2026-11-08 (PO, under Tao 1: the secure choice is taken, and the user told).
 3. **The check code: always shown on the join screen.** Decided 2026-11-08, the same way.

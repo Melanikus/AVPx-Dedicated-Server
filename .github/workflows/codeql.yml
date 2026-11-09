@@ -1,0 +1,69 @@
+# CodeQL for the Node server's JavaScript, set up here rather than by GitHub's "default setup". Written 2026-11-09 by Melanikus for AVPx
+# Dedicated Server.
+#
+# WHY HERE, NOT DEFAULT SETUP: the repository has two languages now. While default setup is on, GitHub refuses CodeQL results that a
+# workflow uploads ("Code Scanning could not process the submitted SARIF file", run 42544956662), so java.yml's Java scan was thrown
+# away. So both languages are scanned by workflows: this one for JavaScript (category "javascript"), java.yml for Java (category
+# "java"), and default setup is switched off only after this one is in, so the JavaScript is never left unscanned.
+#
+# The same rules as java.yml (GATES.md):
+# - the security-and-quality queries;
+# - any finding at any severity fails the check, counted from CodeQL's own SARIF file, not from its summary;
+# - a blind spot fails it too: every JavaScript file git tracks must be in what CodeQL read.
+# Every action is pinned to a full commit hash, with its version in a comment (CODING-STANDARD.md rule 7).
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '41 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  codeql:
+    name: CodeQL (JavaScript)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # JavaScript needs no build: CodeQL reads the files as they are
+      - uses: github/codeql-action/init@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        with:
+          languages: javascript-typescript
+          build-mode: none
+          queries: security-and-quality
+
+      - uses: github/codeql-action/analyze@1fc58d04a4d4374f921bdac573c3811c240f9c26 # v4.39.2
+        with:
+          category: javascript
+          output: ${{ runner.temp }}/codeql
+
+      # Any finding at any severity fails the check
+      - name: No findings at all
+        run: |
+          found=$(jq '[.runs[].results[]] | length' "$RUNNER_TEMP"/codeql/*.sarif)
+          echo "CodeQL found $found"
+          test "$found" = "0"
+
+      # A blind spot fails the gate too: every .js file git tracks must be in what CodeQL read. It's looked for among the files the SARIF
+      # names, and among the per-file notes CodeQL writes when it reads a file (with no findings, a file may appear only there)
+      - name: CodeQL read every JavaScript file
+        run: |
+          tracked=$(git ls-files '*.js' | wc -l)
+          echo "$tracked JavaScript files are tracked"
+          test "$tracked" -gt 0
+          for f in $(git ls-files '*.js'); do
+            jq -e --arg f "$f" '[.runs[].artifacts[]?.location.uri] | any(. == $f)' "$RUNNER_TEMP"/codeql/*.sarif > /dev/null \
+              || jq -e --arg f "$f" '[.runs[].invocations[]?.toolExecutionNotifications[]?.locations[]?.physicalLocation.artifactLocation.uri] | any(. == $f)' "$RUNNER_TEMP"/codeql/*.sarif > /dev/null \
+              || { echo "CodeQL didn't read $f"; exit 1; }
+          done

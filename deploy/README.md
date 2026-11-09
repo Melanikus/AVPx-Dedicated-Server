@@ -206,7 +206,7 @@ The first version runs on one machine, `virginia`, with the relay and the list. 
    - `passKey`: 64 hex digits, made on this machine with `openssl rand -hex 32`. It's a secret: it never goes in a message, a log or the repository.
    - There's no `list` in it, and there mustn't be.
 5. **The service and the deploy:** section C step 8, then `sh deploy/remote-deploy.sh COMMIT JARS_SHA256` (or Systems Manager, as in sections D and E).
-   - **Not yet possible:** the health check, `Smoke --installed`, needs the list on the machine, and stops with "this machine's settings have no list". Primary is adding a relay-only mode. **Until it's in, a deploy to a relay-only machine fails its health check and rolls back,** so nothing unchecked is left running.
+   - **The health check,** `Smoke --installed`, sees the settings have no list and runs the relay's checks only: a whole game through the relay, and the pass for this region worked out again from the machine's own key. It ends with a `NOT RUN` line saying the list's checks weren't run. On a relay-only machine that's expected; on the list's machine it never shows.
 6. **Its firewall, once the deploy is healthy:** `sh deploy/firewall.sh relay`. That's SSH and the relay's UDP ports (27500, and 27501-27564), and nothing else: no 443, no 80. Open UDP 27500-27564 in the provider's firewall too, and no other port.
 7. **Its DNS name,** such as `saopaulo.relay.<the domain>`, points at the new machine.
 8. **The list's machine** gets one more entry in the `list.relays` of its `/etc/avpx/settings.json`:

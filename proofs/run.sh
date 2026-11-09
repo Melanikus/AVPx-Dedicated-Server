@@ -52,11 +52,19 @@ variant() {
 dh='s/(\*LEAKDH //; s/ LEAKDH\*)//'
 kem='s/(\*LEAKKEM //; s/ LEAKKEM\*)//'
 
-# pqnk: 1 secrecy, 2 the relay's authentication
+# pqnk: 1 secrecy, 2 the relay's authentication. Handshake A as the code has it until pqIK lands (CRYPTO.md section 14)
 variant pqnk as-written '' 'true true'
 variant pqnk dh-broken "$dh" 'true true'
 variant pqnk kem-broken "$kem" 'true true'
 variant pqnk both-broken "$dh; $kem" 'false false'
+
+# pqik: 1 secrecy, 2 the relay's authentication to the game, 3 the honest player's to the relay. Broken here means broken entirely:
+# the attacker gets that half's static secrets as well as every result an honest side computes, so each half alone must hold all three,
+# and with both broken every one fails.
+variant pqik as-written '' 'true true true'
+variant pqik dh-broken "$dh" 'true true true'
+variant pqik kem-broken "$kem" 'true true true'
+variant pqik both-broken "$dh; $kem" 'false false false'
 
 # pqxx: 1 and 2 secrecy (joiner's, host's), 3 the host's authentication, 4 the joiner's
 variant pqxx as-written '' 'true true true true'

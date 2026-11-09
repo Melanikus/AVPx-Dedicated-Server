@@ -160,7 +160,7 @@ This comes from Fourth's list (AvP-docs, engine/pq-native-needs.md). The names o
 
 **Pinned in the game:** the root's public keys. There are two roots: the one in use, and the next one, made at the same time and kept offline apart. So a root can be replaced without the game being left with none.
 
-**The game signs nothing.** A player's identity key is ECDH plus ML-KEM, and it proves itself by key agreement and decapsulation (section 8), never by a signature. The only signers are the root, the release key (the user, by hand), the directory key (offline), and the list key (on the list's machine). So the game verifies ML-DSA and ECDSA signatures, and never makes one.
+**The game signs nothing.** A player's identity key is ECDH plus ML-KEM, and it proves itself by key agreement and decapsulation (sections 6 and 8), never by a signature. The only signers are the root, the release key (the user, by hand), the directory key (offline), and the list key (on the list's machine). So the game verifies ML-DSA and ECDSA signatures, and never makes one.
 
 ### 4.1 A player's identity key at rest: DPAPI
 
@@ -214,7 +214,7 @@ The ECDH results and the ML-KEM secrets go into the same chain one after another
 
 **The start:**
 - `h = SHA-384(the protocol name)` and `ck = h`.
-- The names are `AVPX_pqNK_P384+MLKEM1024_AESGCM_SHA384_v2` (handshake A) and `AVPX_pqXX_P384+MLKEM1024_AESGCM_SHA384_v2` (handshake B).
+- The names are `AVPX_pqIK_P384+MLKEM1024_AESGCM_SHA384_v2` (handshake A) and `AVPX_pqXX_P384+MLKEM1024_AESGCM_SHA384_v2` (handshake B). (Handshake A was `AVPX_pqNK_...` until 2026-11-09, when it became pqIK: section 6. A different name starts a different `h`, so the two can never be taken for each other.)
 - Then MixHash(the prologue), and the pattern's pre-messages, exactly as section 5.1 writes them.
 
 **Big messages over UDP.** Handshake messages are 1.6 to 3.4 KB, more than a datagram should carry. Each is cut into fragments, and **every handshake datagram, either way, is exactly 1,200 bytes**: the smallest size the internet carries whole, as QUIC also uses.
@@ -225,7 +225,7 @@ The ECDH results and the ML-KEM secrets go into the same chain one after another
 | 4 | version, 2 |
 | 5 | kind (section 6 and section 8) |
 | 6 | this fragment's number, from 0 |
-| 7 | how many fragments, 1 to 4 |
+| 7 | how many fragments, 1 to 5 (`kMostFragments`, section 17) |
 | 8-15 | the handshake's id: 8 random bytes the initiator chose |
 | 16-31 | the cookie (to the relay), or 0 |
 | 32-33 | the whole message's length |
@@ -239,8 +239,8 @@ Every implementation must make the same bytes. Where Noise leaves a choice, or w
 2. **The handshake's nonce,** before Split: the IV is 12 zero bytes, so the nonce is 4 zero bytes, then `n` as 8 bytes **little-endian**. **Noise itself writes `n` big-endian for AES-GCM; this differs on purpose, the same as section 9's sealed datagrams. Don't "fix" it.**
 3. **Split's 88 bytes,** from HKDF-SHA-384(salt `ck`, input empty, info "AVPX split v2"), in this order: the key initiator-to-responder (32), the key responder-to-initiator (32), the IV initiator-to-responder (12), the IV responder-to-initiator (12).
 4. **Handshake A's prologue:** the region's name in ASCII, then one 0 byte (one MixHash).
-5. **Handshake A's pre-message `<- s`,** as Noise NK has it: after the prologue, MixHash(the relay's static P-384 key, 97 bytes), then MixHash(its static ML-KEM-1024 encapsulation key, 1,568 bytes). The prologue holds no keys, so nothing is hashed twice.
-6. **The `e` token:** the initiator does MixHash(its ephemeral P-384 key, 97), then MixHash(its ephemeral ML-KEM encapsulation key, 1,568), two calls. A responder does the first only. A1's bytes, in order: e's P-384 key, e's encapsulation key, the ciphertext to the relay's static key, the tag (3,249).
+5. **Handshake A's pre-message `<- s`,** as Noise IK has it: after the prologue, MixHash(the relay's static P-384 key, 97 bytes), then MixHash(its static ML-KEM-1024 encapsulation key, 1,568 bytes). The prologue holds no keys, so nothing is hashed twice.
+6. **The `e` token:** the initiator does MixHash(its ephemeral P-384 key, 97), then MixHash(its ephemeral ML-KEM encapsulation key, 1,568), two calls. A responder does the first only. A1's bytes, in order: e's P-384 key (97), e's encapsulation key (1,568), the ciphertext to the relay's static key (1,568), the game's static keys sealed (1,665 + 16), the tag (16): 4,930 in all (`kA1Bytes`). A2's: e's P-384 key (97), the ciphertext to the game's ephemeral key (1,568), the ciphertext to the game's static key (1,568), the session id sealed (8 + 16): 3,257 (`kA2Bytes`).
 7. **ECDH's output** is the shared point's x coordinate, 48 bytes, as Java's and CNG's ECDH give it. **Every P-384 key received is checked to be on the curve, and not the point at infinity, before it's used.**
 8. **Epochs** (section 9) **apply to the sealed control channel too.** Epoch 0's key is Split's key itself. Epoch e, from 1, is HKDF-Expand(Split's key for that direction, "AVPX epoch v2" || e as 4 bytes little-endian, 32). The IV stays Split's. The counters start at 0 in each direction.
 9. **A0 (COOKIE_ASK) and A3 headers:**
@@ -249,7 +249,7 @@ Every implementation must make the same bytes. Where Noise leaves a choice, or w
 10. **Fragments are read only one way:**
     - every fragment but the last is exactly 1,164 bytes of the message;
     - fragment k starts at k x 1,164;
-    - the count is ceil(length / 1,164), 1 to 4, and every fragment carries the same length and count;
+    - the count is ceil(length / 1,164), 1 to 5 (`kMostFragments`; only A1 needs 5), and every fragment carries the same length and count;
     - every byte after the part is 0.
     - Anything else is refusal 6.
 11. **Inside the sealed channel, version 1's inner cookie round goes:** the handshake's cookie already proved the address, so HOST_OPEN and JOIN are taken without one. **ECHO goes too:** the A0/A0' round trip is the timing echo (1,200 bytes asked, 64 answered, nothing kept), so the host times each relay without a handshake.
@@ -272,39 +272,96 @@ Every implementation must make the same bytes. Where Noise leaves a choice, or w
     - **Why the commitment:** made from the transcript alone, the code could be ground by someone in the middle. On one of its two sides, it's always the last to add randomness (its B4 to the joiner, or its B3 to the host). So it could try a million values in the seconds a handshake allows, until both screens showed the same 6 digits. With the commitment, every choice it can make is fixed before the value that decides each side's code is shown: `nJ` on the joiner's side, which it saw only as a hash; `nH` on the host's side, which comes after its last move. So one handshake is one try, at one in a million, and a failed try is seen. This is ZRTP's commit-then-reveal (RFC 6189), for the same reason.
     - Settled 2026-11-09, by Third, on Tao 1 grounds, when Primary asked for the code's exact form.
 20. **Split's info for B** is the same `"AVPX split v2"` as A's. The two never collide: each starts from the hash of its own protocol name.
+21. **Handshake A's `s` (A1):** one EncryptAndHash of the game's two static public keys, one after the other: the P-384 key (97 bytes, 0x04 then X then Y), then the ML-KEM-1024 encapsulation key (1,568). Those are net_identity.h's 1,665 public bytes, the same bytes the access request sends (PROTOCOL.md). It's sealed under the `k` that A1's `skem` made, at nonce 0. The player's fingerprint is section 8's, of those same 1,665 bytes. The relay checks them in section 6's order: the P-384 key on the curve and not the point at infinity, and the ML-KEM key passing FIPS 203's encapsulation key check (refusal 23), then the fingerprint approved (refusal 22). Both come before `ss`. Then `ss` is MixKey(ECDH(the game's static P-384 key, the relay's static P-384 key)), and A1 ends with an empty EncryptAndHash under the `k` `ss` made, at nonce 0. Settled 2026-11-09 by Third, for server #24.
+22. **Handshake A's A2 tokens,** in order: `e` (MixHash of the relay's ephemeral P-384 key only, point 6), `ee`, `se` (MixKey(ECDH(the relay's ephemeral key, the game's static P-384 key))), `ekem` (to the game's ephemeral ML-KEM key), `skem` (to the game's static ML-KEM key: its ciphertext is MixHashed, then MixKey of its secret), then EncryptAndHash(the session id) at nonce 0. A3 is then an empty EncryptAndHash at nonce 1, under that same `k`. Each ciphertext is MixHashed before its secret is mixed in, as section 5's `ekem` and `skem` say.
 
-## 6. Handshake A: a game and its relay (pattern pqNK, hybrid)
+## 6. Handshake A: a game and its relay (pattern pqIK, hybrid)
 
-The game knows the relay's static keys from the signed directory (section 12) before it says anything. The relay is proved to the game. The game stays anonymous to the relay: its tokens and tickets, sent inside the channel, are what prove a host or joiner, as in PROTOCOL.md.
+**Decided 2026-11-09 (server #24, by PO for the owner, with Primary and Fourth):** a version 2 relay takes only approved players,
+and a player proves who they are by key agreement, in this handshake. Their identity key (section 4) is the initiator's static key.
+The pattern is Noise IK, made post-quantum as PQNoise does (pqIK). Before that it was pqNK, with the player anonymous. The game signs
+nothing: it proves its static keys by an ECDH only it can do, and by decapsulating an ML-KEM ciphertext only it can open.
+
+The game knows the relay's static keys before it says anything (section 12, or 12.1 until the directory exists). Each side is proved
+to the other: the relay to the game by A2, and the game to the relay by A3.
 
 | Step | From, to | Kind | Holds | Size |
 |---|---|---|---|---|
 | A0 | game to relay | 1 COOKIE_ASK | the handshake id; the rest of the 1,200 bytes 0 | 1 datagram |
 | A0' | relay to game | 2 COOKIE | a 64-byte answer: `AVPR`, 2, kind 2, 0, the id (8), the cookie (16), 0 | 64 bytes |
-| A1 | game to relay | 3 | tokens `e, es, skem`, then an empty EncryptAndHash: e (97 + 1,568), the ML-KEM ciphertext to the relay's static key (1,568), the tag (16) | 3,249 bytes: 3 datagrams |
-| A2 | relay to game | 4 | tokens `e, ee, ekem`, then EncryptAndHash(the relay's 8-byte session id): e (97), the ML-KEM ciphertext to the game's ephemeral key (1,568), 8 + 16 | 1,689 bytes: 2 datagrams |
+| A1 | game to relay | 3 | tokens `e, es, skem, s, ss`, then an empty EncryptAndHash: e (97 + 1,568), the ML-KEM ciphertext to the relay's static key (1,568), the game's static keys sealed (1,665 + 16), the tag (16) | 4,930 bytes: 5 datagrams |
+| A2 | relay to game | 4 | tokens `e, ee, se, ekem, skem`, then EncryptAndHash(the relay's 8-byte session id): e (97), the ML-KEM ciphertext to the game's ephemeral key (1,568), the ML-KEM ciphertext to the game's static key (1,568), 8 + 16 | 3,257 bytes: 3 datagrams |
 | A3 | game to relay | 5 | an empty EncryptAndHash: the game's key confirmation | 16 bytes: 1 datagram |
 
-**The keys:**
-- `es` and `skem` together prove the relay: only the holder of its static ECDH and ML-KEM keys can make the A2 that comes back.
-- `ee` and `ekem` give forward secrecy.
-- A2's tag is the relay's key confirmation, and A3's tag is the game's. Nothing else may be sent before both.
+**The tokens, in order** (section 5 says what each does; 5.1 points 6, 21 and 22 give the bytes):
+- **A1:** `e`, then `es` (the game's ephemeral and the relay's static ECDH), then `skem` (an encapsulation to the relay's static
+  ML-KEM key), then `s` (the game's two static public keys, sealed under the key those two made), then `ss` (the game's static and
+  the relay's static ECDH), then an empty EncryptAndHash under the key `ss` made.
+- **A2:** `e`, then `ee`, then `se` (the relay's ephemeral and the game's static ECDH), then `ekem` (an encapsulation to the game's
+  ephemeral ML-KEM key), then `skem` (an encapsulation to the game's static ML-KEM key), then EncryptAndHash(the session id).
+
+**What proves what:**
+- **The relay, to the game:** `es` and A1's `skem`. Only the holder of the relay's static ECDH and ML-KEM keys can make the A2 that
+  comes back, as before.
+- **The game, to the relay, classically:** `ss` in A1 and `se` in A2. Only the holder of the game's static P-384 key can make A1's
+  last tag, and A3's.
+- **The game, to the relay, post-quantum:** A2's `skem`. Only the holder of the game's static ML-KEM key can decapsulate it, so only
+  they can make A3's tag. So a game is taken as the player whose keys A1 named only at A3, or at the first sealed message standing in
+  for a lost A3, and never at A1. Someone who could break ECDH alone could make A1's tags for another's key, but never A3.
+- **Forward secrecy:** `ee` and `ekem`, as before.
+- **Key confirmation:** A2's tag is the relay's, and A3's is the game's. Nothing else may be sent before both.
+
+**Who may come in: approval.** A version 2 relay takes approved players only: there's no open mode. A relay open to anyone would need
+a pattern of its own, written here first, and a model of its own (section 14).
+- The relay keeps the approved players' fingerprints (section 8's fingerprint of the two static keys), and nothing else about them:
+  each fingerprint, and the owner's note of who it is. They come from the access requests the owner approved (PROTOCOL.md,
+  `POST /v1/access-requests`).
+- **The checks on A1, in this order, right after A1's `s` opens:**
+  1. the P-384 key is on the curve and not the point at infinity, and the ML-KEM key passes FIPS 203's encapsulation key check
+     (refusal 23);
+  2. the fingerprint of those 1,665 bytes is an approved player's (refusal 22).
+  Either refusal comes before `ss`, before any session is kept, and before A2's work.
+- A refused game is answered with nothing, like every refusal (section 16). Its player learns their state from the list, not from
+  the relay. That gives no one a way to ask the relay whether a fingerprint is approved.
+- **A revoked player** can start no new handshake, and every session of theirs that's open ends, seats and rooms included, as soon
+  as the relay applies the revoke: at its next turn after the owner's decision. A1 checks the approved set as the last decision left
+  it, never an older copy.
+
+**What the relay learns, said plainly:** an approved player's sessions can be linked to each other, because each names the same
+static keys. Before, they couldn't. The relay keeps no record of a session's player beyond the session itself, and its log has counts
+only, never a fingerprint. The approved list holds the fingerprint and the note.
+
+**Who else learns it:**
+- **Someone watching the network:** not the player's identity, because `s` is sealed under keys from `es` and `skem`, which need the
+  relay's static keys.
+- **Someone who later gets the relay's static keys,** and kept a recording: they can open A1's `s`, and learn which player it was.
+  That's IK's known limit, so pqIK hides the player from everyone but the relay, and not after the relay's keys are lost.
+- **The game traffic stays secret even then:** `ee` and `ekem` keep forward secrecy, as section 13 property 3 says.
 
 **No amplification:**
 - **A0':** 64 bytes, answering a 1,200-byte ask.
-- **The cookie:** HMAC-SHA-384 of the address, the port, a 10-second slot and the handshake id, cut to 16 bytes, as PROTOCOL.md section 3 describes. Every A1 datagram carries it, and **the relay checks it, with no memory, before it keeps a single byte**.
-- **What the relay keeps:** one handshake being put together per address and port, at most 4 KB, for at most 2 s; at most 16 at once from one address, and 1,000 at once in all (section 5.1, point 12).
+- **The cookie:** HMAC-SHA-384 of the address, the port, a 10-second slot and the handshake id, cut to 16 bytes, as PROTOCOL.md section
+  3 describes. Every A1 datagram carries it, and **the relay checks it, with no memory, before it keeps a single byte**.
+- **What the relay keeps:** one handshake being put together per address and port, at most 6 KB (5 fragments of 1,164), for at most
+  2 s; at most 16 at once from one address, and 1,000 at once in all (section 5.1, point 12).
 - **When the expensive work starts:** ML-KEM and ECDH work happens only when the whole of A1 is in.
-- **The datagram rule:** for any handshake, the relay never sends more datagrams than it was sent, and all of them are the same size: 3 in, 2 out.
+- **The datagram rule:** for any handshake, the relay never sends more datagrams than it was sent, and all of them are the same size:
+  5 in, 3 out.
 
 **Losses** (every timer is in section 17):
-- The game sends A1 again if no A2 comes in 0.5 s, then waits 1 s, 2 s and 4 s, and then gives up with the reason "the relay doesn't answer".
-- The relay keeps its A2 bytes for 10 s, keyed by the handshake id and the hash of A1. An A1 that comes again gets **the same A2, byte for byte**: never a fresh one, which would make a second set of keys.
+- The game sends A1 again if no A2 comes in 0.5 s, then waits 1 s, 2 s and 4 s, and then gives up with the reason "the relay doesn't
+  answer". A player who isn't approved sees that too. Their game knows their state from the list, and says that instead when it can.
+- The relay keeps its A2 bytes for 10 s, keyed by the handshake id and the hash of A1. An A1 that comes again gets **the same A2, byte
+  for byte**: never a fresh one, which would make a second set of keys.
 - If A3 is lost, the game's first sealed message (section 7) counts as its confirmation.
 
 **How the relay takes A3** (settled 2026-11-09 from Primary's relay side):
-- A3 is an empty EncryptAndHash, so its 16 bytes are fixed by everything before it. The relay works them out when it makes A2, and compares A3 with them in constant time.
-- It takes the keys on that comparison or, if A3 was lost, on the first sealed message that opens under them. **Either one must come from A1's own address and port.** The cookie alone doesn't tie A3 to A1's sender: anyone on the path can ask for a cookie for their own port with the game's handshake id, which travels in the clear, and then copy the game's A3. Anything else is refusal 18.
+- A3 is an empty EncryptAndHash, so its 16 bytes are fixed by everything before it. The relay works them out when it makes A2, and
+  compares A3 with them in constant time. With pqIK, that comparison is also the proof that the game holds its static ML-KEM key.
+- It takes the keys, and the player A1 named, on that comparison or, if A3 was lost, on the first sealed message that opens under
+  them. **Either one must come from A1's own address and port.** The cookie alone doesn't tie A3 to A1's sender: anyone on the path can
+  ask for a cookie for their own port with the game's handshake id, which travels in the clear, and then copy the game's A3. Anything
+  else is refusal 18.
 - Until then, the handshake waits for at most 10 s (as long as its A2 is kept), and counts as a session in section 17's limits.
 
 ## 7. The sealed control channel (game and relay)
@@ -462,28 +519,28 @@ The relays directory above isn't built yet. Until it is, a game gets a relay's t
 
 | # | Property | How it's met | What tries to break it |
 |---|---|---|---|
-| 1 | A published, analysed pattern | Noise NK and XX (rev 34), made post-quantum as PQNoise does; Rosenpass as the precedent | the formal model (section 14) |
-| 2 | Mutual authentication before any game byte | B2 to B5 (section 8); neither side sends a game byte before the other's last confirmation checks | tests: a wrong host static key, a wrong fingerprint, a broken B3 tag. All refused, nothing sent. Model: injective agreement both ways |
+| 1 | A published, analysed pattern | Noise IK and XX (rev 34), made post-quantum as PQNoise does; Rosenpass as the precedent | the formal model (section 14) |
+| 2 | Mutual authentication before any game byte | A1 to A3 (section 6): the relay by A2, the approved player by A3; B2 to B5 (section 8); neither side sends a game byte before the other's last confirmation checks | tests: a wrong relay or host static key, a player not approved, a wrong fingerprint, a broken A3 or B3 tag. All refused, nothing sent. Model: injective agreement both ways, for A and for B |
 | 3 | Forward secrecy | fresh ephemeral ECDH and ML-KEM keys every session (`ee`, `ekem`) | test: record a session, then give the test both sides' static keys; the recording still can't be opened. Model: secrecy after the statics leak |
 | 4 | Hybrid post-quantum | every MixKey of ECDH and of ML-KEM is in one chain | test: change either secret alone, and every key after it changes. Model: secrecy if only ECDH holds, and if only ML-KEM holds |
 | 5 | Transcript binding | every byte goes through MixHash; tags use `h` as AAD | test: flip each bit of each handshake message, one at a time; every flip fails |
 | 6 | No downgrade | one suite, version 2 in every header, the protocol name in `h` | test: version 1, 3 or 0, and a version-1 message sent to a version-2 relay. All refused, with the reason |
 | 7 | Replay-proof | handshake ids and cookies; repeats get the same answer; counters and a window of 1,024 | tests: replay each handshake message, each sealed message, and counters below the window |
-| 8 | DoS- and amplification-proof | the cookie before any ECDH or ML-KEM; 1,200-byte datagrams, never more out than in; 64-byte A0'; per-address limits | tests: for every kind, the answer's bytes are at most the question's; a stand-in crypto layer counts the calls made before a good cookie (must be 0); reassembly caps |
+| 8 | DoS- and amplification-proof | the cookie before any ECDH or ML-KEM; 1,200-byte datagrams, never more out than in (A: 5 in, 3 out); 64-byte A0'; per-address limits | tests: for every kind, the answer's bytes are at most the question's; a stand-in crypto layer counts the calls made before a good cookie (must be 0); reassembly caps |
 | 9 | Loss-tolerant | the retry schedule; answers kept and sent again byte for byte; every timer in section 17 | test: drop each message in turn; the handshake still completes, and a repeated A1 gets an identical A2 |
 | 10 | A formal model | ProVerif, in the repository (section 14) | it runs, and every query says true |
 
 ## 14. The formal model
 
 - **Tool:** ProVerif 2.05 (INRIA). It's downloaded, so untrusted until reviewed (AVP Tao 1): the "Proofs" check builds it from INRIA's source, with that source's sha256 pinned, and runs it offline. It's never run on the user's PC.
-- **Where it lives:** `proofs/pqnk.pv` (handshake A) and `proofs/pqxx.pv` (handshake B). `proofs/run.sh` runs each model, and the copies of it with one half of the hybrid broken, and checks every `RESULT` line against the answer it must give. `proofs/README.md` says how. `.github/workflows/proofs.yml` runs it on every change.
+- **Where it lives:** `proofs/pqik.pv` (handshake A, as section 6 has it), `proofs/pqnk.pv` (handshake A as the code has it until pqIK lands; it goes in that change) and `proofs/pqxx.pv` (handshake B). An open server, taking players without approval, would need a pattern of its own, written in section 6 first, and a model of its own. `proofs/run.sh` runs each model, and the copies of it with one half of the hybrid broken, and checks every `RESULT` line against the answer it must give. `proofs/README.md` says how. `.github/workflows/proofs.yml` runs it on every change.
 - **What it models:**
   - both handshakes, message by message, as sections 6 and 8 write them, with the prologues of 5.1 points 4, 5 and 17;
   - ECDH as Diffie-Hellman equations, and ML-KEM as an ideal KEM (decapsulate of encapsulate gives the secret);
   - the hybrid as two separate secrets: copies give the attacker one of them (`LEAKDH`, `LEAKKEM`), to show either alone is enough, and both, to show the queries can fail.
 - **What it asks:**
   - secrecy of what each side sends under the session keys, even when every static key is given away after the sessions end (forward secrecy);
-  - injective agreement on the keys and the transcript: relay to game for A, and both ways for B.
+  - injective agreement on the keys and the transcript, both ways, for A and for B: for A, the player the relay takes is the one whose static keys made the handshake, and the relay the game finishes with is the one holding the relay's static keys.
 - **Not modelled, and why:**
   - **the check code** (5.1 point 19): it's for people to compare, and the models take the listing as honest. B1's commitment and B4's and B5's 32 bytes travel in the model as they do on the wire, but no query is about the code. Why the commitment stops grinding is argued in 5.1 point 19, not proved here;
   - **a downgrade:** there's one suite and one protocol name for each handshake, so there's nothing to downgrade to within version 2. Version 1, in the clear, never goes in the wild (SERVER-BLOCKERS.md, item 1);
@@ -530,15 +587,19 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 19. On a joiner's port, anything but a sealed game datagram, a handshake B datagram, or a sealed hello (section 7).
 20. Too many sessions: 10,000 in all, or 64 from one address (section 17). A new handshake is refused at A1; no session already open is ended for it.
 21. Handshake B's `nJ` in B5 doesn't match the joiner's commitment in B1 (5.1 point 19): the host ends the handshake.
+22. Handshake A's player isn't approved: the fingerprint of A1's `s` isn't in the approved set (section 6). Nothing is kept, and nothing answered. The game learns its state from the list, not from this.
+23. Handshake A's `s` isn't two keys: its P-384 key isn't on the curve, or is the point at infinity, or its ML-KEM key fails FIPS 203's encapsulation key check (5.1 point 21).
 
 ## 17. Every timer and limit
 
 | What | Limit |
 |---|---|
-| A handshake datagram | exactly 1,200 bytes; at most 4 fragments a message |
+| A handshake datagram | exactly 1,200 bytes; at most 5 fragments a message (`kMostFragments` = 5) |
+| A1, and A2 | exactly 4,930 bytes (`kA1Bytes`), and 3,257 (`kA2Bytes`): 5 datagrams in, 3 out |
 | COOKIE answer | 64 bytes |
 | Cookie life | 10 to 20 s (as now) |
-| A handshake being put together | 4 KB, 2 s; one per address and port, 16 at once per address, 1,000 in all |
+| A handshake being put together | 5,820 bytes (`kMostHandshakeBytes` = 5 x 1,164), 2 s; one per address and port, 16 at once per address, 1,000 in all |
+| A revoke | ends the player's open sessions at the relay's next turn after the owner's decision; A1 checks the approved set as the last decision left it |
 | Handshakes started, one address and port | 2 a second, 4 at once |
 | Handshakes started, everyone | 200 a second, 400 at once |
 | Handshakes B a host starts, one port the relay named | 3, then none until the relay names it again (section 8) |

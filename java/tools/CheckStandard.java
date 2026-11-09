@@ -18,9 +18,10 @@ import java.util.stream.Stream;
 //   java -cp java/build/tools avpx.tools.CheckStandard       run from the repository's top folder (build.sh compiles it)
 //
 // It checks the folder it's run in, and nothing given on its command line, so nothing can point it anywhere else. It exits 1 if any rule
-// is broken, 0 if none. tools/check-standard.js checks the same rules for the Node version and for every file; this adds what's Java's:
+// is broken, 0 if none. Rules 1, 2 (no compiled code, no package-fetching build file), 6 and 7 hold for every file in the repository;
+// the others for the Java code:
 //
-//   1. Every file is ASCII: every byte of every file under java/.
+//   1. Every file is ASCII: every byte of every file in the repository.
 //   2. No third-party code: module-info.java names no module it needs, so javac itself can use nothing but java.base; every import is
 //      Java's own (java., javax.) or ours (avpx.); and nowhere in the repository is there a Java build file that fetches packages
 //      (Maven's, Gradle's) or any compiled code at all (.jar, .class, .dll, ...): nothing precompiled from outside (AVP Tao 1).
@@ -41,6 +42,9 @@ public final class CheckStandard {
 
   private static final String SELF = "java/tools/CheckStandard.java";
   private static final String ROWS = "java/tools/takeouts.txt";
+
+  // The Node version's take-out rows, which also put rule 6's words into a copy on purpose: left out while the Node version is here
+  private static final String NODE_ROWS = "tools/takeouts.json";
 
   // Rule 2: compiled code, and the files of build tools that fetch packages
   private static final Set<String> COMPILED = Set.of(".jar", ".war", ".ear", ".class", ".so", ".dll", ".dylib", ".exe", ".o", ".obj", ".a",
@@ -67,7 +71,7 @@ public final class CheckStandard {
 
   // Rule 6: the words that tell javac or a scanner to look away, and the files that do
   private static final List<String> SILENCERS = List.of("@Suppress" + "Warnings", "NO" + "SONAR", "Suppress" + "FBWarnings",
-      "code" + "ql[", "lg" + "tm[", "snyk" + ":ignore", "deep" + "code ignore", "no" + "semgrep");
+      "code" + "ql[", "lg" + "tm[", "snyk" + ":ignore", "deep" + "code ignore", "no" + "semgrep", "eslint" + "-disable", "istanbul " + "ignore");
   private static final Set<String> SILENCER_FILES = Set.of(".snyk", ".dcignore", ".eslintignore");
 
   // Rule 7
@@ -135,8 +139,34 @@ public final class CheckStandard {
     System.exit(problems.isEmpty() ? 0 : 1);
   }
 
-  // Rules 2, 6 and 7, on every file in the repository
+  // Rules 1, 2, 6 and 7, on every file in the repository
   private static void checkAnyFile(Path root, String file) throws IOException {
+    byte[] bytes = Files.readAllBytes(root.resolve(file));
+    int line = 1;
+
+    for (byte b : bytes) {
+      int c = b & 0xff;
+
+      if (c == '\n') {
+        line++;
+      } else if ((c < 0x20 || c > 0x7e) && c != '\t' && c != '\r') {
+        say(file, line, "rule 1: a byte that isn't printable ASCII (0x" + Integer.toHexString(c) + ")");
+        break;
+      }
+    }
+
+    if (!file.equals(SELF) && !file.equals(ROWS) && !file.equals(NODE_ROWS)) {
+      String[] lines = new String(bytes, StandardCharsets.ISO_8859_1).split("\n", -1);
+
+      for (int k = 0; k < lines.length; k++) {
+        for (String word : SILENCERS) {
+          if (lines[k].contains(word)) {
+            say(file, k + 1, "rule 6: \"" + word + "\" tells javac or a scanner to look away");
+          }
+        }
+      }
+    }
+
     String name = file.substring(file.lastIndexOf('/') + 1);
     int dot = name.lastIndexOf('.');
     String kind = dot < 0 ? "" : name.substring(dot).toLowerCase(Locale.ROOT);
@@ -166,27 +196,13 @@ public final class CheckStandard {
     }
   }
 
-  // Rules 1 to 6 on a file under java/
+  // Rules 2 to 5 on a Java file under java/
   private static void checkJavaFolderFile(Path root, String file) throws IOException {
-    byte[] bytes = Files.readAllBytes(root.resolve(file));
-    int line = 1;
-
-    for (byte b : bytes) {
-      int c = b & 0xff;
-
-      if (c == '\n') {
-        line++;
-      } else if ((c < 0x20 || c > 0x7e) && c != '\t' && c != '\r') {
-        say(file, line, "rule 1: a byte that isn't printable ASCII (0x" + Integer.toHexString(c) + ")");
-        break;
-      }
-    }
-
     if (!file.endsWith(".java") || file.equals(SELF) || file.equals(ROWS)) {
       return;
     }
 
-    String[] lines = new String(bytes, StandardCharsets.ISO_8859_1).split("\n", -1);
+    String[] lines = Files.readString(root.resolve(file), StandardCharsets.ISO_8859_1).split("\n", -1);
     boolean isModuleInfo = file.endsWith("/module-info.java");
 
     for (int k = 0; k < lines.length; k++) {
@@ -229,12 +245,6 @@ public final class CheckStandard {
           if (text.contains(word)) {
             say(file, n, "rule 5: " + word + " in the server's own code (it writes only through Log.java)");
           }
-        }
-      }
-
-      for (String word : SILENCERS) {
-        if (text.contains(word)) {
-          say(file, n, "rule 6: \"" + word + "\" tells javac or a scanner to look away");
         }
       }
     }

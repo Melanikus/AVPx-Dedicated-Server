@@ -903,6 +903,57 @@ file: java/pom.xml
 <project></project>
 >>>
 
+# Node's own build files, so a Node tree can't come back (the reviewer's V2-3, 2026-11-09). Each is planted where nothing else is
+# checked of it, so only rule 2 can notice it, in two of the copy's folders to show it's anywhere
+=== an npm manifest comes back
+check: standard
+file: java/package.json
+<<< new file
+{}
+>>>
+
+=== an npm lock file comes back
+check: standard
+file: deploy/package-lock.json
+<<< new file
+{}
+>>>
+
+=== an npm shrinkwrap file comes back
+check: standard
+file: java/npm-shrinkwrap.json
+<<< new file
+{}
+>>>
+
+=== a yarn lock file comes back
+check: standard
+file: deploy/yarn.lock
+<<< new file
+# planted
+>>>
+
+=== a pnpm lock file comes back
+check: standard
+file: java/pnpm-lock.yaml
+<<< new file
+lockfileVersion: '9.0'
+>>>
+
+=== a pnpm workspace file comes back
+check: standard
+file: deploy/pnpm-workspace.yaml
+<<< new file
+packages: []
+>>>
+
+=== a node_modules folder comes back
+check: standard
+file: java/node_modules/planted.txt
+<<< new file
+planted
+>>>
+
 # ----- Rows for what only the Java version has
 
 === module-info names a module the server would then use

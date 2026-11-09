@@ -11,7 +11,7 @@ An item comes off the list only when it's done, in the commit that shows it, nev
 
 ## Taken off the list, and what showed each was done
 
-- **A first deploy, to a test machine nobody else can reach, passes the smoke client.** Done 2026-11-09, on the test machine in DigitalOcean nyc3 (New York), region `newyork`. While it ran, its DigitalOcean firewall let in only SSH, from the owner's own address. The second run, of 6a885c9, by hand with `deploy/remote-deploy.sh`, ended `in place, and healthy`, with `Smoke --installed` 32 of 32. Written up on issue #15, and in deploy/README.md's History. It doesn't show the Systems Manager route or deploy.yml's send: item 5 below is part of what still stands in their way.
+- **A first deploy, to a test machine nobody else can reach, passes the smoke client.** Done 2026-11-09, on the test machine in DigitalOcean nyc3 (New York), region `nyc3`. While it ran, its DigitalOcean firewall let in only SSH, from the owner's own address. The second run, of 6a885c9, by hand with `deploy/remote-deploy.sh`, ended `in place, and healthy`, with `Smoke --installed` 32 of 32. Written up on issue #15, and in deploy/README.md's History. It doesn't show the Systems Manager route or deploy.yml's send: item 5 below is part of what still stands in their way.
 
 ## Blocking a deploy
 

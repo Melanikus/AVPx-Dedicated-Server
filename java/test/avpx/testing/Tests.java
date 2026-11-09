@@ -31,11 +31,11 @@ public final class Tests {
     void run() throws Exception;
   }
 
-  // A check that didn't hold
+  // A check that didn't hold. A test can throw one itself, to stop where it can't go on (a packet that never came), with the reason.
   public static final class Failure extends RuntimeException {
     private static final long serialVersionUID = 1L;
 
-    Failure(String why) {
+    public Failure(String why) {
       super(why);
     }
   }

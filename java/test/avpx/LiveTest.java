@@ -318,7 +318,13 @@ public final class LiveTest {
 
         sendTo(joiner, joined.port(), latin1("an ENet packet"));
         Got passed = nextWithPort(host);
-        same(passed == null ? null : text(passed.data()), "an ENet packet", "the joiner's packet reaches the host, unchanged");
+
+        // Nothing within a second ends the test here, with its reason, before anything of the packet is read
+        if (passed == null) {
+          throw new Tests.Failure("the joiner's packet never reached the host");
+        }
+
+        same(text(passed.data()), "an ENet packet", "the joiner's packet reaches the host, unchanged");
         same(passed.fromPort(), joined.port(), "from the joiner's own relay port, so the host sees each joiner as a peer of its own");
         same(ask(host, joined.port(), latin1("and its answer")), null, "the host's answer goes to the joiner, not back to the host");
       } finally {

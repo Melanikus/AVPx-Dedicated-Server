@@ -1,0 +1,41 @@
+# Snyk Code (static analysis) and Snyk Open Source (dependencies), on Snyk's free account (GATES.md). Written 2026-11-08 by Melanikus for
+# AVPx Dedicated Server.
+#
+# The CLI is Snyk's own release binary, v1.1308.3, checked against its SHA-256 before it runs. It needs the repository secret
+# SNYK_TOKEN (set by the owner); without it, this check fails rather than passing unread. Any issue at any severity fails it.
+name: Snyk
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  snyk:
+    name: Snyk
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download and check the Snyk CLI v1.1308.3
+        env:
+          KEY: 5f323f45885341ea1473639859271925912ece82a2f77bc146bb4468f9838840
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/snyk" \
+            https://static.snyk.io/cli/v1.1308.3/snyk-linux
+          echo "$KEY  $RUNNER_TEMP/snyk" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/snyk"
+      - name: Snyk Code and Snyk Open Source
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SNYK_TOKEN" ]; then echo 'SNYK_TOKEN is not set, so nothing was scanned'; exit 1; fi
+          "$RUNNER_TEMP/snyk" code test --severity-threshold=low
+          "$RUNNER_TEMP/snyk" test --severity-threshold=low

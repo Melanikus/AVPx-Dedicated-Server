@@ -10,6 +10,6 @@
     "takeouts": "node tools/takeouts.js"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=24.22.1"
   }
 }

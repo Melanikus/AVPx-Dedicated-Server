@@ -18,8 +18,9 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.join(__dirname, '..');
-// What the copy holds: the code, its tests, and what the tests read (deploy/ has the example settings test/settings.test.js checks)
-const COPY = ['relay', 'list', 'test', 'support', 'tools', 'deploy', '.github', 'main.js', 'settings.js', 'log.js', 'package.json', 'package-lock.json', 'CODING-STANDARD.md'];
+// What the copy holds: the code, its tests, and what the tests read (deploy/ has the example settings test/settings.test.js checks, and
+// test-vectors/ the file test/vectors.test.js checks)
+const COPY = ['relay', 'list', 'test', 'support', 'tools', 'deploy', 'test-vectors', '.github', 'main.js', 'settings.js', 'log.js', 'package.json', 'package-lock.json', 'CODING-STANDARD.md'];
 const rows = JSON.parse(fs.readFileSync(path.join(__dirname, 'takeouts.json'), 'utf8')).rows;
 
 // No file is checked for and then used: between the two, it could change (CodeQL calls that a file-system race). Each is used once, and

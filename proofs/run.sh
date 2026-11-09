@@ -5,15 +5,17 @@
 #   sh proofs/run.sh      needs proverif on the PATH (GitHub's "Proofs" check installs it); exits 0 only if every answer is the one
 #                         written below
 #
-# THE VARIANTS of proofs/pqnk.pv, made here from it, never kept:
-#   pqnk          as written                                       every query true
-#   dh-broken     the attacker is given every ECDH secret          every query true: ML-KEM alone holds them
-#   kem-broken    the attacker is given every ML-KEM secret        every query true: ECDH alone holds them
-#   both-broken   the attacker is given both                       every query false: so the model isn't trivially true, and the
-#                                                                  hybrid is what protects
-# A variant is made by switching on the lines marked LEAKDH or LEAKKEM in pqnk.pv. ProVerif writes one "RESULT ... is true." or
-# "RESULT ... is false." line a query, in the order the queries are written; "cannot be proved" counts as neither, and fails.
-set -eu
+# THE VARIANTS of each model, made here from it, never kept:
+#   as written     every query true
+#   dh-broken      the attacker is given every ECDH secret an honest side computes       every query true: ML-KEM alone holds them
+#   kem-broken     the attacker is given every ML-KEM secret an honest side computes     every query true: ECDH alone holds them
+#   both-broken    the attacker is given both                                           the secrecy queries false: so the model isn't
+#                                                                                       trivially true, and the hybrid is what protects
+# In both-broken, pqnk's authentication fails too. pqxx's may not: the attacker learns each secret only when the honest side computes
+# it, which in pqXX comes after the message the attacker would need to forge with it, so its answer there isn't held to anything ("*").
+# A variant is made by switching on the lines marked LEAKDH or LEAKKEM. ProVerif writes one "RESULT ... is true." or "... is false." line
+# a query, in the order the queries are written; "cannot be proved" fails wherever an answer is required.
+set -euf
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 work=$(mktemp -d)
@@ -21,26 +23,46 @@ trap 'rm -rf "$work"' EXIT
 failed=0
 
 command -v proverif > /dev/null || { echo 'proofs: proverif is not on the PATH'; exit 1; }
-proverif -help 2>&1 | head -n 1 || true
 
-# One variant: its name, the sed edits that make it (or nothing), and the answers its queries must give, one word each
+# One run: the model, the variant's name, the sed edits that make it (or nothing), and the answers its queries must give, one word each
+# ("true", "false", or "*" for either)
 variant() {
-  name=$1; edits=$2; want=$3
-  if [ -n "$edits" ]; then sed "$edits" "$here/pqnk.pv" > "$work/$name.pv"; else cp "$here/pqnk.pv" "$work/$name.pv"; fi
-  if ! proverif "$work/$name.pv" > "$work/$name.out" 2>&1; then
-    echo "FAIL  $name: ProVerif stopped"; tail -n 20 "$work/$name.out"; failed=1; return 0
+  model=$1; name=$2; edits=$3; want=$4
+  file="$work/$model-$name.pv"
+  if [ -n "$edits" ]; then sed "$edits" "$here/$model.pv" > "$file"; else cp "$here/$model.pv" "$file"; fi
+  if ! proverif "$file" > "$file.out" 2>&1; then
+    echo "FAIL  $model $name: ProVerif stopped"; tail -n 20 "$file.out"; failed=1; return 0
   fi
-  got=$(grep '^RESULT' "$work/$name.out" | sed -n 's/.* is \(true\)\.$/\1/p; s/.* is \(false\)\.$/\1/p; s/.*cannot be proved.*/unproved/p' | tr '\n' ' ' | sed 's/ $//')
-  grep '^RESULT' "$work/$name.out" | sed "s/^/  $name: /"
-  if [ "$got" = "$want" ]; then echo "ok    $name: $got"; else echo "FAIL  $name: got \"$got\", must be \"$want\""; failed=1; fi
+  grep '^RESULT' "$file.out" | sed "s/^/  $model $name: /"
+  got=$(grep '^RESULT' "$file.out" | sed -n 's/.* is \(true\)\.$/\1/p; s/.* is \(false\)\.$/\1/p; s/.*cannot be proved.*/unproved/p' | tr '\n' ' ' | sed 's/ $//')
+  # The answers, word by word against what they must be
+  set -- $got
+  ok=yes
+  count=0
+  for must in $want; do
+    count=$((count + 1))
+    answer=${1:-none}
+    [ "$#" -gt 0 ] && shift
+    if [ "$must" != '*' ] && [ "$must" != "$answer" ]; then ok=no; fi
+  done
+  [ "$#" -eq 0 ] || ok=no
+  if [ "$ok" = yes ]; then echo "ok    $model $name: $got"; else echo "FAIL  $model $name: got \"$got\", must be \"$want\""; failed=1; fi
 }
 
 dh='s/(\*LEAKDH //; s/ LEAKDH\*)//'
 kem='s/(\*LEAKKEM //; s/ LEAKKEM\*)//'
-variant pqnk '' 'true true'
-variant dh-broken "$dh" 'true true'
-variant kem-broken "$kem" 'true true'
-variant both-broken "$dh; $kem" 'false false'
+
+# pqnk: 1 secrecy, 2 the relay's authentication
+variant pqnk as-written '' 'true true'
+variant pqnk dh-broken "$dh" 'true true'
+variant pqnk kem-broken "$kem" 'true true'
+variant pqnk both-broken "$dh; $kem" 'false false'
+
+# pqxx: 1 and 2 secrecy (joiner's, host's), 3 the host's authentication, 4 the joiner's
+variant pqxx as-written '' 'true true true true'
+variant pqxx dh-broken "$dh" 'true true true true'
+variant pqxx kem-broken "$kem" 'true true true true'
+variant pqxx both-broken "$dh; $kem" 'false false * *'
 
 if [ "$failed" -ne 0 ]; then echo 'proofs: some answers are not the ones they must be'; exit 1; fi
 echo 'proofs: every answer is the one it must be'

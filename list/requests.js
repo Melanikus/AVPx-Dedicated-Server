@@ -13,6 +13,7 @@
 
 const { kCodeLetters } = require('../relay/protocol');
 const { isRegion } = require('../relay/pass');
+const { readObject } = require('./strict-json');
 
 const kMostBodyBytes = 1024;
 const kMostTextLength = 32;
@@ -32,8 +33,10 @@ class Refusal extends Error {
   }
 }
 
+// Every string a body holds is already printable ASCII (0x20 to 0x7E): strict-json.js takes no other byte, so that rule lives there,
+// once, and this checks only the length
 function isPlainText(value, most = kMostTextLength) {
-  return typeof value === 'string' && value.length >= 1 && value.length <= most && /^[\x20-\x7e]+$/.test(value);
+  return typeof value === 'string' && value.length >= 1 && value.length <= most;
 }
 
 function isWhole(value, least, most) {
@@ -46,23 +49,12 @@ function parseBody(bytes, fields) {
     throw new Refusal(400, 'the body must be JSON, 1 to 1024 bytes');
   }
 
-  // A body must be UTF-8 that decodes cleanly; anything else is refused, not mended
-  let text;
-  try {
-    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-  } catch (e) {
-    throw new Refusal(400, 'the body must be UTF-8');
-  }
+  // Read with strict-json.js, not JSON.parse: one flat object of strings and whole numbers, printable ASCII, no key twice (PROTOCOL.md
+  // section 4, "How a body is read"). It gives back an object with no prototype, so a key "__proto__" is only a key.
+  const value = readObject(bytes);
 
-  let value;
-  try {
-    value = JSON.parse(text);
-  } catch (e) {
-    throw new Refusal(400, 'the body must be JSON');
-  }
-
-  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Refusal(400, 'the body must be a JSON object');
+  if (value === null) {
+    throw new Refusal(400, 'the body must be one JSON object of strings and whole numbers, as PROTOCOL.md section 4 writes it');
   }
 
   const keys = Object.keys(value);

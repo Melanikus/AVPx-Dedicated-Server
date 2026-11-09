@@ -98,9 +98,10 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
   const onRequest = (request, response) => {
     const address = request.socket.remoteAddress || '';
     const at = now();
+    // One request a connection (PROTOCOL.md section 4, "How a request is read"): every answer says so, and the connection closes after it
     const send = (status, body) => {
       const text = body === null ? '' : JSON.stringify(body);
-      response.writeHead(status, { ...kHeaders, 'Content-Length': Buffer.byteLength(text) });
+      response.writeHead(status, { ...kHeaders, Connection: 'close', 'Content-Length': Buffer.byteLength(text) });
       response.end(text);
     };
 
@@ -128,15 +129,17 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
     let size = 0;
     let refused = false;
 
-    const refuseTooBig = () => {
+    const refuseBody = (status, words) => {
       refused = true;
-      counts.tooBig++;
-      response.setHeader('Connection', 'close');
-      send(413, { error: 'the body is too big' });
+      send(status, { error: words });
       response.on('finish', () => request.socket.end());
     };
+    const refuseTooBig = () => { counts.tooBig++; refuseBody(413, 'the body is too big'); };
 
-    if (declared !== undefined && !(/^[0-9]{1,4}$/.test(declared) && Number(declared) <= kMostBodyBytes)) {
+    // A body comes with one Content-Length and nothing else: a body sent in chunks (Transfer-Encoding) is refused before any of it is read
+    if (request.headers['transfer-encoding'] !== undefined) {
+      refuseBody(400, 'a body comes with Content-Length only');
+    } else if (declared !== undefined && !(/^[0-9]{1,4}$/.test(declared) && Number(declared) <= kMostBodyBytes)) {
       refuseTooBig();
     }
 
@@ -194,7 +197,16 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
 
   // A TLS handshake that fails says nothing about who sent it in the log; it's only counted
   server.on('tlsClientError', () => { counts.refusedForLimits++; });
-  server.on('clientError', (error, socket) => { socket.destroy(); });
+  // A request Node itself can't read (headers over 8 KB, two Content-Lengths, a broken request line) gets its status and a close, so an
+  // honest client learns why: 431 for headers too big, 400 for the rest (PROTOCOL.md section 4, "How a request is read")
+  server.on('clientError', (error, socket) => {
+    if (socket.writable && error.code !== 'ECONNRESET') {
+      const status = error.code === 'HPE_HEADER_OVERFLOW' ? '431 Request Header Fields Too Large' : '400 Bad Request';
+      socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    } else {
+      socket.destroy();
+    }
+  });
 
   // A renewed certificate is taken up without a restart. Both files are read again each time (they're a few KB, once an hour), and used
   // only if their dates differ from the ones in use.

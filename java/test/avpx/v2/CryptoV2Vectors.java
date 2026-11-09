@@ -158,8 +158,9 @@ public final class CryptoV2Vectors {
     top.put("about", "Version 2's test vectors (CRYPTO.md section 15), made by java/test/avpx/v2/CryptoV2Vectors.java from fixed seeds, and"
         + " checked on every test run to be exactly what the server's code makes. Bytes are hex. Keys are given as the primitives take them:"
         + " a P-384 private key as its 48-byte number; an ML-KEM-1024 key pair as FIPS 203's d then z (mlkemSeed, 64 bytes); an encapsulation"
-        + " as its m. handshakeA's steps give h and ck after every step (MixKey steps give the secret mixed and the k made), and its"
-        + " transcript is h after A3 (5.1, point 15). Its datagrams carry a stand-in cookie: a real one is the relay's own HMAC, and only it"
+        + " as its m. handshakeA is pqIK (section 6): its player is the game's static keys, which A1's s sends sealed, and skemToPlayer is"
+        + " A2's encapsulation to the player's static ML-KEM key. handshakeA's steps give h and ck after every step (MixKey steps give the"
+        + " secret mixed and the k made), and its transcript is h after A3 (5.1, point 15). Its datagrams carry a stand-in cookie: a real one is the relay's own HMAC, and only it"
         + " can check one. handshakeB is handshake B (section 8, and 5.1 points 17 to 20) the same way, joiner and host, with both"
         + " identities and fingerprints, nJ and its commitment, nH, the transcript (h after B5) and the check code. Each side draws its"
         + " random values in the order they first appear in its own messages. B's datagrams are end to end (AVPE), with a cookie of 0."
@@ -190,7 +191,7 @@ public final class CryptoV2Vectors {
   }
 
   // A player's identity, made from seeds, and written down as the primitives take it
-  private static Map<String, Object> identityFields(KeyPair p384, byte[] kemSeed, HandshakeB.Identity id) {
+  private static Map<String, Object> identityFields(KeyPair p384, byte[] kemSeed, Identity id) {
     return fields("p384Private", hex(scalar(p384)), "p384Public", hex(id.p384Public()), "mlkemSeed", hex(kemSeed), "mlkemPublic",
         hex(id.kemPublic()), "fingerprint", hex(id.fingerprint()));
   }
@@ -202,11 +203,11 @@ public final class CryptoV2Vectors {
     KeyPair hostP384 = P384.generate(ScriptedRandom.seeded(801));
     ScriptedRandom hostKemRandom = ScriptedRandom.seeded(802);
     KeyPair hostKem = MlKem.generate(hostKemRandom);
-    HandshakeB.Identity host = HandshakeB.Identity.of(hostP384, hostKem);
+    Identity host = Identity.of(hostP384, hostKem);
     KeyPair joinerP384 = P384.generate(ScriptedRandom.seeded(803));
     ScriptedRandom joinerKemRandom = ScriptedRandom.seeded(804);
     KeyPair joinerKem = MlKem.generate(joinerKemRandom);
-    HandshakeB.Identity joiner = HandshakeB.Identity.of(joinerP384, joinerKem);
+    Identity joiner = Identity.of(joinerP384, joinerKem);
 
     List<Object> steps = new ArrayList<>();
     Noise noise = new Noise(HandshakeB.PROTOCOL);
@@ -326,7 +327,7 @@ public final class CryptoV2Vectors {
 
     // Refusal 10's bytes: a B2 from a host with other static keys, sealed under the fingerprint the listing names. Every tag checks,
     // because the prologue is the one the joiner expects; only the fingerprint of the statics inside is wrong, and the joiner refuses it.
-    HandshakeB.Identity other = HandshakeB.Identity.of(P384.generate(ScriptedRandom.seeded(808)), MlKem.generate(ScriptedRandom.seeded(809)));
+    Identity other = Identity.of(P384.generate(ScriptedRandom.seeded(808)), MlKem.generate(ScriptedRandom.seeded(809)));
     byte[] otherB2 = b2From(relayPort, host.fingerprint(), other, e, ek, b1);
     HandshakeB.Joiner refuses = HandshakeB.writeB1(REGION, relayPort, host.fingerprint(), joiner, ScriptedRandom.seeded(805));
     must(Arrays.equals(refuses.b1(), b1) && refuses.readB2(otherB2) == null, "the joiner took a B2 from a host the listing didn't name");
@@ -364,7 +365,7 @@ public final class CryptoV2Vectors {
   // B2 as a host with the identity `as` would make it for B1, but with the prologue naming `fingerprint`. The host's draws are the same
   // as the real B2's (seed 806), so only the statics and es differ. For a test vector only: it's the case refusal 10 is for, a host
   // that knows the listing's fingerprint but not its keys.
-  private static byte[] b2From(int relayPort, byte[] fingerprint, HandshakeB.Identity as, KeyPair e, KeyPair ek, byte[] b1) {
+  private static byte[] b2From(int relayPort, byte[] fingerprint, Identity as, KeyPair e, KeyPair ek, byte[] b1) {
     Noise noise = new Noise(HandshakeB.PROTOCOL);
     noise.mixHash(Arrays.copyOf(REGION.getBytes(StandardCharsets.US_ASCII), REGION.length() + 1));
     noise.mixHash(new byte[] {(byte) relayPort, (byte) (relayPort >>> 8)});
@@ -448,7 +449,14 @@ public final class CryptoV2Vectors {
     noise.mixHash(relay.kemPublic());
     steps.add(step("<- s: MixHash(the relay's static ML-KEM key)", noise));
 
-    // A1, the game's: e, es, skem, and an empty EncryptAndHash
+    // The player's static keys (their identity, section 4): what A1's s sends sealed, and what ss, se and A2's skem prove
+    KeyPair playerP384 = P384.generate(ScriptedRandom.seeded(901));
+    ScriptedRandom playerKemRandom = ScriptedRandom.seeded(902);
+    KeyPair playerKem = MlKem.generate(playerKemRandom);
+    byte[] playerKemSeed = lastDraws(playerKemRandom, 64).get(0);
+    Identity player = Identity.of(playerP384, playerKem);
+
+    // A1, the game's: e, es, skem, s, ss, and an empty EncryptAndHash
     ScriptedRandom gameRandom = ScriptedRandom.seeded(201);
     KeyPair gameP384 = P384.generate(gameRandom);
     KeyPair gameKem = MlKem.generate(gameRandom);
@@ -465,11 +473,17 @@ public final class CryptoV2Vectors {
     noise.mixHash(skem.ciphertext());
     steps.add(step("A1, skem: MixHash(the ciphertext to the relay's static ML-KEM key)", noise));
     steps.add(mixKey("A1, skem: MixKey(its secret)", noise, skem.secret()));
+    byte[] sealedStatics = noise.encryptAndHash(player.statics());
+    steps.add(step("A1, s: EncryptAndHash(the player's static P-384 key, then static ML-KEM key, 1,665 bytes) (k at n = 0)", noise,
+        "sent", hex(sealedStatics)));
+    steps.add(mixKey("A1, ss: MixKey(ECDH(the player's static key, the relay's static key))", noise,
+        P384.agree(playerP384.getPrivate(), (ECPublicKey) relayP384.getPublic())));
     byte[] a1Tag = noise.encryptAndHash(NOTHING);
     steps.add(step("A1: EncryptAndHash(nothing), its tag (k at n = 0)", noise, "sent", hex(a1Tag)));
-    byte[] a1 = join(gameP384Public, gameKemPublic, skem.ciphertext(), a1Tag);
+    byte[] a1 = join(gameP384Public, gameKemPublic, skem.ciphertext(), sealedStatics, a1Tag);
 
-    // A2, the relay's: e, ee, ekem, and its session id sealed
+    // A2, the relay's: e, ee, se, ekem, skem (to the player's static ML-KEM key), and its session id sealed. The relay draws in that order:
+    // its ephemeral key, ekem's m, skem's m, the session id.
     ScriptedRandom relayRandom = ScriptedRandom.seeded(301);
     KeyPair relayEphemeral = P384.generate(relayRandom);
     byte[] relayEphemeralPublic = P384.encode((ECPublicKey) relayEphemeral.getPublic());
@@ -477,16 +491,23 @@ public final class CryptoV2Vectors {
     steps.add(step("A2, e: MixHash(the relay's ephemeral P-384 key)", noise));
     steps.add(mixKey("A2, ee: MixKey(ECDH(the relay's ephemeral key, the game's ephemeral key))", noise,
         P384.agree(relayEphemeral.getPrivate(), (ECPublicKey) gameP384.getPublic())));
+    steps.add(mixKey("A2, se: MixKey(ECDH(the relay's ephemeral key, the player's static key))", noise,
+        P384.agree(relayEphemeral.getPrivate(), (ECPublicKey) playerP384.getPublic())));
     MlKem.Encapsulated ekem = MlKem.encapsulate(gameKem.getPublic(), relayRandom);
     byte[] ekemM = lastDraws(relayRandom, 32).get(0);
     noise.mixHash(ekem.ciphertext());
     steps.add(step("A2, ekem: MixHash(the ciphertext to the game's ephemeral ML-KEM key)", noise));
     steps.add(mixKey("A2, ekem: MixKey(its secret)", noise, ekem.secret()));
+    MlKem.Encapsulated toPlayer = MlKem.encapsulate(playerKem.getPublic(), relayRandom);
+    byte[] toPlayerM = lastDraws(relayRandom, 32).get(0);
+    noise.mixHash(toPlayer.ciphertext());
+    steps.add(step("A2, skem: MixHash(the ciphertext to the player's static ML-KEM key)", noise));
+    steps.add(mixKey("A2, skem: MixKey(its secret)", noise, toPlayer.secret()));
     byte[] sessionId = new byte[HandshakeA.SESSION_ID_BYTES];
     relayRandom.nextBytes(sessionId);
     byte[] sealedId = noise.encryptAndHash(sessionId);
     steps.add(step("A2: EncryptAndHash(the relay's session id) (k at n = 0)", noise, "sent", hex(sealedId)));
-    byte[] a2 = join(relayEphemeralPublic, ekem.ciphertext(), sealedId);
+    byte[] a2 = join(relayEphemeralPublic, ekem.ciphertext(), toPlayer.ciphertext(), sealedId);
 
     // A3, the game's key confirmation; then Split
     byte[] a3 = noise.encryptAndHash(NOTHING);
@@ -496,10 +517,13 @@ public final class CryptoV2Vectors {
     byte[] transcript = noise.h();
 
     // The real handshake, given the same randomness, must be these very steps
-    HandshakeA.Initiator game = HandshakeA.writeA1(REGION, relay.p384Public(), relay.kemPublic(), ScriptedRandom.seeded(201));
+    HandshakeA.Initiator game = HandshakeA.writeA1(REGION, relay.p384Public(), relay.kemPublic(), player, ScriptedRandom.seeded(201));
     must(Arrays.equals(game.a1(), a1), "HandshakeA's A1 isn't the steps'");
-    HandshakeA.Responder responder = HandshakeA.readA1(relay, REGION, a1, ScriptedRandom.seeded(301));
+    String playerId = Identity.idHex(player.p384Public(), player.kemPublic());
+    HandshakeA.Responder responder = HandshakeA.readA1(relay, REGION, a1, playerId::equals, ScriptedRandom.seeded(301))
+        .responder();
     must(responder != null && Arrays.equals(responder.a2(), a2), "HandshakeA's A2 isn't the steps'");
+    must(responder.player().equals(playerId), "HandshakeA's player isn't the steps'");
     HandshakeA.Initiator.Done done = game.readA2(a2);
     must(done != null && Arrays.equals(done.a3(), a3), "HandshakeA's A3 isn't the steps'");
     HandshakeA.Keys relayKeys = responder.readA3(a3);
@@ -515,11 +539,13 @@ public final class CryptoV2Vectors {
     into.put("region", REGION);
     into.put("relayStatic", fields("p384Private", hex(scalar(relayP384)), "p384Public", hex(relay.p384Public()), "mlkemSeed",
         hex(relayKemSeed), "mlkemPublic", hex(relay.kemPublic())));
+    into.put("player", identityFields(playerP384, playerKemSeed, player));
     into.put("gameEphemeral", fields("p384Private", hex(scalar(gameP384)), "p384Public", hex(gameP384Public), "mlkemSeed",
         hex(gameDraws.get(0)), "mlkemPublic", hex(gameKemPublic)));
     into.put("skem", fields("m", hex(gameDraws.get(1)), "ciphertext", hex(skem.ciphertext()), "secret", hex(skem.secret())));
     into.put("relayEphemeral", fields("p384Private", hex(scalar(relayEphemeral)), "p384Public", hex(relayEphemeralPublic)));
     into.put("ekem", fields("m", hex(ekemM), "ciphertext", hex(ekem.ciphertext()), "secret", hex(ekem.secret())));
+    into.put("skemToPlayer", fields("m", hex(toPlayerM), "ciphertext", hex(toPlayer.ciphertext()), "secret", hex(toPlayer.secret())));
     into.put("sessionId", hex(sessionId));
     into.put("a1", hex(a1));
     into.put("a2", hex(a2));
@@ -676,7 +702,8 @@ public final class CryptoV2Vectors {
   private static List<Object> refusals(Map<String, Object> datagrams, List<Object> sealed) {
     HexFormat h = HexFormat.of();
     byte[] a1First = h.parseHex((String) ((List<?>) datagrams.get("a1")).get(0));
-    byte[] a1Last = h.parseHex((String) ((List<?>) datagrams.get("a1")).get(2));
+    List<?> a1Datagrams = (List<?>) datagrams.get("a1");
+    byte[] a1Last = h.parseHex((String) a1Datagrams.get(a1Datagrams.size() - 1));
     byte[] gameSealed = h.parseHex((String) ((Map<?, ?>) sealed.get(0)).get("sealed"));
     List<Object> out = new ArrayList<>();
     out.add(refusal(1, "a handshake datagram of 1,199 bytes (A1's first, cut short)", Arrays.copyOf(a1First, 1199)));
@@ -685,7 +712,7 @@ public final class CryptoV2Vectors {
     out.add(refusal(3, "another version: 3", changed(a1First, 4, 3)));
     out.add(refusal(4, "an unknown kind: 9", changed(a1First, 5, 9)));
     out.add(refusal(6, "a count of 0", changed(a1First, 7, 0)));
-    out.add(refusal(6, "a count of 4, for a length that takes 3", changed(a1First, 7, 4)));
+    out.add(refusal(6, "a count of 4, for a length that takes 5", changed(a1First, 7, 4)));
     out.add(refusal(6, "fragment 0 starting at 1, not 0", changed(a1First, 34, 1)));
     out.add(refusal(6, "a byte after the last fragment's part that isn't 0", changed(a1Last, 1199, 1)));
     out.add(refusal(8, "the game's first sealed message with a bit of its tag changed", changed(gameSealed, 103, gameSealed[103] ^ 1)));

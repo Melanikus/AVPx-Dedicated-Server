@@ -14,10 +14,13 @@ import avpx.relay.RelayCore;
 import avpx.relay.RelayCore.Out;
 import avpx.testing.ScriptedRandom;
 import avpx.testing.SeededRandom;
+import avpx.testing.TestApprovals;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 // The tests of SealedRelay.java: a version 2 relay, handed datagrams as a game sends them, with no socket opened. Written 2026-11-09 by
 // Melanikus for AVPx Dedicated Server. Each refusal is checked by its number in CRYPTO.md section 16, as the relay counts it.
@@ -34,8 +37,30 @@ public final class SealedRelayTest {
   private static final HandshakeA.RelayKeys KEYS = HandshakeA.RelayKeys.of(P384.generate(ScriptedRandom.seeded(20)),
       MlKem.generate(ScriptedRandom.seeded(21)));
 
+  // The approved players' fingerprints, as the relay asks for them at each A1. Every test player (identity) is in it; a stranger isn't.
+  // A test that revokes takes one out, as the access store would.
+  private static final Set<String> APPROVED = new HashSet<>();
+  private static final TestApprovals APPROVALS = TestApprovals.of(APPROVED::contains);
+
+  // Test player number seed's identity, approved
+  private static Identity identity(int seed) {
+    Identity id = stranger(seed);
+    APPROVED.add(Identity.idHex(id.p384Public(), id.kemPublic()));
+    return id;
+  }
+
+  // An identity that nobody approved
+  private static Identity stranger(int seed) {
+    return Identity.of(P384.generate(ScriptedRandom.seeded(seed + 2000)), MlKem.generate(ScriptedRandom.seeded(seed + 3000)));
+  }
+
+  private static String fingerprintOf(Identity id) {
+    return Identity.idHex(id.p384Public(), id.kemPublic());
+  }
+
   private static SealedRelay relay(SealedRelay.Limits limits, RelayCore.Limits coreLimits) {
-    return new SealedRelay(CONTROL, PORTS, REGION, PASS_KEY, KEYS, SeededRandom.of(5), ScriptedRandom.seeded(6), coreLimits, limits, NOW);
+    return new SealedRelay(CONTROL, PORTS, REGION, PASS_KEY, KEYS, APPROVALS, SeededRandom.of(5), ScriptedRandom.seeded(6),
+        coreLimits, limits, NOW);
   }
 
   private static SealedRelay relay() {
@@ -71,12 +96,16 @@ public final class SealedRelayTest {
   }
 
   private static Begun begin(SealedRelay relay, String address, int port, int seed, long now) {
+    return begin(relay, address, port, identity(seed), seed, now);
+  }
+
+  private static Begun begin(SealedRelay relay, String address, int port, Identity who, int seed, long now) {
     byte[] id = new byte[8];
     ScriptedRandom.seeded(seed + 1000).nextBytes(id);
     List<Out> answer = relay.receive(CONTROL, address, port, a0(id), now);
     ok(answer.size() == 1 && answer.get(0).data().length == SealedRelay.COOKIE_ANSWER_BYTES, "A0': one answer, of 64 bytes, for 1,200");
     byte[] cookie = Arrays.copyOfRange(answer.get(0).data(), 16, 32);
-    HandshakeA.Initiator game = HandshakeA.writeA1(REGION, KEYS.p384Public(), KEYS.kemPublic(), ScriptedRandom.seeded(seed));
+    HandshakeA.Initiator game = HandshakeA.writeA1(REGION, KEYS.p384Public(), KEYS.kemPublic(), who, ScriptedRandom.seeded(seed));
     return new Begun(id, cookie, game, Fragments.cut(Fragments.toRelay(), SealedRelay.A1, id, cookie, game.a1()));
   }
 
@@ -94,9 +123,13 @@ public final class SealedRelayTest {
 
   // Handshake A over the control port, datagram by datagram as a game sends them: the game's channel
   private static Channel handshake(SealedRelay relay, String address, int port, int seed, long now) {
-    Begun begun = begin(relay, address, port, seed, now);
+    return handshakeAs(relay, address, port, identity(seed), seed, now);
+  }
+
+  private static Channel handshakeAs(SealedRelay relay, String address, int port, Identity who, int seed, long now) {
+    Begun begun = begin(relay, address, port, who, seed, now);
     List<Out> a2 = sendAll(relay, address, port, begun.a1(), now);
-    same(a2.size(), 2, "A2: 2 datagrams, for A1's 3");
+    same(a2.size(), 3, "A2: 3 datagrams, for A1's 5");
 
     for (Out o : a2) {
       same(o.data().length, 1200, "each of 1,200 bytes");
@@ -195,13 +228,56 @@ public final class SealedRelayTest {
       same(relay.counts.dropped, 0L, "and nothing threw");
     });
 
-    test("every datagram rule: A0 one answer of 64 bytes; A1's 3 datagrams, 2 of A2; A3 none; and nothing kept before A1 is whole", () -> {
+    test("every datagram rule: A0 one answer of 64 bytes; A1's 5 datagrams, 3 of A2; A3 none; and nothing kept before A1 is whole", () -> {
       SealedRelay relay = relay();
       Begun begun = begin(relay, "10.0.0.1", 5000, 40, NOW);
-      same(relay.receive(CONTROL, "10.0.0.1", 5000, begun.a1().get(0), NOW).size(), 0, "A1's first datagram: no answer");
-      same(relay.receive(CONTROL, "10.0.0.1", 5000, begun.a1().get(1), NOW).size(), 0, "its second: none");
-      same(relay.receive(CONTROL, "10.0.0.1", 5000, begun.a1().get(2), NOW).size(), 2, "its third: A2's 2");
+      same(begun.a1().size(), 5, "A1 is 5 datagrams");
+
+      for (int i = 0; i < 4; i++) {
+        same(relay.receive(CONTROL, "10.0.0.1", 5000, begun.a1().get(i), NOW).size(), 0, "A1's datagram " + i + ": no answer");
+      }
+
+      same(relay.receive(CONTROL, "10.0.0.1", 5000, begun.a1().get(4), NOW).size(), 3, "its fifth: A2's 3");
       same(relay.counts.started, 1L, "one handshake started");
+    });
+
+    test("only an approved player gets an A2: a stranger's A1 is refusal 22, answered with nothing, and nothing is kept", () -> {
+      SealedRelay relay = relay();
+      same(sendAll(relay, "10.0.0.1", 5000, begin(relay, "10.0.0.1", 5000, stranger(77), 77, NOW).a1(), NOW).size(), 0,
+          "a stranger's whole A1: nothing back");
+      same(relay.counts.refused[22], 1L, "refusal 22");
+      same(relay.counts.started, 0L, "no handshake started");
+      same(relay.sessions.size(), 0, "and no session");
+      same(sendAll(relay, "10.0.0.1", 5001, begin(relay, "10.0.0.1", 5001, 78, NOW).a1(), NOW).size(), 3, "an approved player's: A2");
+    });
+
+    test("a revoke ends the player's sessions at once, with the games they host and the ports they hold, and they can't come back", () -> {
+      SealedRelay relay = relay();
+      Identity hostId = identity(79);
+      Player host = new Player("10.0.0.1", 5000, handshakeAs(relay, "10.0.0.1", 5000, hostId, 79, NOW));
+      Identity otherId = identity(80);
+      handshakeAs(relay, "10.0.0.2", 6000, otherId, 80, NOW);
+      List<Out> opened = host.say(relay, Message.of(Type.HOST_OPEN), NOW);
+      Message hostOpened = host.hear(opened.get(0), NOW);
+      same(hostOpened.type(), Type.HOST_OPENED, "the host's game is open");
+      Player third = player(relay, "10.0.0.3", 7000, 82);
+      same(third.hear(third.say(relay, Message.of(Type.JOIN).code(hostOpened.code()), NOW).get(0), NOW).type(), Type.JOIN_PORT,
+          "a third player can join it");
+      same(relay.sessions.size(), 3, "three sessions");
+      APPROVALS.revoke(fingerprintOf(otherId));
+      relay.tick(NOW);
+      same(relay.sessions.size(), 2, "a revoke the approvals give back at the next tick ends the other player's one session, and leaves "
+          + "the host's and the third's");
+      APPROVED.remove(fingerprintOf(hostId));
+      same(relay.revoke(fingerprintOf(hostId)), 1, "revoking the host ends theirs");
+      same(relay.sessions.size(), 1, "only the third's session is left");
+      Message after = third.hear(third.say(relay, Message.of(Type.JOIN).code(hostOpened.code()), NOW).get(0), NOW);
+      same(after.type(), Type.REFUSED, "and the host's game ended with them: a JOIN to its code is refused");
+      same(host.say(relay, Message.of(Type.HOST_KEEP).secret(bytes(16, 1)), NOW).size(), 0, "the host's next sealed message: nothing");
+      same(sendAll(relay, "10.0.0.1", 5001, begin(relay, "10.0.0.1", 5001, hostId, 81, NOW).a1(), NOW).size(), 0,
+          "and a new handshake of theirs is refused at A1");
+      same(relay.counts.refused[22], 1L, "as refusal 22");
+      ok(relay.countsLine(NOW + 1000).contains("2 ended by a revoke"), "the counts line says so, with no fingerprint");
     });
 
     test("anything that isn't version 2 is refused unanswered, by its number: every version 1 message among them", () -> {
@@ -250,9 +326,9 @@ public final class SealedRelayTest {
       }
 
       same(sendAll(relay, "10.0.0.1", 5000, changedCookie, NOW).size(), 0, "with its cookie changed");
-      same(relay.counts.refused[5], 9L, "every one of those 9 datagrams is refusal 5");
+      same(relay.counts.refused[5], 15L, "every one of those 15 datagrams is refusal 5");
       same(sendAll(relay, "10.0.0.1", 5000, begun.a1(), NOW + 20000).size(), 0, "20 s on, in the third slot: too old");
-      same(sendAll(relay, "10.0.0.1", 5000, begun.a1(), NOW + 19999).size(), 2, "a millisecond less, in the second slot: still good");
+      same(sendAll(relay, "10.0.0.1", 5000, begun.a1(), NOW + 19999).size(), 3, "a millisecond less, in the second slot: still good");
     });
 
     test("the same A1 again gets the same A2, byte for byte; another A1 under that id gets nothing", () -> {
@@ -260,13 +336,14 @@ public final class SealedRelayTest {
       Begun begun = begin(relay, "10.0.0.1", 5000, 42, NOW);
       List<Out> first = sendAll(relay, "10.0.0.1", 5000, begun.a1(), NOW);
       List<Out> again = sendAll(relay, "10.0.0.1", 5000, begun.a1(), NOW + 500);
-      same(again.size(), 2, "2 datagrams again");
+      same(again.size(), 3, "3 datagrams again");
       same(again.get(0).data(), first.get(0).data(), "the first, byte for byte");
-      same(again.get(1).data(), first.get(1).data(), "and the second");
+      same(again.get(1).data(), first.get(1).data(), "the second");
+      same(again.get(2).data(), first.get(2).data(), "and the third");
       same(relay.counts.again, 1L, "counted as sent again");
       same(relay.counts.started, 1L, "and only one handshake started: one set of keys");
 
-      HandshakeA.Initiator other = HandshakeA.writeA1(REGION, KEYS.p384Public(), KEYS.kemPublic(), ScriptedRandom.seeded(43));
+      HandshakeA.Initiator other = HandshakeA.writeA1(REGION, KEYS.p384Public(), KEYS.kemPublic(), identity(43), ScriptedRandom.seeded(43));
       List<byte[]> otherA1 = Fragments.cut(Fragments.toRelay(), SealedRelay.A1, begun.id(), begun.cookie(), other.a1());
       same(sendAll(relay, "10.0.0.1", 5000, otherA1, NOW + 600).size(), 0, "another A1 under the same id: nothing");
     });
@@ -330,8 +407,12 @@ public final class SealedRelayTest {
       Begun two = begin(relay, "10.0.0.1", 5000, 48, NOW);
       relay.receive(CONTROL, "10.0.0.1", 5000, one.a1().get(0), NOW);
       relay.receive(CONTROL, "10.0.0.1", 5000, two.a1().get(0), NOW);
-      relay.receive(CONTROL, "10.0.0.1", 5000, one.a1().get(1), NOW);
-      same(relay.receive(CONTROL, "10.0.0.1", 5000, one.a1().get(2), NOW).size(), 0,
+
+      for (int i = 1; i < 4; i++) {
+        relay.receive(CONTROL, "10.0.0.1", 5000, one.a1().get(i), NOW);
+      }
+
+      same(relay.receive(CONTROL, "10.0.0.1", 5000, one.a1().get(4), NOW).size(), 0,
           "a second handshake from the same address and port took the first's place: the first never finishes");
 
       SealedRelay many = relay();
@@ -348,10 +429,10 @@ public final class SealedRelayTest {
       slow.startRate = 1;
       slow.startBurst = 1;
       SealedRelay limited = relay(slow, new RelayCore.Limits());
-      same(sendAll(limited, "10.0.0.1", 5000, begin(limited, "10.0.0.1", 5000, 49, NOW).a1(), NOW).size(), 2, "a first handshake");
+      same(sendAll(limited, "10.0.0.1", 5000, begin(limited, "10.0.0.1", 5000, 49, NOW).a1(), NOW).size(), 3, "a first handshake");
       same(sendAll(limited, "10.0.0.1", 5000, begin(limited, "10.0.0.1", 5000, 50, NOW).a1(), NOW).size(), 0,
           "a second from the same address and port in the same moment: over its limit, so no ECDH or ML-KEM is done");
-      same(sendAll(limited, "10.0.0.1", 5001, begin(limited, "10.0.0.1", 5001, 51, NOW).a1(), NOW).size(), 2, "from another port, fine");
+      same(sendAll(limited, "10.0.0.1", 5001, begin(limited, "10.0.0.1", 5001, 51, NOW).a1(), NOW).size(), 3, "from another port, fine");
 
       SealedRelay.Limits few = new SealedRelay.Limits();
       few.mostSessions = 1;
@@ -368,31 +449,33 @@ public final class SealedRelayTest {
       SealedRelay.Limits two = new SealedRelay.Limits();
       two.mostSessionsPerAddress = 2;
       SealedRelay relay = relay(two, new RelayCore.Limits());
-      same(sendAll(relay, "10.0.0.5", 1, begin(relay, "10.0.0.5", 1, 60, NOW).a1(), NOW).size(), 2, "one A1, never finished: A2");
-      same(sendAll(relay, "10.0.0.5", 2, begin(relay, "10.0.0.5", 2, 61, NOW).a1(), NOW).size(), 2, "a second: A2");
+      same(sendAll(relay, "10.0.0.5", 1, begin(relay, "10.0.0.5", 1, 60, NOW).a1(), NOW).size(), 3, "one A1, never finished: A2");
+      same(sendAll(relay, "10.0.0.5", 2, begin(relay, "10.0.0.5", 2, 61, NOW).a1(), NOW).size(), 3, "a second: A2");
       same(sendAll(relay, "10.0.0.5", 3, begin(relay, "10.0.0.5", 3, 62, NOW).a1(), NOW).size(), 0,
           "a third from the same address, with two waiting for A3 and no session yet: refused");
       same(relay.counts.refused[20], 1L, "refusal 20");
-      same(sendAll(relay, "10.0.0.6", 1, begin(relay, "10.0.0.6", 1, 63, NOW).a1(), NOW).size(), 2, "another address: its own count");
+      same(sendAll(relay, "10.0.0.6", 1, begin(relay, "10.0.0.6", 1, 63, NOW).a1(), NOW).size(), 3, "another address: its own count");
       relay.tick(NOW + 10000);
-      same(sendAll(relay, "10.0.0.5", 4, begin(relay, "10.0.0.5", 4, 64, NOW + 10000).a1(), NOW + 10000).size(), 2,
+      same(sendAll(relay, "10.0.0.5", 4, begin(relay, "10.0.0.5", 4, 64, NOW + 10000).a1(), NOW + 10000).size(), 3,
           "10 s on, the two never finished are given up on, and their places are free");
     });
 
     test("time: A1 has 2 s to come whole; A2 is kept 10 s; a session nothing holds ends after 60 s quiet, and one a game holds stays", () -> {
       SealedRelay relay = relay();
       Begun slow = begin(relay, "10.0.0.1", 5000, 54, NOW);
-      relay.receive(CONTROL, "10.0.0.1", 5000, slow.a1().get(0), NOW);
-      relay.receive(CONTROL, "10.0.0.1", 5000, slow.a1().get(1), NOW);
+      for (int i = 0; i < 4; i++) {
+        relay.receive(CONTROL, "10.0.0.1", 5000, slow.a1().get(i), NOW);
+      }
+
       relay.tick(NOW + 2000);
-      same(relay.receive(CONTROL, "10.0.0.1", 5000, slow.a1().get(2), NOW + 2000).size(), 0, "the last fragment 2 s on: too late");
+      same(relay.receive(CONTROL, "10.0.0.1", 5000, slow.a1().get(4), NOW + 2000).size(), 0, "the last fragment 2 s on: too late");
       same(relay.counts.refused[7], 1L, "refusal 7, not finished in time");
 
       Begun kept = begin(relay, "10.0.0.2", 6000, 55, NOW);
       List<Out> first = sendAll(relay, "10.0.0.2", 6000, kept.a1(), NOW);
       relay.tick(NOW + 10000);
       List<Out> later = sendAll(relay, "10.0.0.2", 6000, kept.a1(), NOW + 10000);
-      ok(later.size() == 2 && !Arrays.equals(later.get(0).data(), first.get(0).data()), "10 s on, the A2 isn't kept: a new handshake");
+      ok(later.size() == 3 && !Arrays.equals(later.get(0).data(), first.get(0).data()), "10 s on, the A2 isn't kept: a new handshake");
 
       RelayCore.Limits longGames = new RelayCore.Limits();
       longGames.gameLifeMilliseconds = 1_000_000;

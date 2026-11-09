@@ -21,12 +21,12 @@ public final class HandshakeBTest {
   private static final String REGION = "virginia";
   private static final int PORT = 27507;
 
-  private static HandshakeB.Identity identity(int seed) {
-    return HandshakeB.Identity.of(P384.generate(ScriptedRandom.seeded(seed)), MlKem.generate(ScriptedRandom.seeded(seed + 1)));
+  private static Identity identity(int seed) {
+    return Identity.of(P384.generate(ScriptedRandom.seeded(seed)), MlKem.generate(ScriptedRandom.seeded(seed + 1)));
   }
 
-  private static final HandshakeB.Identity HOST = identity(70);
-  private static final HandshakeB.Identity JOINER = identity(72);
+  private static final Identity HOST = identity(70);
+  private static final Identity JOINER = identity(72);
 
   private static byte[] flip(byte[] b, int at) {
     byte[] c = b.clone();
@@ -78,7 +78,7 @@ public final class HandshakeBTest {
     });
 
     test("a host that isn't the one the listing named is refused by the joiner (refusal 10), and so is another region or port", () -> {
-      HandshakeB.Identity impostor = identity(74);
+      Identity impostor = identity(74);
       HandshakeB.Joiner joiner = joiner(82);
       HandshakeB.Host wrong = HandshakeB.readB1(REGION, PORT, impostor, joiner.b1(), ScriptedRandom.seeded(83));
       same(joiner.readB2(wrong.b2()), null, "B2 from another identity, whatever its tags: refused, and nothing more is sent");

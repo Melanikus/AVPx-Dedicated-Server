@@ -41,6 +41,10 @@ import java.util.regex.Pattern;
 //   protocol       which protocol the relay speaks                   1 (PROTOCOL.md) or 2 (CRYPTO.md); default 1. One only: version 2
 //                                                                    is a new deployment, with no mixing of the two
 //   staticKeys     the relay's static keys, for protocol 2           an object, below; required for protocol 2, refused for 1
+//   accessFolder   the access store's folder (AccessStore.java)      a path, or "" for none; default "". Required for protocol 2,
+//                                                                    which takes approved players only (CRYPTO.md section 6). With
+//                                                                    none, the list answers access requests "closed". The deploy makes
+//                                                                    it, owned by the server's user, 0700
 //   list           the list, if this machine runs it                 an object, below; leave it out on a machine that doesn't
 //
 // The static keys (CRYPTO.md section 4) prove the relay in handshake A; their public halves go in the signed directory.
@@ -66,7 +70,7 @@ import java.util.regex.Pattern;
 // The file holds pass keys, so it's readable only by root and the server's own user (deploy/README.md).
 public final class Settings {
   private static final Set<String> NAMES = Set.of("region", "passKey", "relayAddress", "controlPort", "relayPorts", "logFile", "protocol",
-      "staticKeys", "list");
+      "staticKeys", "accessFolder", "list");
   private static final Set<String> STATIC_KEY_NAMES = Set.of("p384Private", "p384Public", "mlkemSeed");
   private static final Pattern HEX = Pattern.compile("[0-9a-f]*");
   private static final Set<String> LIST_NAMES = Set.of("address", "port", "certFile", "keyFile", "relays");
@@ -82,7 +86,7 @@ public final class Settings {
   private static final int MOST_HOST_LENGTH = 63;
   private static final int MOST_PATH_LENGTH = 260;
   // 16 relays, each with every field at its longest and both public keys (15 of them: the list's own takes its keys from staticKeys),
-  // and every other setting at its longest, come to 54,840 bytes written with no spaces. 64 KB leaves room for the spaces and line ends
+  // and every other setting at its longest, come to 55,119 bytes written with no spaces. 64 KB leaves room for the spaces and line ends
   // a person puts in (SettingsTest.java checks both fit).
   private static final int MOST_SETTINGS_BYTES = 64 * 1024;
   private static final int MOST_NAME_SHOWN = 40;
@@ -121,10 +125,11 @@ public final class Settings {
   private final String logFile;
   private final int protocol;
   private final HandshakeA.RelayKeys staticKeys;
+  private final String accessFolder;
   private final ListSettings list;
 
   private Settings(String region, byte[] passKey, String relayAddress, int controlPort, int[] relayPorts, String logFile, int protocol,
-      HandshakeA.RelayKeys staticKeys, ListSettings list) {
+      HandshakeA.RelayKeys staticKeys, String accessFolder, ListSettings list) {
     this.region = region;
     this.passKey = passKey;
     this.relayAddress = relayAddress;
@@ -133,7 +138,13 @@ public final class Settings {
     this.logFile = logFile;
     this.protocol = protocol;
     this.staticKeys = staticKeys;
+    this.accessFolder = accessFolder;
     this.list = list;
+  }
+
+  // The access store's folder, or "" for none (only with protocol 1)
+  public String accessFolder() {
+    return accessFolder;
   }
 
   // 1 or 2
@@ -449,8 +460,15 @@ public final class Settings {
     }
 
     HandshakeA.RelayKeys keys = protocol == 2 ? staticKeys(given.get("staticKeys")) : null;
+    String accessFolder = path(given.get("accessFolder"), "accessFolder", false);
+
+    // A version 2 relay takes approved players only (CRYPTO.md section 6): with no store to ask, it could take nobody
+    if (protocol == 2 && accessFolder.isEmpty()) {
+      throw new Refused("accessFolder is needed for protocol 2, which takes approved players only: the deploy makes it (deploy/README.md)");
+    }
+
     ListSettings list = given.containsKey("list") ? parseList(given.get("list"), ownRegion, ownKey, keys) : null;
-    return new Settings(ownRegion, ownKey, relayAddress, controlPort, relayPorts, logFile, protocol, keys, list);
+    return new Settings(ownRegion, ownKey, relayAddress, controlPort, relayPorts, logFile, protocol, keys, accessFolder, list);
   }
 
   // The settings from a file. At most MOST_SETTINGS_BYTES are read, so a file that's far too big is never read whole.

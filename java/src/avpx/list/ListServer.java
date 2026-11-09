@@ -2,6 +2,7 @@ package avpx.list;
 
 import avpx.Fatal;
 import avpx.Settings;
+import avpx.access.AccessStore;
 import avpx.relay.AddressHasher;
 import avpx.relay.PerSender;
 import avpx.relay.RandomBytes;
@@ -71,6 +72,11 @@ public final class ListServer {
   static final double REQUEST_BURST = 20;
   static final double LIST_RATE = 1;
   static final double LIST_BURST = 5;
+  // POST /v1/access-requests, from one address: 1 a minute, and 10 an hour (agreed with Third and Fourth, 2026-11-09)
+  static final double ACCESS_PER_MINUTE_RATE = 1.0 / 60;
+  static final double ACCESS_PER_MINUTE_BURST = 1;
+  static final double ACCESS_PER_HOUR_RATE = 10.0 / 3600;
+  static final double ACCESS_PER_HOUR_BURST = 10;
   static final double EVERYONE_RATE = 500;
   static final double EVERYONE_BURST = 1000;
   static final int MOST_SENDERS = 10000;
@@ -125,7 +131,10 @@ public final class ListServer {
   private final AddressHasher hasher = new AddressHasher(RandomBytes.secure());
   private final PerSender perAddress;
   private final PerSender lists;
+  private final PerSender accessPerMinute;
+  private final PerSender accessPerHour;
   private final TokenBucket everyone;
+  private final AccessStore access;
   private final Map<String, Integer> open = new HashMap<>();
 
   private final Semaphore slots = new Semaphore(MOST_CONNECTIONS);
@@ -136,9 +145,10 @@ public final class ListServer {
   private volatile boolean running = true;
   private volatile boolean failed;
 
-  private ListServer(Listings listings, Consumer<String> log, LongSupplier now, Runnable whenFailed, ServerSocket server, Path certFile,
-      Path keyFile, Certificates.Loaded certificate) {
+  private ListServer(Listings listings, AccessStore access, Consumer<String> log, LongSupplier now, Runnable whenFailed, ServerSocket server,
+      Path certFile, Path keyFile, Certificates.Loaded certificate) {
     this.listings = listings;
+    this.access = access;
     this.log = log;
     this.now = now;
     this.whenFailed = whenFailed;
@@ -148,15 +158,18 @@ public final class ListServer {
     this.certificate = certificate;
     this.perAddress = new PerSender(REQUEST_RATE, REQUEST_BURST, MOST_SENDERS, hasher);
     this.lists = new PerSender(LIST_RATE, LIST_BURST, MOST_SENDERS, hasher);
+    this.accessPerMinute = new PerSender(ACCESS_PER_MINUTE_RATE, ACCESS_PER_MINUTE_BURST, MOST_SENDERS, hasher);
+    this.accessPerHour = new PerSender(ACCESS_PER_HOUR_RATE, ACCESS_PER_HOUR_BURST, MOST_SENDERS, hasher);
     this.everyone = new TokenBucket(EVERYONE_RATE, EVERYONE_BURST);
     this.timers = Executors.newSingleThreadScheduledExecutor(task -> new Thread(task, "list-timers"));
   }
 
   // Reads the certificate, opens the HTTPS port, and starts. settings: the list's settings (its address, port and certificate files).
-  // listings: what it serves. log: where its lines go. now: the time in milliseconds since 1970-01-01 UTC. whenFailed: what to do if
-  // one of its timers stops on an error nobody expected (avpx/Fatal.java), once: Main stops the server, for systemd to start it again.
-  public static ListServer start(Settings.ListSettings settings, Listings listings, Consumer<String> log, LongSupplier now, Runnable whenFailed)
-      throws CertificateProblem, IOException {
+  // listings: what it serves. access: the access store, or null for none (its call is then "closed"). log: where its lines go. now: the
+  // time in milliseconds since 1970-01-01 UTC. whenFailed: what to do if one of its timers stops on an error nobody expected
+  // (avpx/Fatal.java), once: Main stops the server, for systemd to start it again.
+  public static ListServer start(Settings.ListSettings settings, Listings listings, AccessStore access, Consumer<String> log,
+      LongSupplier now, Runnable whenFailed) throws CertificateProblem, IOException {
     Path certFile = Path.of(settings.certFile());
     Path keyFile = Path.of(settings.keyFile());
     Certificates.Loaded certificate = Certificates.load(certFile, keyFile);
@@ -175,7 +188,7 @@ public final class ListServer {
       throw e;
     }
 
-    ListServer list = new ListServer(listings, log, now, whenFailed, server, certFile, keyFile, certificate);
+    ListServer list = new ListServer(listings, access, log, now, whenFailed, server, certFile, keyFile, certificate);
 
     // A timer whose task throws is never run again, and Java tells nobody: so each run is one Fatal.turn, and a failure stops the server
     list.timers.scheduleAtFixedRate(() -> list.guarded(list::tick), TICK_MILLISECONDS, TICK_MILLISECONDS, TimeUnit.MILLISECONDS);
@@ -333,14 +346,17 @@ public final class ListServer {
     long at = now.getAsLong();
     boolean isList = head.method().equals("GET")
         && (head.path().equals("/v1/games") || head.path().equals("/v1/relays") || head.path().equals("/v1/relay-keys"));
+    boolean isAccess = head.path().equals(AccessRequests.PATH);
     boolean allowed;
 
     synchronized (lock) {
-      allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at)) && everyone.take(at);
+      allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at))
+          && (!isAccess || (accessPerMinute.allows(address, at) && accessPerHour.allows(address, at))) && everyone.take(at);
     }
 
     if (!allowed) {
-      sendEarly(tls, out, in, error(429, "too many requests: wait and try again"));
+      // The access call answers in its own shape, as the game's page reads nothing else there
+      sendEarly(tls, out, in, isAccess ? AccessRequests.busy() : error(429, "too many requests: wait and try again"));
       return;
     }
 
@@ -365,8 +381,9 @@ public final class ListServer {
         return;
       }
 
-      // Digits, but more than a body may be (however many digits: Json.digitsValue never throws)
-      long declaredLength = Json.digitsValue(declared, Requests.MOST_BODY_BYTES);
+      // Digits, but more than a body may be (however many digits: Json.digitsValue never throws). The access call's body holds a player's
+      // public keys, so it may be 4 KB; every other call's, 1 KB.
+      long declaredLength = Json.digitsValue(declared, isAccess ? AccessRequests.MOST_BODY_BYTES : Requests.MOST_BODY_BYTES);
 
       if (declaredLength < 0) {
         sendEarly(tls, out, in, error(413, "the body is too big"));
@@ -386,7 +403,7 @@ public final class ListServer {
     Routes.Answer answer;
 
     synchronized (lock) {
-      answer = Routes.handle(listings, head.method(), head.path(), head.query(), body, now.getAsLong());
+      answer = Routes.handle(listings, access, head.method(), head.path(), head.query(), body, now.getAsLong());
     }
 
     send(out, answer);
@@ -475,6 +492,16 @@ public final class ListServer {
 
     for (String line : lines) {
       log.accept(line);
+    }
+
+    // The owner's decisions are taken here too, for a list whose relay doesn't take them (a version 1 relay); the store has its own lock.
+    // Its counts go with the list's, once a minute.
+    if (access != null) {
+      access.turn(now.getAsLong());
+
+      if (!lines.isEmpty()) {
+        log.accept(access.countsLine());
+      }
     }
   }
 

@@ -176,30 +176,57 @@ jobs:
           grep -q '^NOT RUN  the list' smoke.out || { echo "the relay-only run didn't say the list's checks were left out"; exit 1; }
           exit "$status"
 
-      # A version 2 relay ("protocol": 2; relay-only, as version 2's list isn't built yet), its static keys made fresh by MakeRelayKeys, and
-      # Smoke --installed against it as the deploy will run it: SmokeV2's pin to crypto-v2.json first, then a whole game, sealed
-      - name: A version 2 Java relay, and Smoke --installed against it (the pin first)
+      # A version 2 relay and its list on one machine ("protocol": 2: approved players only), its static keys made fresh by MakeRelayKeys
+      # (from the smoke jar, as on a deployed machine), and Smoke --installed against it as the deploy will run it. The way in is the real
+      # one, end to end (PO's ruling, 2026-11-09):
+      #   1. Smoke makes two fresh players, here, gone with the runner: only their fingerprints are printed, never their keys;
+      #   2. it sends their two access requests to the list, as the game's page does;
+      #   3. this step approves them as the owner's own tools do: a decisions file in the access folder, this user's own, 0600, written
+      #      under another name and renamed, which the server reads as hostile input like any other;
+      #   4. Smoke then checks a player nobody approved gets nothing, SmokeV2's pin to crypto-v2.json, and plays a whole game, sealed.
+      # Nothing here approves anyone on any real server: no tool for that is in this repository (the owner's rule).
+      - name: A version 2 Java relay and list; access asked, approved by a decisions file, then Smoke --installed (the pin first)
         run: |
           dir="$RUNNER_TEMP/smoke-v2"
           mkdir -p "$dir"
+          # The access store's folder, as systemd's StateDirectory makes /var/lib/avpx on a deployed machine: this user's own, 0700
+          access="$RUNNER_TEMP/smoke-v2-access"
+          mkdir -m 0700 "$access"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -keyout "$dir/privkey.pem" -out "$dir/list-v2.pem" 2> /dev/null
           key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-          keys=$("$JAVA_HOME/bin/java" -cp "$GITHUB_WORKSPACE/java/build/tools:$GITHUB_WORKSPACE/java/build/server" avpx.tools.MakeRelayKeys \
+          keys=$("$JAVA_HOME/bin/java" -cp "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" avpx.tools.MakeRelayKeys \
             | sed -n '/^"staticKeys": {$/,/^}$/p')
-          printf '{ "region": "saopaulo", "passKey": "%s", "relayAddress": "127.0.0.1", "controlPort": 27500, "relayPorts": "27501-27564",\n  "protocol": 2,\n%s\n}\n' \
-            "$key" "$keys" > "$dir/settings.json"
+          printf '{ "region": "saopaulo", "passKey": "%s", "relayAddress": "127.0.0.1", "controlPort": 27500, "relayPorts": "27501-27564",\n  "protocol": 2, "accessFolder": "%s",\n  "list": { "address": "127.0.0.1", "port": 8443, "certFile": "%s", "keyFile": "%s",\n    "relays": [{ "region": "saopaulo", "host": "localhost", "port": 27500 }] },\n%s\n}\n' \
+            "$key" "$access" "$dir/list-v2.pem" "$dir/privkey.pem" "$keys" > "$dir/settings.json"
           sudo install -m 0644 "$dir/settings.json" /etc/avpx/settings.json
           cd "$dir"
+          smoke() { "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" "$@"; }
+          smoke --make-identities "$dir/identities" > fingerprints.txt
+          host=$(sed -n 's/^host \([0-9a-f]\{32\}\) .*$/\1/p' fingerprints.txt)
+          joiner=$(sed -n 's/^joiner \([0-9a-f]\{32\}\) .*$/\1/p' fingerprints.txt)
+          test -n "$host" && test -n "$joiner" || { echo "--make-identities didn't print two fingerprints"; exit 1; }
           "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-server.jar" > server.out 2>&1 &
           server=$!
           status=0
-          "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" --installed > smoke.out 2>&1 || status=$?
+          smoke --installed --request-access "$dir/identities" > request.out 2>&1 || status=$?
+          (umask 077 && printf '%s approved\n%s approved\n' "$host" "$joiner" > "$access/.decisions.ci")
+          mv "$access/.decisions.ci" "$access/decisions.$(date +%s%N)"
+          sleep 3
+          smoke --installed --identities "$dir/identities" > smoke.out 2>&1 || status=$?
           kill "$server"
           wait "$server" || true
-          cat smoke.out
+          rm -f "$dir/identities"
+          cat request.out smoke.out
           echo "----- what the version 2 server wrote to its screen"
           cat server.out
+          grep -q "^PASS  the host's access request" request.out || { echo "the host's access request wasn't taken"; exit 1; }
+          grep -q "^PASS  the joiner's access request" request.out || { echo "the joiner's access request wasn't taken"; exit 1; }
+          if ls "$access"/decisions.* > /dev/null 2>&1; then echo "the decisions file wasn't taken in"; exit 1; fi
           grep -q '^PASS  the pin' smoke.out || { echo "the version 2 run didn't pass its pin to crypto-v2.json"; exit 1; }
-          grep -q '^NOT RUN  the list' smoke.out || { echo "the version 2 run didn't say the list's checks were left out"; exit 1; }
+          grep -q '^PASS  handshake A for a player nobody approved' smoke.out || { echo "an unapproved player wasn't refused"; exit 1; }
+          grep -q '^PASS  handshake A for the joiner' smoke.out || { echo "the approved players' handshakes didn't pass"; exit 1; }
+          grep -q '^NOT RUN  the list' smoke.out || { echo "the version 2 run didn't say which list checks were left out"; exit 1; }
           exit "$status"
 
   takeouts:

@@ -1075,7 +1075,7 @@ file: java/src/avpx/list/ListServer.java
 check: live
 file: java/src/avpx/list/ListServer.java
 <<< from
-      long declaredLength = Json.digitsValue(declared, Requests.MOST_BODY_BYTES);
+      long declaredLength = Json.digitsValue(declared, isAccess ? AccessRequests.MOST_BODY_BYTES : Requests.MOST_BODY_BYTES);
 <<< to
       long declaredLength = Json.digitsValue(declared, Long.MAX_VALUE);
 >>>
@@ -1592,7 +1592,8 @@ file: java/src/avpx/list/ListServer.java
 check: live
 file: java/src/avpx/list/ListServer.java
 <<< from
-      allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at)) && everyone.take(at);
+      allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at))
+          && (!isAccess || (accessPerMinute.allows(address, at) && accessPerHour.allows(address, at))) && everyone.take(at);
 <<< to
       allowed = true;
 >>>
@@ -1847,21 +1848,325 @@ file: java/src/avpx/Settings.java
   private static final int MOST_SETTINGS_BYTES = 1024 * 1024;
 >>>
 
-=== a relay's fingerprint without its words
+=== a relay's id without its words
 check: tests
-file: java/src/avpx/v2/RelayFingerprint.java
+file: java/src/avpx/v2/RelayId.java
 <<< from
       sha.update(WORDS);
 <<< to
 >>>
 
-=== a relay's fingerprint from keys of any size
+=== a relay's id from keys of any size
 check: tests
-file: java/src/avpx/v2/RelayFingerprint.java
+file: java/src/avpx/v2/RelayId.java
 <<< from
     if (p384Public == null || p384Public.length != P384.PUBLIC_BYTES || kemPublic == null
         || kemPublic.length != MlKem.ENCAPSULATION_KEY_BYTES) {
-      throw new IllegalArgumentException("RelayFingerprint: the keys are 97 and 1,568 bytes");
+      throw new IllegalArgumentException("RelayId: the keys are 97 and 1,568 bytes");
     }
 <<< to
+>>>
+
+# ----- Handshake A as pqIK, approved players only, and the access store (CRYPTO.md section 6, server #24), added 2026-11-09
+
+=== A1's s isn't checked as two keys (refusal 23)
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      if (playerStatic == null || playerStaticKem == null) {
+        return Read.refused(REFUSED_NOT_KEYS);
+      }
+<<< to
+>>>
+
+=== any player is taken: approval isn't asked (refusal 22)
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      if (!approved.test(player)) {
+        return Read.refused(REFUSED_NOT_APPROVED);
+      }
+<<< to
+>>>
+
+=== the relay leaves ss out of A1's chain
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      mix(noise, P384.agree(relay.p384().getPrivate(), playerStatic));
+<<< to
+>>>
+
+=== the relay leaves se out of A2's chain
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      mix(noise, P384.agree(ephemeral.getPrivate(), playerStatic));
+<<< to
+>>>
+
+=== A2's skem goes to the game's ephemeral ML-KEM key, not the player's static one
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      MlKem.Encapsulated toPlayer = MlKem.encapsulate(playerStaticKem, random);
+<<< to
+      MlKem.Encapsulated toPlayer = MlKem.encapsulate(gameEphemeralKem, random);
+>>>
+
+=== the game opens A2's skem with its ephemeral ML-KEM key
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+        byte[] staticSecret = MlKem.decapsulate(player.kem().getPrivate(), toStatic);
+<<< to
+        byte[] staticSecret = MlKem.decapsulate(ephemeralKem.getPrivate(), toStatic);
+>>>
+
+=== a handshake datagram may be one of 4 fragments only
+check: tests
+file: java/src/avpx/v2/Fragments.java
+<<< from
+  public static final int MOST_FRAGMENTS = 5;
+<<< to
+  public static final int MOST_FRAGMENTS = 4;
+>>>
+
+=== a revoke ends no session
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (s.player.equals(player)) {
+        core.endSession(s);
+        end(s);
+        ended++;
+      }
+<<< to
+>>>
+
+=== the relay never takes the revokes the approvals give back
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    for (String player : approvals.takeRevoked(now)) {
+      revoke(player);
+    }
+<<< to
+>>>
+
+=== a revoked host's game goes on
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      if (game.host != null && game.host.session() == session) {
+        closeGame(game);
+        counts.closed++;
+      }
+<<< to
+>>>
+
+=== a decision may move any state to any other
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      boolean allowed = e != null && ((e.state() == State.WAITING && (to == State.APPROVED || to == State.REFUSED))
+          || (e.state() == State.APPROVED && to == State.REVOKED));
+<<< to
+      boolean allowed = e != null;
+>>>
+
+=== a decisions line may be written loosely
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+  private static final Pattern DECISION_LINE = Pattern.compile("([0-9a-f]{32}) (approved|refused|revoked)");
+<<< to
+  private static final Pattern DECISION_LINE = Pattern.compile("([0-9a-fA-F]{32}) +(approved|refused|revoked|waiting)\r?");
+>>>
+
+=== a decisions file that's a link is followed
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+<<< to
+    BasicFileAttributes attributes = Files.readAttributes(file, BasicFileAttributes.class);
+>>>
+
+=== a waiting request is never forgotten
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (e.state() == State.WAITING && (now - e.firstSeen() >= WAITING_LIFE_MILLISECONDS)) {
+<<< to
+      if (e.state() == State.WAITING && false) {
+>>>
+
+=== no cap on the requests waiting
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    if (waiting() >= MOST_WAITING || entries.size() >= MOST_RECORDS) {
+<<< to
+    if (entries.size() >= MOST_RECORDS) {
+>>>
+
+=== the store's own file isn't held to what the server writes
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (!isFingerprint(fp) || !isId(id) || !id.startsWith(fp) || !isName(name) || state == null || firstSeen < 0) {
+<<< to
+      if (state == null) {
+>>>
+
+=== a name may hold " or \
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (c < 32 || c > 126 || c == '"' || c == '\\') {
+<<< to
+      if (c < 32 || c > 126) {
+>>>
+
+=== a revoke isn't given back to the relay
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (line[1].equals("revoked")) {
+        revoked.add(next.get(line[0]).id());
+      }
+<<< to
+>>>
+
+=== an access request's key isn't held to being two keys
+check: tests
+file: java/src/avpx/list/AccessRequests.java
+<<< from
+    if (P384.decode(p384) == null || MlKem.decode(kem) == null) {
+<<< to
+    if (false) {
+>>>
+
+=== an access request's key is decoded before its letters are checked
+check: tests
+file: java/src/avpx/list/AccessRequests.java
+<<< from
+    byte[] statics = KEY.matcher(key).matches() ? Base64.getDecoder().decode(key) : null;
+<<< to
+    byte[] statics = Base64.getDecoder().decode(key);
+>>>
+
+=== an access request's name isn't checked
+check: tests
+file: java/src/avpx/list/AccessRequests.java
+<<< from
+    if (!AccessStore.isName(name)) {
+      return answer(400, "error", "name");
+    }
+<<< to
+>>>
+
+=== the access call isn't held to one a minute from an address
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+          && (!isAccess || (accessPerMinute.allows(address, at) && accessPerHour.allows(address, at))) && everyone.take(at);
+<<< to
+          && everyone.take(at);
+>>>
+
+=== the access call's body is held to 1 KB, too small for a player's keys
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+      long declaredLength = Json.digitsValue(declared, isAccess ? AccessRequests.MOST_BODY_BYTES : Requests.MOST_BODY_BYTES);
+<<< to
+      long declaredLength = Json.digitsValue(declared, Requests.MOST_BODY_BYTES);
+>>>
+
+# ----- Approval by the whole id, owners and modes, the unit's state folder, and the access code (CRYPTO.md sections 6 and 8), 2026-11-09
+
+=== the relay asks about the 16-byte fingerprint, not the whole id
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      String player = Identity.idHex(playerP384, playerKemBytes);
+<<< to
+      String player = Identity.fingerprintHex(playerP384, playerKemBytes);
+>>>
+
+=== the store approves by the fingerprint part alone
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    return e != null && e.id().equals(id) && e.state() == State.APPROVED;
+<<< to
+    return e != null && e.state() == State.APPROVED;
+>>>
+
+=== a request with another player's fingerprint is taken as theirs
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (!known.id().equals(id)) {
+        counts.notTheirs++;
+        return Reply.NOT_THEIRS;
+      }
+<<< to
+>>>
+
+=== a decisions file anyone could have written is read
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      byte[] bytes = ownOnly(file, owner) ? readAtMost(file, MOST_DECISION_FILE_BYTES) : null;
+<<< to
+      byte[] bytes = readAtMost(file, MOST_DECISION_FILE_BYTES);
+>>>
+
+=== an access folder others can open is taken
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+        if (!owner.equals(System.getProperty("user.name")) || !a.permissions().equals(FOLDER_MODE)) {
+<<< to
+        if (!owner.equals(System.getProperty("user.name"))) {
+>>>
+
+=== a store file others can read is taken
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (!ownOnly(file, owner)) {
+        throw new Refused(STORE_FILE + " must be the access folder's owner's, with rights for nobody else (0600)");
+      }
+<<< to
+>>>
+
+=== a relay's id is cut to 16 bytes
+check: tests
+file: java/src/avpx/v2/RelayId.java
+<<< from
+      return HexFormat.of().formatHex(sha.digest());
+<<< to
+      return HexFormat.of().formatHex(sha.digest()).substring(0, 32);
+>>>
+
+=== the unit gives the server no state folder to write the store in
+check: tests
+file: deploy/avpx-java.service
+<<< from
+StateDirectory=avpx
+<<< to
+# StateDirectory=avpx
+>>>
+
+=== the access code reads each byte's bits the wrong way round
+check: tests
+file: java/src/avpx/access/AccessCode.java
+<<< from
+        value = (value << 1) | ((b[k / 8] >> (7 - k % 8)) & 1);
+<<< to
+        value = (value << 1) | ((b[k / 8] >> (k % 8)) & 1);
 >>>

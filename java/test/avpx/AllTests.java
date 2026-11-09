@@ -27,6 +27,10 @@ public final class AllTests {
     avpx.list.StrictJsonTest.register();
     Tests.file("ListTest");
     avpx.list.ListTest.register();
+    Tests.file("AccessRequestsTest");
+    avpx.list.AccessRequestsTest.register();
+    Tests.file("AccessStoreTest");
+    avpx.access.AccessStoreTest.register();
     Tests.file("HttpTest");
     avpx.list.HttpTest.register();
     Tests.file("SettingsTest");

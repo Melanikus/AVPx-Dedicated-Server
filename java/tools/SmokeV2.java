@@ -7,15 +7,19 @@ import avpx.list.Json;
 import avpx.v2.Channel;
 import avpx.v2.Fragments;
 import avpx.v2.HandshakeA;
+import avpx.v2.Identity;
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.DatagramSocket;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.SecureRandom;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
 import java.util.HexFormat;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -44,7 +48,8 @@ final class SmokeV2 {
   private record Player(DatagramSocket socket, Channel channel) {
   }
 
-  static void run(Settings settings) throws Exception {
+  // identities: the file --identities named (two players the owner approved), or null for none
+  static void run(Settings settings, Path identities) throws Exception {
     String why = pin();
     Smoke.check(why == null, "the pin: this copy of version 2's game side makes crypto-v2.json's handshake A, byte for byte",
         why == null ? "" : why);
@@ -60,14 +65,30 @@ final class SmokeV2 {
     String region = settings.region();
     byte[] p384 = settings.staticKeys().p384Public();
     byte[] kem = settings.staticKeys().kemPublic();
+    Identity[] players = identities == null ? null : SmokeIdentities.read(identities);
+
+    if (identities != null && players == null) {
+      Smoke.check(false, "the identities file " + identities + " holds two identities as --make-identities writes them");
+      return;
+    }
 
     try (DatagramSocket host = Smoke.udp(); DatagramSocket joiner = Smoke.udp(); DatagramSocket stranger = Smoke.udp()) {
       if (!relayAnswers(host, control)) {
         return;
       }
 
-      Player h = handshake(host, control, region, p384, kem, "the host");
-      Player j = handshake(joiner, control, region, p384, kem, "the joiner");
+      // A player nobody approved, made here and now: the relay must give it nothing
+      handshake(stranger, control, region, p384, kem, SmokeIdentities.fresh(), false, "a player nobody approved");
+
+      if (players == null) {
+        System.out.println("NOT RUN  the whole game through the relay: version 2 takes approved players only. Make two identities with"
+            + " --make-identities <file>, send their requests with --installed --request-access <file>, have the owner approve the two"
+            + " codes, then run with --installed --identities <file>.");
+        return;
+      }
+
+      Player h = handshake(host, control, region, p384, kem, players[0], true, "the host");
+      Player j = handshake(joiner, control, region, p384, kem, players[1], true, "the joiner");
 
       if (h == null || j == null) {
         return;
@@ -126,8 +147,8 @@ final class SmokeV2 {
       Smoke.check(Smoke.notLoopback == 0, "every packet came from 127.0.0.1");
     }
 
-    System.out.println("NOT RUN  the list's checks and the log's: version 2's list isn't built yet. This is a run of the relay's version"
-        + " 2 checks only.");
+    System.out.println("NOT RUN  the list's games checks and the log's: on a version 2 machine Smoke reaches the list only through"
+        + " --request-access. This is a run of the relay's version 2 checks.");
   }
 
   // ----- The pin
@@ -147,15 +168,18 @@ final class SmokeV2 {
       Map<String, Object> a = Json.object(top.get("handshakeA"));
       Map<String, Object> relay = Json.object(a.get("relayStatic"));
       Map<String, Object> game = Json.object(a.get("gameEphemeral"));
+      Map<String, Object> playerFields = Json.object(a.get("player"));
       KeyPair e = P384.pair(hex(game.get("p384Private")), hex(game.get("p384Public")));
       KeyPair ek = MlKem.fromSeed(hex(game.get("mlkemSeed")));
+      KeyPair s = P384.pair(hex(playerFields.get("p384Private")), hex(playerFields.get("p384Public")));
+      KeyPair sk = MlKem.fromSeed(hex(playerFields.get("mlkemSeed")));
 
-      if (e == null || ek == null) {
+      if (e == null || ek == null || s == null || sk == null) {
         return "the file's game keys don't load";
       }
 
       HandshakeA.Initiator initiator = HandshakeA.writeA1((String) a.get("region"), hex(relay.get("p384Public")),
-          hex(relay.get("mlkemPublic")), e, ek, hex(Json.object(a.get("skem")).get("m")));
+          hex(relay.get("mlkemPublic")), Identity.of(s, sk), e, ek, hex(Json.object(a.get("skem")).get("m")));
 
       if (!Arrays.equals(initiator.a1(), hex(a.get("a1")))) {
         return "A1 differs from the file's";
@@ -208,8 +232,11 @@ final class SmokeV2 {
     return Fragments.cut(Fragments.toRelay(), 1, id, new byte[16], new byte[0]).get(0);
   }
 
-  // Handshake A, datagram by datagram: the player, or null if the relay didn't prove itself
-  private static Player handshake(DatagramSocket s, int control, String region, byte[] p384, byte[] kem, String who) throws IOException {
+  // Handshake A, datagram by datagram, as player. approved says whether the relay should take this player (CRYPTO.md section 6). If it
+  // should: the player's side, once the relay has proved itself, or null. If not: the check is that nothing at all comes back (refusal
+  // 22 is answered with nothing), and it gives null.
+  private static Player handshake(DatagramSocket s, int control, String region, byte[] p384, byte[] kem, Identity player, boolean approved,
+      String who) throws IOException {
     byte[] id = Smoke.random(8);
     Smoke.Got cookieAnswer = Smoke.ask(s, control, a0(id));
 
@@ -219,27 +246,47 @@ final class SmokeV2 {
     }
 
     byte[] cookie = Arrays.copyOfRange(cookieAnswer.data(), 16, 32);
-    HandshakeA.Initiator game = HandshakeA.writeA1(region, p384, kem, new SecureRandom());
+    HandshakeA.Initiator game = HandshakeA.writeA1(region, p384, kem, player, new SecureRandom());
 
     for (byte[] d : Fragments.cut(Fragments.toRelay(), 3, id, cookie, game.a1())) {
       Smoke.send(s, control, d);
     }
 
-    Smoke.Got first = Smoke.next(s, 2000);
-    Smoke.Got second = Smoke.next(s, 2000);
+    List<Smoke.Got> got = new ArrayList<>();
+
+    for (int i = 0; i < 3; i++) {
+      Smoke.Got g = Smoke.next(s, 2000);
+
+      if (g == null) {
+        break;
+      }
+
+      got.add(g);
+    }
+
+    if (!approved) {
+      Smoke.check(got.isEmpty(), "handshake A for " + who + ": no A2, and no answer at all (refusal 22, answered with nothing)");
+      return null;
+    }
+
     HandshakeA.Initiator.Done done = null;
+    Fragments.Assembly a2 = null;
 
-    if (first != null && second != null && first.data().length == 1200 && second.data().length == 1200) {
-      Fragments.Fragment f = Fragments.read(Fragments.toRelay(), first.data());
-      Fragments.Assembly a2 = f == null ? null : new Fragments.Assembly(f);
+    for (Smoke.Got g : got) {
+      Fragments.Fragment f = g.data().length == 1200 ? Fragments.read(Fragments.toRelay(), g.data()) : null;
 
-      if (a2 != null && a2.add(f) && a2.add(Fragments.read(Fragments.toRelay(), second.data())) && a2.complete()) {
-        done = game.readA2(a2.message());
+      if (f == null || (a2 == null ? !(a2 = new Fragments.Assembly(f)).add(f) : !a2.add(f))) {
+        a2 = null;
+        break;
       }
     }
 
-    Smoke.check(done != null,
-        "handshake A for " + who + ": A2 in 2 datagrams of 1,200, and the relay proves its static keys are the installed ones");
+    if (got.size() == 3 && a2 != null && a2.complete()) {
+      done = game.readA2(a2.message());
+    }
+
+    Smoke.check(done != null, "handshake A for " + who
+        + ": A2 in 3 datagrams of 1,200, for A1's 5, and the relay proves its static keys are the installed ones");
 
     if (done == null) {
       return null;

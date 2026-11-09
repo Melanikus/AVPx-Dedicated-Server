@@ -29,13 +29,15 @@ import java.util.Set;
 //
 //   On the control port, a 1,200-byte handshake datagram (Fragments.java):
 //   - A0, COOKIE_ASK (kind 1): answered with A0', COOKIE (kind 2), 64 bytes holding the handshake's id and its cookie. Nothing is kept.
-//   - A1 (kind 3), in 3 fragments. Each fragment's cookie is checked first, with nothing kept to check it (refusal 5). Then the
+//   - A1 (kind 3), in 5 fragments. Each fragment's cookie is checked first, with nothing kept to check it (refusal 5). Then the
 //     fragments are put together: one handshake at a time from each address and port, at most 16 from one address and 1,000 in all,
-//     each for at most 2 s. When A1 is whole, HandshakeA reads it (refusal 8 if its tag fails), and the relay answers with A2, in 2
-//     datagrams. A2 is kept 10 s: the same A1 again gets the same A2, byte for byte, never a new one, which would make a second set of
-//     keys (section 6, "Losses").
+//     each for at most 2 s. When A1 is whole, HandshakeA reads it: the player's static keys in it must be keys (refusal 23) and an
+//     approved player's (refusal 22), and its tags must hold (refusal 8). Then the relay answers with A2, in 3 datagrams. A2 is kept
+//     10 s: the same A1 again gets the same A2, byte for byte, never a new one, which would make a second set of keys (section 6,
+//     "Losses").
 //   - A3 (kind 5): its cookie checked the same way; then it must be exactly the 16 bytes the game's keys make (HandshakeA.expect), from
-//     A1's own address and port (refusal 18). Then the session is the game's.
+//     A1's own address and port (refusal 18). Then the session is the game's, and the player A1 named is proved: only they could open
+//     A2's encapsulation to their static ML-KEM key and so make A3.
 //   On the control port, a 104-byte sealed control message (Channel.java): opened under its session, and the 64-byte message in it
 //   handed to RelayCore, whose answers are each sealed under the session they're for. If A3 was lost, the game's first sealed message
 //   that opens under the handshake's keys confirms them instead.
@@ -44,10 +46,15 @@ import java.util.Set;
 //   bytes, section 9). Nothing else goes through (refusal 19): no plaintext, ever.
 //   Anything else: the wrong size (1; every version 1 message is one), another magic (2), another version (3), an unknown kind (4).
 //
+// APPROVED PLAYERS ONLY (CRYPTO.md section 6, server #24): there's no open mode. Whether a player's id is approved is asked of the
+// approvals (Approvals.java) at each A1, as the owner's last decision left the approved set. Once a turn (tick), the approvals say whose
+// approval was taken back: that player can start no new handshake, and every session of theirs ends at once, with the games they host and
+// the joiner's ports they hold (revoke).
+//
 // WHY THIS ORDER: the cheap checks first, and nothing kept before the cookie shows the sender gets packets at its address. The
 // expensive work (ECDH and ML-KEM) starts only when the whole of A1 is in, and only within the limits on handshakes started (2 a second
 // for one address and port, 200 a second for everyone). The relay never sends more datagrams than it was sent: one smaller for A0, and
-// 2 for A1's 3.
+// 3 for A1's 5.
 //
 // HOW LONG A SESSION LASTS: while a game or a joiner's port holds it (its host's, or the two ends of a joiner's port, whose hellos may
 // come again from a new address), or for 60 s (sessionIdleMilliseconds) after the last message that opened; and never past 24 hours or
@@ -90,7 +97,7 @@ public final class SealedRelay implements Relay {
   private static final int GAME_OVERHEAD = 28;
   private static final long COOKIE_KEY_LIFE_MILLISECONDS = 24L * 60 * 60 * 1000;
   private static final int COOKIE_KEY_BYTES = 32;
-  private static final int REFUSALS = 20;
+  private static final int REFUSALS = 23;
 
   // A1 being put together, from one address and port
   private record Assembling(byte[] id, String address, Fragments.Assembly assembly, long startedAt) {
@@ -105,16 +112,19 @@ public final class SealedRelay implements Relay {
     final List<byte[]> a2;
     final long madeAt;
     final String sessionKey;
+    final String player;                          // the player's id (96 hex digits) A1 named, proved only once the keys are taken
     HandshakeA.Responder.Expected expected;      // null once the keys are taken, or given up on
     int badA3;
 
-    Answered(byte[] id, String address, int port, byte[] a1Hash, List<byte[]> a2, long madeAt, HandshakeA.Responder.Expected expected) {
+    Answered(byte[] id, String address, int port, byte[] a1Hash, List<byte[]> a2, long madeAt, String player,
+        HandshakeA.Responder.Expected expected) {
       this.id = id;
       this.address = address;
       this.port = port;
       this.a1Hash = a1Hash;
       this.a2 = a2;
       this.madeAt = madeAt;
+      this.player = player;
       this.expected = expected;
       this.sessionKey = hex(expected.keys().sessionId());
     }
@@ -125,14 +135,16 @@ public final class SealedRelay implements Relay {
   static final class Session {
     final Channel channel;
     final String key;
+    final String player;                          // the approved player's id, proved by A3: what a revoke ends
     final String firstAddress;
     String address;
     int port;
     long heardAt;
 
-    Session(Channel channel, String key, String address, int port, long now) {
+    Session(Channel channel, String key, String player, String address, int port, long now) {
       this.channel = channel;
       this.key = key;
+      this.player = player;
       this.firstAddress = address;
       this.address = address;
       this.port = port;
@@ -151,11 +163,13 @@ public final class SealedRelay implements Relay {
     long overLimit;
     long noSession;
     long dropped;
+    long revoked;
     final long[] refused = new long[REFUSALS + 1];
   }
 
   private final RelayCore core;
   private final HandshakeA.RelayKeys keys;
+  private final Approvals approvals;
   private final String region;
   private final SecureRandom random;
   private final RandomBytes bytes;
@@ -176,12 +190,14 @@ public final class SealedRelay implements Relay {
   Counts counts = new Counts();
 
   // controlPort, ports, region, passKey and coreLimits are RelayCore's (its games). keys: this relay's static keys, whose public halves
-  // are in the signed directory. bytes: random bytes for the cookie's key and the address hashes (RandomBytes.secure() for the server).
-  // random: for each handshake's keys and session id (a new SecureRandom for the server). now: the time, in milliseconds since 1970.
-  public SealedRelay(int controlPort, int[] ports, String region, byte[] passKey, HandshakeA.RelayKeys keys, RandomBytes bytes,
-      SecureRandom random, RelayCore.Limits coreLimits, Limits limits, long now) {
+  // the list gives games (GET /v1/relay-keys). approvals: which players are approved now, and whose approval was taken back (the access
+  // store, AccessStore.java). bytes: random bytes for the cookie's key and the address hashes (RandomBytes.secure() for the server). random: for
+  // each handshake's keys and session id (a new SecureRandom for the server). now: the time, in milliseconds since 1970.
+  public SealedRelay(int controlPort, int[] ports, String region, byte[] passKey, HandshakeA.RelayKeys keys, Approvals approvals,
+      RandomBytes bytes, SecureRandom random, RelayCore.Limits coreLimits, Limits limits, long now) {
     this.core = RelayCore.sealed(controlPort, ports, region, passKey, bytes, coreLimits, now);
     this.keys = keys;
+    this.approvals = approvals;
     this.region = region;
     this.random = random;
     this.bytes = bytes;
@@ -414,10 +430,11 @@ public final class SealedRelay implements Relay {
       return List.of();
     }
 
-    HandshakeA.Responder responder = HandshakeA.readA1(keys, region, a1, random);
+    HandshakeA.Read read = HandshakeA.readA1(keys, region, a1, approvals::approved, random);
+    HandshakeA.Responder responder = read.responder();
 
     if (responder == null) {
-      return refused(8);
+      return refused(read.refusal());
     }
 
     byte[] a2 = responder.a2();
@@ -432,7 +449,7 @@ public final class SealedRelay implements Relay {
     }
 
     List<byte[]> datagrams = Fragments.cut(TO_RELAY, A2, id, new byte[Fragments.COOKIE_BYTES], a2);
-    Answered answer = new Answered(id.clone(), address, port, a1Hash, datagrams, now, expected);
+    Answered answer = new Answered(id.clone(), address, port, a1Hash, datagrams, now, responder.player(), expected);
     answered.put(hex(id), answer);
     waiting.put(sessionKey, answer);
     heldPerAddress.merge(address, 1, Integer::sum);
@@ -484,7 +501,7 @@ public final class SealedRelay implements Relay {
   // The keys are the game's: a session from them. The channel holds its own copies, so the handshake's are wiped. It keeps the place its
   // handshake held among its address's (A3 comes from A1's own address), so the count isn't changed.
   private Session take(Answered answer, Channel channel, String address, int port, long now) {
-    Session s = new Session(channel, answer.sessionKey, address, port, now);
+    Session s = new Session(channel, answer.sessionKey, answer.player, address, port, now);
     sessions.put(s.key, s);
     waiting.remove(answer.sessionKey);
     answer.expected.keys().split().wipe();
@@ -500,6 +517,34 @@ public final class SealedRelay implements Relay {
       answer.expected = null;
       letGo(answer.address);
     }
+  }
+
+  // ----- A revoke (CRYPTO.md section 6, "A revoked player")
+
+  // The player with this id is no longer approved: every session of theirs ends now, with every game they host and every
+  // joiner's port they're an end of (RelayCore.endSession), and every handshake of theirs still waiting for A3 is given up. A new
+  // handshake of theirs is refused at A1 already, since the approvals no longer say yes. Gives back how many sessions and handshakes
+  // ended. tick calls it for each id the approvals give back; a test may call it itself.
+  public int revoke(String player) {
+    int ended = 0;
+
+    for (Session s : new ArrayList<>(sessions.values())) {
+      if (s.player.equals(player)) {
+        core.endSession(s);
+        end(s);
+        ended++;
+      }
+    }
+
+    for (Answered answer : new ArrayList<>(waiting.values())) {
+      if (answer.player.equals(player)) {
+        giveUp(answer);
+        ended++;
+      }
+    }
+
+    counts.revoked += ended;
+    return ended;
   }
 
   // ----- Sealed messages
@@ -630,7 +675,12 @@ public final class SealedRelay implements Relay {
 
   @Override
   public List<String> tick(long now) {
-    // The games first: one that has just ended no longer holds its host's session below
+    // The owner's revokes first, so a revoked player's sessions end within a turn of the decision (CRYPTO.md section 6)
+    for (String player : approvals.takeRevoked(now)) {
+      revoke(player);
+    }
+
+    // The games next: one that has just ended no longer holds its host's session below
     List<String> lines = core.tick(now);
 
     for (Iterator<Map.Entry<String, Assembling>> it = assembling.entrySet().iterator(); it.hasNext();) {
@@ -696,7 +746,7 @@ public final class SealedRelay implements Relay {
     return "version 2: " + c.asked + " cookies asked, " + c.started + " handshakes started, " + c.again + " A2s sent again, " + c.finished
         + " finished, " + c.ended + " sessions ended, " + c.opened + " sealed messages opened; refused (by CRYPTO.md section 16's numbers): "
         + (refusals.length() > 0 ? refusals : "none") + "; " + c.overLimit + " over a limit, " + c.noSession + " for no session, " + c.dropped
-        + " dropped. Now " + sessions.size() + " sessions, " + assembling.size() + " A1s being put together, " + waiting.size()
-        + " waiting for A3";
+        + " dropped, " + c.revoked + " ended by a revoke. Now " + sessions.size() + " sessions, " + assembling.size()
+        + " A1s being put together, " + waiting.size() + " waiting for A3";
   }
 }

@@ -851,6 +851,31 @@ public final class RelayCore implements Relay {
     }
   }
 
+  // Version 2: a session that's being ended for good, as a revoked player's is (CRYPTO.md section 6). Everything it holds ends now: each
+  // game whose host it is, with every joiner's port of that game, and each joiner's port it's an end of. A session is known by being the
+  // same object (as sessionsInUse keeps them), never by what it holds. Added 2026-11-09 by Melanikus for AVPx Dedicated Server (#24).
+  public void endSession(Object session) {
+    if (session == null) {
+      return;
+    }
+
+    for (Game game : new ArrayList<>(games.values())) {
+      if (game.host != null && game.host.session() == session) {
+        closeGame(game);
+        counts.closed++;
+      }
+    }
+
+    for (Slot slot : slots.values()) {
+      boolean holds = (slot.hostEnd != null && slot.hostEnd.session() == session)
+          || (slot.joinerEnd != null && slot.joinerEnd.session() == session);
+
+      if (slot.state != Slot.State.FREE && holds) {
+        freeSlot(slot);
+      }
+    }
+  }
+
   // Called about once a second: ends what has run out, and gives back the lines to write, if any (counts only, never an address or code)
   @Override
   public List<String> tick(long now) {

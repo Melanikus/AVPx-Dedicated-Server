@@ -69,6 +69,9 @@ mkdir -p build/smoke
 cp -R build/server/avpx build/smoke/
 mkdir -p build/smoke/avpx/tools
 cp build/tools/avpx/tools/Smoke*.class build/smoke/avpx/tools/
+# MakeRelayKeys too, so a version 2 relay's keys are made on its own machine by the very bytes GitHub built (the jars' sha256 in the
+# deploy covers them), with no compiler on the machine: java -cp avpx-smoke.jar avpx.tools.MakeRelayKeys
+cp build/tools/avpx/tools/MakeRelayKeys.class build/smoke/avpx/tools/
 # The known answers SmokeV2 pins version 2's code to before it trusts it to test a relay: in the jar, beside it, the very file built with
 cp ../test-vectors/crypto-v2.json build/smoke/avpx/tools/
 jar_files build/smoke > build/smoke-jar-files.txt

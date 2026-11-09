@@ -14,6 +14,7 @@ import avpx.list.Listings;
 import avpx.testing.ScriptedRandom;
 import avpx.testing.Stringify;
 import avpx.v2.HandshakeA;
+import avpx.v2.Identity;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -38,6 +39,7 @@ public final class SettingsTest {
 
   private static final String KEY = "5a".repeat(32);
   private static final String PARIS_KEY = "7b".repeat(32);
+  private static final String ACCESS = "C:\\AVPx\\access";
 
   // Stands for a field left out ({ ...x, field: undefined } in the Node tests)
   private static final Object LEAVE_OUT = new Object();
@@ -208,19 +210,28 @@ public final class SettingsTest {
       String point = HexFormat.of().formatHex(P384.encode((ECPublicKey) p384.getPublic()));
       String seed = "3c".repeat(64);
       Map<String, Object> keys = object("p384Private", HexFormat.of().formatHex(number), "p384Public", point, "mlkemSeed", seed);
-      Settings s = parse(with(relayOnly(), "protocol", 2, "staticKeys", keys));
+      Settings s = parse(with(relayOnly(), "protocol", 2, "staticKeys", keys, "accessFolder", ACCESS));
       same(s.protocol(), 2, "protocol 2");
       same(HexFormat.of().formatHex(s.staticKeys().p384Public()), point, "its P-384 public key, as written");
       same(s.staticKeys().kemPublic(), MlKem.encode(MlKem.fromSeed(HexFormat.of().parseHex(seed)).getPublic()),
           "its ML-KEM key, made from the seed");
-      HandshakeA.Initiator game = HandshakeA.writeA1("virginia", s.staticKeys().p384Public(), s.staticKeys().kemPublic(),
+      Identity player = Identity.of(P384.generate(ScriptedRandom.seeded(44)), MlKem.generate(ScriptedRandom.seeded(45)));
+      HandshakeA.Initiator game = HandshakeA.writeA1("virginia", s.staticKeys().p384Public(), s.staticKeys().kemPublic(), player,
           ScriptedRandom.seeded(41));
-      ok(HandshakeA.readA1(s.staticKeys(), "virginia", game.a1(), ScriptedRandom.seeded(42)) != null,
+      ok(HandshakeA.readA1(s.staticKeys(), "virginia", game.a1(), fp -> true, ScriptedRandom.seeded(42)).responder() != null,
           "and they work: a game's A1 to those public keys is read with them");
       same(parse(relayOnly()).protocol(), 1, "protocol 1 when none is named");
       same(parse(relayOnly()).staticKeys(), null, "with no static keys");
 
-      Map<String, Object> two = with(relayOnly(), "protocol", 2);
+      Map<String, Object> two = with(relayOnly(), "protocol", 2, "accessFolder", ACCESS);
+      same(s.accessFolder(), ACCESS, "its access folder, as written");
+      same(parse(relayOnly()).accessFolder(), "", "none, on protocol 1, when none is named");
+      same(parse(with(relayOnly(), "accessFolder", ACCESS)).accessFolder(), ACCESS, "protocol 1 may have one, for the list's requests");
+      throwsWith(() -> parse(with(two, "staticKeys", keys, "accessFolder", LEAVE_OUT)), "accessFolder is needed for protocol 2",
+          "protocol 2 with no access folder: it takes approved players only, so it would take nobody");
+      throwsWith(() -> parse(with(two, "staticKeys", keys, "accessFolder", "")), "accessFolder is needed for protocol 2",
+          "and an empty one is none");
+      refused(with(two, "staticKeys", keys, "accessFolder", "x".repeat(261)), "an access folder of 261 characters");
       String other = HexFormat.of().formatHex(P384.encode((ECPublicKey) P384.generate(ScriptedRandom.seeded(43)).getPublic()));
       refused(with(relayOnly(), "protocol", 3), "protocol 3");
       refused(with(relayOnly(), "protocol", "2"), "protocol as text");
@@ -253,7 +264,7 @@ public final class SettingsTest {
       same(parse(withList()).list().relays().get(1).p384(), null, "a relay given neither is a version 1 relay");
 
       Map<String, Object> keys = v2Keys();
-      Settings own2 = parse(with(relaysWith(List.of(own(), paris2)), "protocol", 2, "staticKeys", keys));
+      Settings own2 = parse(with(relaysWith(List.of(own(), paris2)), "protocol", 2, "staticKeys", keys, "accessFolder", ACCESS));
       same(own2.list().relays().get(0).p384(), own2.staticKeys().p384Public(), "on protocol 2, the list's own relay's P-384 key is "
           + "staticKeys' public half");
       same(own2.list().relays().get(0).mlkem(), own2.staticKeys().kemPublic(), "and its ML-KEM key too");
@@ -295,16 +306,26 @@ public final class SettingsTest {
       }
 
       Map<String, Object> most = object("region", "virginia-longest", "passKey", KEY, "relayAddress", "255.255.255.255", "controlPort",
-          65535, "relayPorts", "61000-64999", "logFile", longPath, "protocol", 2, "staticKeys", keys, "list", object("address",
-              "255.255.255.255", "port", 65535, "certFile", longPath, "keyFile", longPath, "relays", relays));
+          65535, "relayPorts", "61000-64999", "logFile", longPath, "protocol", 2, "staticKeys", keys, "accessFolder", longPath, "list",
+          object("address", "255.255.255.255", "port", 65535, "certFile", longPath, "keyFile", longPath, "relays", relays));
       String compact = Stringify.text(most);
-      same(compact.length(), 54840, "the worst case Settings.java gives, written with no spaces");
+      same(compact.length(), 55119, "the worst case Settings.java gives, written with no spaces");
       doesNotThrow(() -> Settings.parse(compact.getBytes(StandardCharsets.US_ASCII)), "it's read");
 
       // The same with a line end and 8 spaces after every { and every comma: more than a person writing it by hand would put in
       String spaced = compact.replace("{", "{\n        ").replace(",", ",\n        ");
       ok(spaced.length() < 64 * 1024, "and with spaces and line ends too");
       doesNotThrow(() -> Settings.parse(spaced.getBytes(StandardCharsets.US_ASCII)), "which is read too");
+    });
+
+    // The unit is what lets the server write its access store at all: everything else on the machine is read only to it
+    // (ProtectSystem=strict), and without these two lines requests.json could never be written
+    test("deploy/avpx-java.service gives the server one place to write, /var/lib/avpx, made by systemd as avpx's own, 0700", () -> {
+      List<String> unit = Files.readAllLines(Path.of("..", "deploy", "avpx-java.service"), StandardCharsets.US_ASCII);
+      ok(unit.contains("StateDirectory=avpx"), "StateDirectory=avpx: systemd makes /var/lib/avpx, owned by the service's user");
+      ok(unit.contains("StateDirectoryMode=0700"), "StateDirectoryMode=0700: with rights for nobody else, as the access store wants");
+      ok(unit.contains("ProtectSystem=strict") && unit.contains("User=avpx"), "and the rest stays read only, for the avpx user");
+      ok(unit.stream().noneMatch(line -> line.startsWith("ReadWritePaths")), "with no other place to write");
     });
 
     test("deploy/settings.example.json is refused as it is, until a real pass key is put in", () -> {

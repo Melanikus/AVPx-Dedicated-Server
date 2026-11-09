@@ -55,9 +55,9 @@ public final class FragmentsTest {
       same(Fragments.count(1), 1, "1 byte");
       same(Fragments.count(1164), 1, "1,164 bytes");
       same(Fragments.count(1165), 2, "1,165 bytes");
-      same(Fragments.count(HandshakeA.A2_BYTES), 2, "A2, 1,689 bytes");
-      same(Fragments.count(HandshakeA.A1_BYTES), 3, "A1, 3,249 bytes");
-      same(Fragments.count(4656), 4, "4,656 bytes, the most");
+      same(Fragments.count(HandshakeA.A2_BYTES), 3, "A2, 3,257 bytes");
+      same(Fragments.count(HandshakeA.A1_BYTES), 5, "A1, 4,930 bytes");
+      same(Fragments.count(5820), 5, "5,820 bytes, the most");
     });
 
     test("A1, A2, A3, an empty message and the biggest: each as 1,200-byte datagrams, and back, in order and out of it", () -> {
@@ -85,19 +85,19 @@ public final class FragmentsTest {
 
     test("a fragment says its kind, number, count, id, cookie and length, as cut", () -> {
       List<byte[]> datagrams = Fragments.cut(Fragments.toRelay(), 7, ID, COOKIE, message(HandshakeA.A1_BYTES));
-      Fragments.Fragment f = Fragments.read(Fragments.toRelay(), datagrams.get(2));
+      Fragments.Fragment f = Fragments.read(Fragments.toRelay(), datagrams.get(4));
       same(f.kind(), 7, "the kind");
-      same(f.index(), 2, "its number");
-      same(f.count(), 3, "the count");
+      same(f.index(), 4, "its number");
+      same(f.count(), 5, "the count");
       same(f.id(), ID, "the id");
       same(f.cookie(), COOKIE, "the cookie");
       same(f.length(), HandshakeA.A1_BYTES, "the length");
-      same(f.part().length, HandshakeA.A1_BYTES - 2 * 1164, "the last part: what's left");
-      same((datagrams.get(2)[34] & 0xff) | ((datagrams.get(2)[35] & 0xff) << 8), 2 * 1164, "it starts at 2 times 1,164, little-endian");
+      same(f.part().length, HandshakeA.A1_BYTES - 4 * 1164, "the last part: what's left");
+      same((datagrams.get(4)[34] & 0xff) | ((datagrams.get(4)[35] & 0xff) << 8), 4 * 1164, "it starts at 4 times 1,164, little-endian");
     });
 
-    test("cut refuses what can't be sent: more than 4,656 bytes, an id that isn't 8 bytes, a cookie that isn't 16, a magic not 4", () -> {
-      throwsAny(() -> Fragments.cut(Fragments.toRelay(), 7, ID, COOKIE, new byte[4657]), "4,657 bytes");
+    test("cut refuses what can't be sent: more than 5,820 bytes, an id that isn't 8 bytes, a cookie that isn't 16, a magic not 4", () -> {
+      throwsAny(() -> Fragments.cut(Fragments.toRelay(), 7, ID, COOKIE, new byte[5821]), "5,821 bytes");
       throwsAny(() -> Fragments.cut(Fragments.toRelay(), 7, new byte[7], COOKIE, new byte[10]), "a 7-byte id");
       throwsAny(() -> Fragments.cut(Fragments.toRelay(), 7, ID, new byte[15], new byte[10]), "a 15-byte cookie");
       throwsAny(() -> Fragments.cut(new byte[3], 7, ID, COOKIE, new byte[10]), "a 3-byte magic");
@@ -106,7 +106,7 @@ public final class FragmentsTest {
     test("STRICT: a datagram that isn't exactly one fragment, read only one way, is refused (refusal 6)", () -> {
       List<byte[]> a1 = Fragments.cut(Fragments.toRelay(), 7, ID, COOKIE, message(HandshakeA.A1_BYTES));
       byte[] first = a1.get(0);
-      byte[] last = a1.get(2);
+      byte[] last = a1.get(4);
       byte[] magic = Fragments.toRelay();
       ok(Fragments.read(magic, first) != null && Fragments.read(magic, last) != null, "as cut, both read");
 
@@ -118,15 +118,15 @@ public final class FragmentsTest {
       same(Fragments.read(magic, changed(first, 4, 1)), null, "version 1");
       same(Fragments.read(magic, changed(first, 4, 3)), null, "version 3");
       same(Fragments.read(magic, changed(first, 7, 0)), null, "a count of 0");
-      same(Fragments.read(magic, changed(first, 7, 5)), null, "a count of 5");
-      same(Fragments.read(magic, changed(first, 7, 4)), null, "a count of 4, for a length that takes 3");
-      same(Fragments.read(magic, changed(first, 7, 2)), null, "a count of 2, for a length that takes 3");
-      same(Fragments.read(magic, changed(last, 6, 3)), null, "fragment number 3 of 3");
-      same(Fragments.read(magic, changed(changed(first, 32, 0x31), 33, 0x12)), null, "a length of 4,657, past the most");
-      same(Fragments.read(magic, changed(last, 34, (2 * 1164 + 1) & 0xff)), null, "the last fragment, starting a byte late");
+      same(Fragments.read(magic, changed(first, 7, 6)), null, "a count of 6");
+      same(Fragments.read(magic, changed(first, 7, 4)), null, "a count of 4, for a length that takes 5");
+      same(Fragments.read(magic, changed(first, 7, 2)), null, "a count of 2, for a length that takes 5");
+      same(Fragments.read(magic, changed(last, 6, 5)), null, "fragment number 5 of 5");
+      same(Fragments.read(magic, changed(changed(first, 32, 0xbd), 33, 0x16)), null, "a length of 5,821, past the most");
+      same(Fragments.read(magic, changed(last, 34, (4 * 1164 + 1) & 0xff)), null, "the last fragment, starting a byte late");
       same(Fragments.read(magic, changed(first, 34, 1)), null, "the first, starting at 1, not 0");
       same(Fragments.read(magic, changed(last, 1199, 1)), null, "a byte after the last part that isn't 0");
-      same(Fragments.read(magic, changed(last, 36 + HandshakeA.A1_BYTES - 2 * 1164, 1)), null, "the byte just after the last part");
+      same(Fragments.read(magic, changed(last, 36 + HandshakeA.A1_BYTES - 4 * 1164, 1)), null, "the byte just after the last part");
 
       // A fragment that says it starts at fragment 1's place, but is numbered 0: two ways to read it, so it's refused
       same(Fragments.read(magic, changed(changed(first, 34, 1164 & 0xff), 35, 1164 >>> 8)), null, "fragment 0 starting at 1,164");
@@ -138,7 +138,7 @@ public final class FragmentsTest {
       Fragments.Assembly assembly = new Fragments.Assembly(Fragments.read(magic, a1.get(0)));
       ok(assembly.add(Fragments.read(magic, a1.get(0))), "fragment 0");
       ok(assembly.add(Fragments.read(magic, a1.get(0))), "fragment 0 again, the same bytes: taken (a datagram can come twice)");
-      ok(!assembly.complete(), "but it counts once: 1 of 3");
+      ok(!assembly.complete(), "but it counts once: 1 of 5");
       same(assembly.bytesHeld(), 1164, "it holds 1,164 bytes");
 
       // The first bytes to come for a place are the ones kept: a changed fragment that comes first is taken, as nothing here can tell it
@@ -162,12 +162,13 @@ public final class FragmentsTest {
       ok(!assembly.add(Fragments.read(magic, Fragments.cut(magic, 8, ID, COOKIE, m).get(1))), "fragment 1 of another kind");
       ok(!assembly.add(Fragments.read(magic, Fragments.cut(magic, 7, ID, COOKIE, message(HandshakeA.A1_BYTES - 1)).get(1))),
           "fragment 1 of a message a byte shorter");
-      ok(!assembly.add(Fragments.read(magic, Fragments.cut(magic, 7, ID, COOKIE, message(HandshakeA.A2_BYTES)).get(1))),
+      ok(!assembly.add(Fragments.read(magic, Fragments.cut(magic, 7, ID, COOKIE, message(1165)).get(1))),
           "fragment 1 of a message of 2 fragments");
       throwsAny(assembly::message, "the message before every fragment is in");
 
-      ok(assembly.add(Fragments.read(magic, a1.get(2))), "fragment 2");
-      ok(assembly.add(Fragments.read(magic, a1.get(1))), "fragment 1");
+      for (int i = 4; i >= 1; i--) {
+        ok(assembly.add(Fragments.read(magic, a1.get(i))), "fragment " + i);
+      }
       same(assembly.bytesHeld(), HandshakeA.A1_BYTES, "it holds the whole message");
       same(assembly.message(), m, "and gives it back");
     });

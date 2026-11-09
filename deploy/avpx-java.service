@@ -2,9 +2,9 @@
 # avpx.service (the Node version's), with everything it keeps the server from kept the same.
 #
 # It runs as its own user, avpx, which owns nothing but its settings, and can't log in. The only right it's given beyond an ordinary
-# user's is to listen on a port below 1024 (443, for HTTPS). It can't raise its rights, can't write anywhere on the machine, can't see
-# other users' files or other processes, and starts again by itself if it stops. Its log goes to the system journal (journalctl -u
-# avpx-java), which holds no addresses: the server never writes one.
+# user's is to listen on a port below 1024 (443, for HTTPS). It can't raise its rights, can't write anywhere on the machine but its own
+# state folder (/var/lib/avpx, below), can't see other users' files or other processes, and starts again by itself if it stops. Its log
+# goes to the system journal (journalctl -u avpx-java), which holds no addresses: the server never writes one.
 #
 # It reads the same settings file as the Node version, /etc/avpx/settings.json, always that one: the Java version takes no path when it
 # starts. Run one version or the other on a machine, never both: they'd want the same ports.
@@ -69,8 +69,15 @@ SystemCallFilter=~@privileged
 # MemoryDenyWriteExecute (Java's compiler writes code it runs), and ~@resources (not proven safe for Java). Each can be added once the
 # machine shows Java starts with it.
 
-# Its settings and certificate are read only; it writes nothing on the disk (its log goes to the journal)
+# Its settings and certificate are read only. Its log goes to the journal.
 ReadOnlyPaths=/etc/avpx /opt/avpx /opt/avpx-jdk
+# The ONE place it may write: its state folder, /var/lib/avpx, which systemd itself makes before each start, owned by avpx, with rights
+# for nobody else (0700). ProtectSystem=strict above makes the rest read only. It holds the access store (java/src/avpx/access/
+# AccessStore.java): requests.json, which only the server writes, and the owner's decisions.<digits> files, which the owner's own tools put
+# there (owned by avpx, 0600). The settings' accessFolder is this folder. The store refuses to open on a folder that isn't avpx's own and
+# 0700, so a path to anywhere else stops the server, with the reason. (Added 2026-11-09 by Melanikus, for the access requests, server #24.)
+StateDirectory=avpx
+StateDirectoryMode=0700
 
 # Limits on what it can use, so a fault can't take the machine. Java runs more threads of its own than Node (its compilers, its garbage
 # collector, one for each processor for the list's connections), hence more tasks than the Node version's 64.

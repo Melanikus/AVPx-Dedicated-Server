@@ -25,6 +25,9 @@ public final class CryptoV2VectorsTest {
   // The top object (1), its sections (2), their cases (3), a case's fields that are lists or objects (4), and their entries (5)
   private static final int DEPTH = 5;
 
+  // The vectors' player's id, made with OpenSSL (the test below says how): the whole SHA-384, which a machine compares
+  private static final String PLAYER_ID = "85bb99fe0a831ed599a1062c95c414a17aaa0dd182177bffc7e631c0c9fdd866de2bb4b45084132a6183347245c5a430";
+
   private static byte[] bytes(Object hex) {
     return HexFormat.of().parseHex((String) hex);
   }
@@ -41,8 +44,12 @@ public final class CryptoV2VectorsTest {
       Map<String, Object> a = object(top.get("handshakeA"));
       Map<String, Object> game = object(a.get("gameEphemeral"));
       Map<String, Object> relay = object(a.get("relayStatic"));
+      Map<String, Object> playerFields = object(a.get("player"));
+      Identity player = Identity.of(P384.pair(bytes(playerFields.get("p384Private")), bytes(playerFields.get("p384Public"))),
+          MlKem.fromSeed(bytes(playerFields.get("mlkemSeed"))));
+      same(player.fingerprint(), bytes(playerFields.get("fingerprint")), "the player's fingerprint, from their two public keys");
       HandshakeA.Initiator initiator = HandshakeA.writeA1((String) a.get("region"), bytes(relay.get("p384Public")),
-          bytes(relay.get("mlkemPublic")), P384.pair(bytes(game.get("p384Private")), bytes(game.get("p384Public"))),
+          bytes(relay.get("mlkemPublic")), player, P384.pair(bytes(game.get("p384Private")), bytes(game.get("p384Public"))),
           MlKem.fromSeed(bytes(game.get("mlkemSeed"))), bytes(object(a.get("skem")).get("m")));
       same(initiator.a1(), bytes(a.get("a1")), "A1, byte for byte");
       HandshakeA.Initiator.Done done = initiator.readA2(bytes(a.get("a2")));
@@ -78,8 +85,9 @@ public final class CryptoV2VectorsTest {
       Map<String, Object> handshake = object(top.get("handshakeA"));
       Map<String, Object> datagrams = object(top.get("handshakeDatagrams"));
 
-      // A1's three datagrams, read and put together, are A1
+      // A1's five datagrams, read and put together, are A1
       List<Object> a1 = Json.list(datagrams.get("a1"));
+      same(a1.size(), 5, "A1 is 5 datagrams");
       Fragments.Assembly assembly = new Fragments.Assembly(Fragments.read(Fragments.toRelay(), bytes(a1.get(0))));
 
       for (Object d : a1) {
@@ -151,22 +159,38 @@ public final class CryptoV2VectorsTest {
           bytes(object(b.get("host")).get("fingerprint")), "the host's fingerprint, from its two public keys");
     });
 
-    test("a relay's fingerprint (CRYPTO.md 12.1) is the one a hash made outside Java gives, and only from keys of the right sizes", () -> {
+    test("a relay's id (CRYPTO.md 12.1) is the one hashes made outside Java give, the game's among them, and only from keys of the right "
+        + "sizes", () -> {
       Map<String, Object> top = Json.readObject(Files.readAllBytes(CryptoV2Vectors.FILE), DEPTH);
       Map<String, Object> relay = object(object(top.get("handshakeA")).get("relayStatic"));
       byte[] p384 = bytes(relay.get("p384Public"));
       byte[] kem = bytes(relay.get("mlkemPublic"));
-      // Made with Git for Windows' sha384sum and OpenSSL, from the bytes "AVPX relay keys v2" then the two keys from the file (2026-11-09):
-      //   { printf 'AVPX relay keys v2'; printf '%s%s' "$p384Public" "$mlkemPublic" | xxd -r -p; } | sha384sum | cut -c1-32
-      same(RelayFingerprint.of(p384, kem), "fc352802066e547c261e37fe63f11486", "the vectors' relay's fingerprint");
+      // Made with OpenSSL, from the bytes "AVPX relay keys v2" then the two keys from the file (2026-11-09):
+      //   { printf 'AVPX relay keys v2'; printf '%s%s' "$p384Public" "$mlkemPublic" | xxd -r -p; } | openssl dgst -sha384
+      // and the very same by Fifth, with node's crypto, for the game's own test of its relaykey setting (relay-v2-step7 c2aaf06f)
+      same(RelayId.of(p384, kem), "fc352802066e547c261e37fe63f114863debbc76b5b29575ab69af80c72eeb91dd9a9dddd8b38218b21df00b4bea5a54",
+          "the vectors' relay's id: all 48 bytes");
       byte[] other = p384.clone();
       other[96] ^= 1;
-      ok(!RelayFingerprint.of(other, kem).equals(RelayFingerprint.of(p384, kem)), "a key with one bit changed has another fingerprint");
-      ok(!RelayFingerprint.of(p384, kem).equals(HexFormat.of().formatHex(HandshakeB.fingerprint(p384, kem))),
-          "and it isn't a player's fingerprint of the same keys: the words in front keep the two apart");
-      throwsWith(() -> RelayFingerprint.of(Arrays.copyOf(p384, 96), kem), "97 and 1,568 bytes", "a P-384 key of 96 bytes");
-      throwsWith(() -> RelayFingerprint.of(p384, Arrays.copyOf(kem, 1569)), "97 and 1,568 bytes", "an ML-KEM key of 1,569 bytes");
-      throwsWith(() -> RelayFingerprint.of(null, kem), "97 and 1,568 bytes", "no P-384 key");
+      ok(!RelayId.of(other, kem).equals(RelayId.of(p384, kem)), "a key with one bit changed has another id");
+      ok(!RelayId.of(p384, kem).equals(Identity.idHex(p384, kem)),
+          "and it isn't a player's id of the same keys: the words in front keep the two apart");
+      throwsWith(() -> RelayId.of(Arrays.copyOf(p384, 96), kem), "97 and 1,568 bytes", "a P-384 key of 96 bytes");
+      throwsWith(() -> RelayId.of(p384, Arrays.copyOf(kem, 1569)), "97 and 1,568 bytes", "an ML-KEM key of 1,569 bytes");
+      throwsWith(() -> RelayId.of(null, kem), "97 and 1,568 bytes", "no P-384 key");
+    });
+
+    test("a player's id is the whole SHA-384 its fingerprint is the first 16 bytes of, as hashed outside Java", () -> {
+      Map<String, Object> top = Json.readObject(Files.readAllBytes(CryptoV2Vectors.FILE), DEPTH);
+      Map<String, Object> player = object(object(top.get("handshakeA")).get("player"));
+      byte[] p384 = bytes(player.get("p384Public"));
+      byte[] kem = bytes(player.get("mlkemPublic"));
+      String id = Identity.idHex(p384, kem);
+      same(id.length(), 96, "96 hex digits");
+      same(id.substring(0, 32), player.get("fingerprint"), "its first 32 are the fingerprint the file gives");
+      // Made with OpenSSL, from "AVPX-ID-2" then the player's two keys from the file (2026-11-09):
+      //   { printf 'AVPX-ID-2'; printf '%s%s' "$p384Public" "$mlkemPublic" | xxd -r -p; } | openssl dgst -sha384
+      same(id, PLAYER_ID, "the whole of it, as OpenSSL makes it");
     });
   }
 }

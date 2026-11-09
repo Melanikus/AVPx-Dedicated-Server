@@ -19,10 +19,12 @@ import avpx.relay.Protocol.Type;
 import avpx.relay.RandomBytes;
 import avpx.relay.RelayCore;
 import avpx.relay.RelaySockets;
+import avpx.testing.TestApprovals;
 import avpx.testing.Tests;
 import avpx.v2.Channel;
 import avpx.v2.Fragments;
 import avpx.v2.HandshakeA;
+import avpx.v2.Identity;
 import avpx.v2.SealedRelay;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -189,7 +191,7 @@ public final class LiveTest {
     Listings listings = new Listings(List.of(new Listings.Relay(REGION, "virginia.relay.example.net", CONTROL, KEY)), RandomBytes.secure(),
         System.currentTimeMillis());
     Settings.ListSettings settings = new Settings.ListSettings(LOOPBACK, 0, certFile.toString(), keyFile.toString(), List.of());
-    ListServer server = ListServer.start(settings, listings, log, now, whenFailed);
+    ListServer server = ListServer.start(settings, listings, null, log, now, whenFailed);
 
     // The client trusts the test certificate, and only it
     KeyStore trusted = KeyStore.getInstance("PKCS12");
@@ -447,8 +449,10 @@ public final class LiveTest {
 
     liveTest("a version 2 relay over its real UDP ports: handshake A, a sealed HOST_OPEN answered sealed, and version 1 refused", () -> {
       HandshakeA.RelayKeys keys = HandshakeA.RelayKeys.of(P384.generate(new SecureRandom()), MlKem.generate(new SecureRandom()));
-      SealedRelay sealed = new SealedRelay(CONTROL, PORTS, REGION, KEY, keys, RandomBytes.secure(), new SecureRandom(),
-          new RelayCore.Limits(), new SealedRelay.Limits(), System.currentTimeMillis());
+      Identity player = Identity.of(P384.generate(new SecureRandom()), MlKem.generate(new SecureRandom()));
+      String approvedOne = Identity.idHex(player.p384Public(), player.kemPublic());
+      SealedRelay sealed = new SealedRelay(CONTROL, PORTS, REGION, KEY, keys, TestApprovals.of(approvedOne::equals), RandomBytes.secure(),
+          new SecureRandom(), new RelayCore.Limits(), new SealedRelay.Limits(), System.currentTimeMillis());
       RelaySockets relay = RelaySockets.start(LOOPBACK, sealed, line -> { }, System::currentTimeMillis);
 
       try (DatagramSocket game = socket()) {
@@ -457,7 +461,7 @@ public final class LiveTest {
         ok(cookieAnswer != null && cookieAnswer.length == 64, "A0': 64 bytes back, for A0's 1,200");
         byte[] cookie = Arrays.copyOfRange(cookieAnswer, 16, 32);
 
-        HandshakeA.Initiator initiator = HandshakeA.writeA1(REGION, keys.p384Public(), keys.kemPublic(), new SecureRandom());
+        HandshakeA.Initiator initiator = HandshakeA.writeA1(REGION, keys.p384Public(), keys.kemPublic(), player, new SecureRandom());
 
         for (byte[] d : Fragments.cut(Fragments.toRelay(), 3, id, cookie, initiator.a1())) {
           sendTo(game, CONTROL, d);
@@ -465,9 +469,12 @@ public final class LiveTest {
 
         byte[] first = next(game);
         byte[] second = next(game);
-        ok(first != null && second != null && first.length == 1200 && second.length == 1200, "A2: two datagrams of 1,200 bytes");
+        byte[] third = next(game);
+        ok(first != null && second != null && third != null && first.length == 1200 && second.length == 1200 && third.length == 1200,
+            "A2: three datagrams of 1,200 bytes, for A1's five");
         Fragments.Assembly a2 = new Fragments.Assembly(Fragments.read(Fragments.toRelay(), first));
-        ok(a2.add(Fragments.read(Fragments.toRelay(), first)) && a2.add(Fragments.read(Fragments.toRelay(), second)), "A2's fragments fit");
+        ok(a2.add(Fragments.read(Fragments.toRelay(), first)) && a2.add(Fragments.read(Fragments.toRelay(), second))
+            && a2.add(Fragments.read(Fragments.toRelay(), third)), "A2's fragments fit");
         HandshakeA.Initiator.Done done = initiator.readA2(a2.message());
         ok(done != null, "the game takes A2: the relay is proved, over the network");
         sendTo(game, CONTROL, Fragments.cut(Fragments.toRelay(), 5, id, cookie, done.a3()).get(0));
@@ -559,6 +566,25 @@ public final class LiveTest {
       }
     });
 
+    // POST /v1/access-requests: its body holds a player's keys, so it may be 4 KB, where every other call's is 1 KB; and one address gets
+    // one a minute (ListServer.java). This list has no access store, so what's answered is "closed": the status and shape are what matter.
+    liveTest("the access call reads a body of a player's keys, and holds one address to one a minute, in its own shape", () -> {
+      Running list = listServer();
+
+      try {
+        String body = "{\"v\":1,\"name\":\"Ripley\",\"key\":\"" + "A".repeat(2220) + "\"}";
+        Reply first = request(list, "POST", "/v1/access-requests", body, Map.of());
+        same(first.status(), 503, "a body of " + body.length() + " bytes is read, not refused as too big; and with no store: closed");
+        same(json(first.body()), Map.of("v", 1L, "error", "closed"), "in the call's own shape");
+        Reply second = request(list, "POST", "/v1/access-requests", body, Map.of());
+        same(second.status(), 429, "a second from the same address within the minute: refused");
+        same(json(second.body()), Map.of("v", 1L, "error", "busy"), "as busy, in the call's own shape too");
+        same(request(list, "POST", "/v1/games", "x".repeat(1025), Map.of()).status(), 413, "while any other call's body is still 1 KB");
+      } finally {
+        list.stop();
+      }
+    });
+
     liveTest("a request's head is at most 8 KB: just under, it's answered; over, it's refused with 431 before anything else", () -> {
       Running list = listServer();
 
@@ -620,11 +646,11 @@ public final class LiveTest {
         Files.writeString(keyFile, pem("PRIVATE KEY", other.getEncoded()), StandardCharsets.US_ASCII);
         Listings listings = new Listings(List.of(), RandomBytes.secure(), System.currentTimeMillis());
         Settings.ListSettings settings = new Settings.ListSettings(LOOPBACK, 0, certFile.toString(), keyFile.toString(), List.of());
-        throwsWith(() -> ListServer.start(settings, listings, line -> { }, System::currentTimeMillis, () -> { }), "doesn't belong",
+        throwsWith(() -> ListServer.start(settings, listings, null, line -> { }, System::currentTimeMillis, () -> { }), "doesn't belong",
             "another key with this certificate");
 
         Files.writeString(keyFile, "-----BEGIN EC PRIVATE KEY-----\nAAAA\n-----END EC PRIVATE KEY-----\n", StandardCharsets.US_ASCII);
-        throwsWith(() -> ListServer.start(settings, listings, line -> { }, System::currentTimeMillis, () -> { }), "PKCS#8",
+        throwsWith(() -> ListServer.start(settings, listings, null, line -> { }, System::currentTimeMillis, () -> { }), "PKCS#8",
             "a key in an older form");
       } finally {
         Files.deleteIfExists(certFile);

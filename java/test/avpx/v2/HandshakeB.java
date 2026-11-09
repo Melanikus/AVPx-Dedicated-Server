@@ -56,31 +56,12 @@ final class HandshakeB {
   static final int B5 = 20;
 
   private static final byte[] NOTHING = new byte[0];
-  private static final byte[] FINGERPRINT_WORDS = "AVPX-ID-2".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] CHECK_CODE_WORDS = "AVPX check code v2".getBytes(StandardCharsets.US_ASCII);
 
-  // A player's identity (CRYPTO.md section 4): its static P-384 and ML-KEM keys, with their public halves as the wire carries them
-  record Identity(KeyPair p384, KeyPair kem, byte[] p384Public, byte[] kemPublic) {
-    static Identity of(KeyPair p384, KeyPair kem) {
-      return new Identity(p384, kem, P384.encode((ECPublicKey) p384.getPublic()), MlKem.encode(kem.getPublic()));
-    }
-
-    // Both public halves, as `s` sends them: the P-384 key, then the ML-KEM key
-    byte[] statics() {
-      byte[] out = Arrays.copyOf(p384Public, STATIC_BYTES);
-      System.arraycopy(kemPublic, 0, out, P384.PUBLIC_BYTES, MlKem.ENCAPSULATION_KEY_BYTES);
-      return out;
-    }
-
-    byte[] fingerprint() {
-      return HandshakeB.fingerprint(p384Public, kemPublic);
-    }
-  }
-
-  // A fingerprint: the first 16 bytes of SHA-384 of the 9 ASCII bytes "AVPX-ID-2" (nothing after them), then the P-384 key (97 bytes)
-  // and the ML-KEM key (1,568 bytes), raw, as they travel
+  // A player's fingerprint (CRYPTO.md section 8): Identity.java's, the one the server itself uses (handshake A's approval, the list's
+  // access requests), so there's one way it's made
   static byte[] fingerprint(byte[] p384Public, byte[] kemPublic) {
-    return Arrays.copyOf(Noise.sha384(FINGERPRINT_WORDS, p384Public, kemPublic), FINGERPRINT_BYTES);
+    return Identity.fingerprintOf(p384Public, kemPublic);
   }
 
   // The start, for both sides: h = SHA-384(the protocol's name), ck = h; then the prologue, three MixHashes (5.1, point 17): the region's

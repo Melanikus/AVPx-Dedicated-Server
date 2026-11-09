@@ -1,5 +1,6 @@
 package avpx;
 
+import avpx.access.AccessStore;
 import avpx.list.ListServer;
 import avpx.list.Listings;
 import avpx.relay.RandomBytes;
@@ -66,13 +67,29 @@ public final class Main {
     }
 
     Log log = new Log(settings.logFile().isEmpty() ? null : Path.of(settings.logFile()), Instant::now, Log.SCREEN);
+
+    // The access store (AccessStore.java): who asked to play here, and what the owner decided. A store that can't be read, or holds
+    // anything this server wouldn't write, stops the server here, with the reason: the relay never starts on an approved set nobody can
+    // vouch for.
+    AccessStore access = null;
+
+    if (!settings.accessFolder().isEmpty()) {
+      try {
+        access = AccessStore.open(Path.of(settings.accessFolder()));
+      } catch (AccessStore.Refused e) {
+        log.line(e.getMessage() + ", so the server did not start");
+        log.close();
+        return 1;
+      }
+    }
+
     // The relay speaks one protocol: version 1 (PROTOCOL.md), or version 2 (CRYPTO.md: handshake A, then everything sealed, in front of
-    // the same games)
+    // the same games). Version 2 takes approved players only, so it always has a store (Settings.java).
     Relay core;
 
     if (settings.protocol() == 2) {
       core = new SealedRelay(settings.controlPort(), settings.relayPorts(), settings.region(), settings.passKey(), settings.staticKeys(),
-          RandomBytes.secure(), new SecureRandom(), new RelayCore.Limits(), new SealedRelay.Limits(), System.currentTimeMillis());
+          access, RandomBytes.secure(), new SecureRandom(), new RelayCore.Limits(), new SealedRelay.Limits(), System.currentTimeMillis());
     } else {
       core = new RelayCore(settings.controlPort(), settings.relayPorts(), settings.region(), settings.passKey(), RandomBytes.secure(),
           new RelayCore.Limits(), System.currentTimeMillis());
@@ -102,7 +119,7 @@ public final class Main {
     if (listSettings != null) {
       try {
         Listings listings = new Listings(listSettings.relays(), RandomBytes.secure(), System.currentTimeMillis());
-        list = ListServer.start(listSettings, listings, log::line, System::currentTimeMillis, whenListFails);
+        list = ListServer.start(listSettings, listings, access, log::line, System::currentTimeMillis, whenListFails);
       } catch (ListServer.CertificateProblem e) {
         log.line("list: the certificate files could not be used (" + e.getMessage() + "), so the server did not start");
         log.close();

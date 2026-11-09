@@ -8,7 +8,8 @@ import java.util.List;
 // Handshake messages in 1,200-byte datagrams (CRYPTO.md section 5, "Big messages over UDP"). Written 2026-11-09 by Melanikus for AVPx
 // Dedicated Server.
 //
-// Handshake messages are 1.6 to 3.4 KB, more than one datagram should carry, so each is cut into fragments. Every handshake datagram,
+// Handshake messages are 1.6 to 4.9 KB (A1, with pqIK's sealed static keys, is the biggest: 4,930 bytes in 5), more than one datagram
+// should carry, so each is cut into fragments. Every handshake datagram,
 // either way, is exactly 1,200 bytes: the smallest size the internet carries whole (QUIC uses it too). So nobody can be sent more than they
 // sent, and nothing is ever cut in two on the way.
 //
@@ -16,7 +17,7 @@ import java.util.List;
 //   byte  4        the version, 2
 //   byte  5        the kind (CRYPTO.md sections 6 and 8)
 //   byte  6        this fragment's number, from 0
-//   byte  7        how many fragments, 1 to 4
+//   byte  7        how many fragments, 1 to 5
 //   bytes 8-15     the handshake's id: 8 random bytes the initiator chose
 //   bytes 16-31    the cookie (to the relay), or 0
 //   bytes 32-33    the whole message's length, little-endian
@@ -24,7 +25,7 @@ import java.util.List;
 //   bytes 36-1199  up to 1,164 bytes of the message, then 0
 //
 // STRICT (settled with Third, 2026-11-09), so a fragment can be read only one way: every fragment but the last carries exactly 1,164 bytes;
-// fragment k starts at k times 1,164; the count is the length divided by 1,164, rounded up (1 for a message of no bytes), 1 to 4; every
+// fragment k starts at k times 1,164; the count is the length divided by 1,164, rounded up (1 for a message of no bytes), 1 to 5; every
 // fragment of a message says the same kind, count and length; and every byte after the fragment's part is 0. Anything else isn't a
 // fragment (refusal 6).
 public final class Fragments {
@@ -34,7 +35,8 @@ public final class Fragments {
   public static final int DATAGRAM_BYTES = 1200;
   public static final int HEADER_BYTES = 36;
   public static final int PART_BYTES = DATAGRAM_BYTES - HEADER_BYTES;
-  public static final int MOST_FRAGMENTS = 4;
+  // 5 since pqIK (CRYPTO.md section 6, kMostFragments): A1 is 4,930 bytes. So a message is at most 5,820 bytes (kMostHandshakeBytes).
+  public static final int MOST_FRAGMENTS = 5;
   public static final int MOST_MESSAGE_BYTES = MOST_FRAGMENTS * PART_BYTES;
   public static final int ID_BYTES = 8;
   public static final int COOKIE_BYTES = 16;
@@ -59,7 +61,7 @@ public final class Fragments {
   // A message as its datagrams
   public static List<byte[]> cut(byte[] magic, int kind, byte[] id, byte[] cookie, byte[] message) {
     if (message.length > MOST_MESSAGE_BYTES || id.length != ID_BYTES || cookie.length != COOKIE_BYTES || magic.length != 4) {
-      throw new IllegalArgumentException("Fragments.cut: a message of at most 4,656 bytes, an 8-byte id and a 16-byte cookie");
+      throw new IllegalArgumentException("Fragments.cut: a message of at most 5,820 bytes, an 8-byte id and a 16-byte cookie");
     }
 
     int count = count(message.length);

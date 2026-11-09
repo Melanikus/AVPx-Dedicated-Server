@@ -1,7 +1,9 @@
 package avpx.tools;
 
 import avpx.Settings;
+import avpx.access.AccessCode;
 import avpx.list.Listings;
+import avpx.v2.Identity;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -17,10 +19,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -58,14 +62,20 @@ import javax.net.ssl.TrustManagerFactory;
 // the output says so at its end, so a relay-only run never reads as a full one. It exits 0 only if every check that ran passed.
 //
 // A VERSION 2 RELAY (its settings say "protocol": 2) speaks version 2 only, so with --installed it gets SmokeV2.java's checks instead:
-// handshake A, then a whole game sealed. That file says how it's held to the known answers before it's trusted.
+// handshake A, then a whole game sealed. That file says how it's held to the known answers before it's trusted. A version 2 relay takes
+// approved players only, so its whole game needs two the owner approved (SmokeIdentities.java):
+//   java -jar avpx-smoke.jar --make-identities <file>              makes two, writes them to file, and prints their fingerprints
+//   java -jar avpx-smoke.jar --installed --identities <file>       plays the whole game with them; without, it checks only that a
+//                                                                  player nobody approved gets nothing
 //
 // SAFE TO RUN ANYWHERE: it sends only to 127.0.0.1, and binds only there, so it can test only a server on the same machine and can never be
 // pointed at anyone else's. HTTPS trusts only list-test.pem, and checks the certificate is for "localhost" (the name the relays' list gives).
 //
 // INDEPENDENT OF THE SERVER: it uses none of the server's code but its settings reader (for --installed). Its messages are written by
 // hand from PROTOCOL.md section 2, a pass is made by hand from section 3, and the list's answers are compared as exact text, so a fault
-// in the server's own encoder or JSON can't hide itself here.
+// in the server's own encoder or JSON can't hide itself here. Three things of the server's are used, each said where: version 2's game
+// side (SmokeV2.java, pinned to the known answers first), the identity's keys (Identity, only to hold them), and the access code, only to
+// show it to the owner, whose own tools work it out for themselves. An access request's fingerprint is worked out here, by hand.
 //
 // Without --installed, it expects the server started with the settings CI uses: region "virginia", the list on 8443, the control port
 // 27500, relay ports 27501 to 27564, a relay whose host is "localhost", and the log in server.log (java.yml's smoke job).
@@ -370,15 +380,86 @@ public final class Smoke {
     return r.body().startsWith("{\"games\":[{") ? n : -1;
   }
 
+  // The word after flag on the command line, or null if flag isn't there (or is last)
+  private static String after(List<String> words, String flag) {
+    int at = words.indexOf(flag);
+    return at < 0 || at + 1 >= words.size() ? null : words.get(at + 1);
+  }
+
+  // The access requests of the two identities in file (SmokeIdentities.java), sent to this machine's own list as the game's page sends
+  // them (PROTOCOL.md section 4), the host's and then, a minute later, the joiner's: the list takes one a minute from one address, and
+  // both come from 127.0.0.1. Each is checked to come back with its own fingerprint, and printed with its access code, for the owner.
+  private static void requestAccess(Path file) throws Exception {
+    if (c.certificate() == null) {
+      check(false, "access requests: this machine runs no list to send them to (a version 2 relay takes its own list's approved players "
+          + "only, CRYPTO.md section 6)");
+      return;
+    }
+
+    Identity[] players = SmokeIdentities.read(file);
+
+    if (players == null) {
+      check(false, "the identities file " + file + " holds two identities as --make-identities writes them");
+      return;
+    }
+
+    SSLContext tls = trustingOnly(c.certificate());
+    String[] who = {"host", "joiner"};
+
+    // The list may still be starting: asked until it answers, up to 15 s
+    long until = System.nanoTime() + 15_000_000_000L;
+
+    while (api(tls, "GET", "/v1/relays", (String) null).status() != 200 && System.nanoTime() < until) {
+      pause(250);
+    }
+
+    for (int i = 0; i < 2; i++) {
+      if (i > 0) {
+        pause(61_000);
+      }
+
+      // The fingerprint worked out here, by hand from PROTOCOL.md (the first 16 bytes of SHA-384("AVPX-ID-2" || the 1,665 public bytes)),
+      // not with the server's own code: so the list's answer is held to what the protocol says, not to the server's idea of it
+      byte[] statics = players[i].statics();
+      MessageDigest sha = MessageDigest.getInstance("SHA-384");
+      sha.update("AVPX-ID-2".getBytes(StandardCharsets.US_ASCII));
+      String fp = HexFormat.of().formatHex(Arrays.copyOf(sha.digest(statics), 16));
+      String body = "{\"v\":1,\"name\":\"smoke " + who[i] + "\",\"key\":\"" + Base64.getEncoder().encodeToString(statics) + "\"}";
+      Reply r = api(tls, "POST", "/v1/access-requests", body);
+      boolean waiting = r.body().equals("{\"v\":1,\"fp\":\"" + fp + "\",\"state\":\"waiting\"}");
+      boolean approved = r.body().equals("{\"v\":1,\"fp\":\"" + fp + "\",\"state\":\"approved\"}");
+      check(r.status() == 200 && (waiting || approved), "the " + who[i] + "'s access request: 200, with its own fingerprint, waiting or "
+          + "approved", r.status() + " " + r.body());
+      System.out.println(who[i] + " " + fp + " " + AccessCode.of(fp) + (approved ? " approved" : waiting ? " waiting" : " not asked"));
+    }
+  }
+
   public static void main(String[] args) throws Exception {
     List<String> words = Arrays.asList(args);
+
+    // Two identities for a version 2 game (SmokeIdentities.java), and nothing else
+    if (words.contains("--make-identities")) {
+      String file = after(words, "--make-identities");
+      System.exit(file != null && SmokeIdentities.make(Path.of(file)) ? 0 : 1);
+    }
 
     if (words.contains("--installed")) {
       Settings settings = Settings.read(INSTALLED_SETTINGS);
 
+      // The two identities' access requests, to this machine's own list (SmokeIdentities.java), and nothing else
+      String requestFor = after(words, "--request-access");
+
+      if (requestFor != null) {
+        c = installed(settings, words);
+        requestAccess(Path.of(requestFor));
+        finish();
+        return;
+      }
+
       // A version 2 relay speaks only version 2, so its checks are SmokeV2's (see the top)
       if (settings.protocol() == 2) {
-        SmokeV2.run(settings);
+        String identities = after(words, "--identities");
+        SmokeV2.run(settings, identities == null ? null : Path.of(identities));
         finish();
         return;
       }

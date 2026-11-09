@@ -5,7 +5,8 @@
 #   JAVA_HOME=<the JDK> sh java/build.sh
 #
 # What it makes, in java/build/ (which it empties first):
-#   avpx-server.jar   the server: java -jar avpx-server.jar <settings file>
+#   avpx-server.jar   the server: java -jar avpx-server.jar (its settings are always /etc/avpx/settings.json)
+#   avpx-smoke.jar    the smoke test: java -jar avpx-smoke.jar (tools/Smoke.java says how)
 #   server/, test/    the compiled classes
 #
 # No Gradle, no Maven and nothing downloaded: every file it compiles is in this folder. JAVA_HOME must be the JDK the workflow pins
@@ -32,9 +33,10 @@ find src -name '*.java' | LC_ALL=C sort > build/server-sources.txt
 find src test -name '*.java' ! -name module-info.java | LC_ALL=C sort > build/test-sources.txt
 "$JAVA_HOME/bin/javac" $flags -d build/test @build/test-sources.txt
 
-# The tools (CheckStandard, Takeouts): held to the same warnings, and compiled here so CodeQL reads them too
+# The tools (CheckStandard, Takeouts, Smoke): held to the same warnings, and compiled here so CodeQL reads them too. Smoke reads an
+# installed server's settings with the server's own Settings, so the tools see the server's classes.
 find tools -name '*.java' | LC_ALL=C sort > build/tools-sources.txt
-"$JAVA_HOME/bin/javac" $flags -d build/tools @build/tools-sources.txt
+"$JAVA_HOME/bin/javac" $flags -cp build/server -d build/tools @build/tools-sources.txt
 
 # For the live tests (AVPX_LIVE=1), a certificate of their own, for 127.0.0.1 only, made fresh now by the JDK's own keytool and thrown away
 # with build/. Its key store's password is random, made now, and kept in a file beside it, so no password is written in any code.
@@ -50,3 +52,11 @@ fi
 
 # Only then the jar, with every file's time set to one fixed date, so the same code always makes the same bytes
 "$JAVA_HOME/bin/jar" --create --date=2026-11-08T00:00:00Z --file build/avpx-server.jar --main-class avpx.Main -C build/server .
+
+# The smoke test, a jar of its own (java -jar avpx-smoke.jar): its classes, and the server's it reads installed settings with. It's what
+# deploy's health check runs, and what anyone can run to test a server on their own machine.
+mkdir -p build/smoke
+cp -R build/server/avpx build/smoke/
+mkdir -p build/smoke/avpx/tools
+cp build/tools/avpx/tools/Smoke*.class build/smoke/avpx/tools/
+"$JAVA_HOME/bin/jar" --create --date=2026-11-08T00:00:00Z --file build/avpx-smoke.jar --main-class avpx.tools.Smoke -C build/smoke .

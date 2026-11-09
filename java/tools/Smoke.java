@@ -1,5 +1,7 @@
 package avpx.tools;
 
+import avpx.Settings;
+import avpx.list.Listings;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -40,27 +42,42 @@ import javax.net.ssl.TrustManagerFactory;
 // The folder it's run in holds list-test.pem, the list's certificate, and server.log, the server's log: nothing given on its command line
 // points it anywhere. Add --without-log to leave out the last 6 checks, which read the log (for a server whose log goes to the journal).
 //
+//   java -jar avpx-smoke.jar --installed [--name <DNS name>]     deploy's health check, on the server's own machine (exit 0: healthy)
+//
+// With --installed it reads the server's own settings, /etc/avpx/settings.json, as the server does: the ports, the region, the relays the
+// list should name, and the certificate file. It trusts only that certificate, checks it is for this machine's own relay host in the
+// settings (or the DNS name --name gives), and leaves out the 6 log checks (its log is the journal). Its one game is listed, and taken
+// down, under network version 65535, which no game uses, so no player ever sees it.
+//
 // SAFE TO RUN ANYWHERE: it sends only to 127.0.0.1, and binds only there, so it can test only a server on the same machine and can never be
 // pointed at anyone else's. HTTPS trusts only list-test.pem, and checks the certificate is for "localhost" (the name the relays' list gives).
 //
 // INDEPENDENT OF THE SERVER: it uses none of the server's code. Its messages are written by hand from PROTOCOL.md section 2, and the
 // list's answers are compared as exact text, so a fault in the server's own encoder or JSON can't hide itself here.
 //
-// What it expects is the server started with the settings the checks name: region "virginia", the list on 8443, the control port 27500,
-// relay ports 27501 to 27564, a relay whose host is "localhost", and the log in server.log.
+// Without --installed, it expects the server started with the settings CI uses: region "virginia", the list on 8443, the control port
+// 27500, relay ports 27501 to 27564, a relay whose host is "localhost", and the log in server.log (java.yml's smoke job).
 public final class Smoke {
   private Smoke() {
   }
 
   private static final String HOST = "127.0.0.1";
-  private static final String NAME = "localhost";
-  private static final int LIST = 8443;
-  private static final int CONTROL = 27500;
-  private static final int FIRST_RELAY_PORT = 27501;
-  private static final int LAST_RELAY_PORT = 27564;
-  private static final int VERSION = 113;
-  private static final Path CERTIFICATE = Path.of("list-test.pem");
-  private static final Path LOG = Path.of("server.log");
+  // The network version its game is listed under: one no game uses, so a player never sees it
+  private static final int VERSION = 65535;
+  private static final Path INSTALLED_SETTINGS = Path.of("/etc/avpx/settings.json");
+  private static final Pattern DNS_NAME = Pattern.compile("[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*");
+
+  // Where the server is, and what it should say: name is the DNS name its certificate must be for, relaysText the exact answer to
+  // GET /v1/relays, log the server's log file (null: no log checks)
+  private record Config(String name, int list, int control, int firstRelayPort, int lastRelayPort, String region, String relaysText,
+      Path certificate, Path log) {
+  }
+
+  // CI's: java.yml's smoke job starts the server with these
+  private static final Config CI = new Config("localhost", 8443, 27500, 27501, 27564, "virginia",
+      "{\"relays\":[{\"region\":\"virginia\",\"host\":\"localhost\",\"port\":27500}]}", Path.of("list-test.pem"), Path.of("server.log"));
+
+  private static Config c = CI;
 
   // The relay's message types, by their numbers (PROTOCOL.md section 2)
   private static final int ECHO = 14;
@@ -244,15 +261,15 @@ public final class Smoke {
   // One request over its own connection. The connection goes to 127.0.0.1, and TLS checks the certificate is for "localhost": the name
   // is given, never looked up. contentLength, if not null, is sent in place of the body's own length.
   private static Reply api(SSLContext context, String method, String path, byte[] body) {
-    try (Socket raw = new Socket(loopback(), LIST);
-        SSLSocket tls = (SSLSocket) context.getSocketFactory().createSocket(raw, NAME, LIST, true)) {
+    try (Socket raw = new Socket(loopback(), c.list());
+        SSLSocket tls = (SSLSocket) context.getSocketFactory().createSocket(raw, c.name(), c.list(), true)) {
       SSLParameters parameters = tls.getSSLParameters();
       parameters.setEndpointIdentificationAlgorithm("HTTPS");
       tls.setSSLParameters(parameters);
       tls.setSoTimeout(10000);
       tls.startHandshake();
 
-      StringBuilder head = new StringBuilder(method + " " + path + " HTTP/1.1\r\nHost: " + NAME + "\r\n");
+      StringBuilder head = new StringBuilder(method + " " + path + " HTTP/1.1\r\nHost: " + c.name() + "\r\n");
 
       if (body != null) {
         head.append("Content-Type: application/json\r\nContent-Length: ").append(body.length).append("\r\n");
@@ -314,7 +331,7 @@ public final class Smoke {
 
   // A listing's body, written by hand in PROTOCOL.md section 4's order
   private static String listing(String owner, String code, String pass, long passTime, int players) {
-    return "{" + (owner == null ? "" : "\"owner\":\"" + owner + "\",") + "\"region\":\"virginia\",\"code\":\"" + code + "\",\"pass\":\"" + pass
+    return "{" + (owner == null ? "" : "\"owner\":\"" + owner + "\",") + "\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"pass\":\"" + pass
         + "\",\"passTime\":" + passTime + ",\"name\":\"Smoke test\",\"level\":\"Genshd1\",\"mode\":\"Coop\",\"gameStyle\":3,\"levelNumber\":12,"
         + "\"coopLobby\":0,\"players\":" + players + ",\"maxPlayers\":4,\"version\":" + VERSION + ",\"hostMs\":" + hostMs + "}";
   }
@@ -336,8 +353,14 @@ public final class Smoke {
   }
 
   public static void main(String[] args) throws Exception {
-    boolean withLog = !Arrays.asList(args).contains("--without-log");
-    SSLContext tls = trustingOnly(CERTIFICATE);
+    List<String> words = Arrays.asList(args);
+
+    if (words.contains("--installed")) {
+      c = installed(words);
+    }
+
+    boolean withLog = c.log() != null && !words.contains("--without-log");
+    SSLContext tls = trustingOnly(c.certificate());
 
     // Wait for the server: up to 15 s
     Reply relays = null;
@@ -362,8 +385,7 @@ public final class Smoke {
     Reply noCa = api(SSLContext.getDefault(), "GET", "/v1/relays", (byte[]) null);
     check(noCa.status() == 0 && noCa.error().matches("(?s).*(SSLHandshake|PKIX|certif).*"),
         "without the test certificate, the client refuses the server", noCa.error());
-    check(relays.body().equals("{\"relays\":[{\"region\":\"virginia\",\"host\":\"localhost\",\"port\":" + CONTROL + "}]}"), "GET /v1/relays",
-        relays.body());
+    check(relays.body().equals(c.relaysText()), "GET /v1/relays", relays.body());
     check(relays.headers().containsKey("strict-transport-security") && "nosniff".equals(relays.headers().get("x-content-type-options")),
         "HSTS and nosniff headers");
     Reply empty = api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null);
@@ -376,11 +398,11 @@ public final class Smoke {
       for (int i = 1; i <= 3; i++) {
         byte[] mine = random(16);
         long t0 = System.nanoTime();
-        Got back = ask(host, CONTROL, msg(ECHO, mine, null, 0, i));
+        Got back = ask(host, c.control(), msg(ECHO, mine, null, 0, i));
         double ms = (System.nanoTime() - t0) / 1e6;
         Read m = back == null ? null : read(back.data());
         check(m != null && m.type() == ECHO_BACK && Arrays.equals(m.secret(), mine) && m.number() == i && back.data().length == 64
-            && back.fromPort() == CONTROL, "ECHO " + i + " comes back as ECHO_BACK, the same 64 bytes' worth, from the control port",
+            && back.fromPort() == c.control(), "ECHO " + i + " comes back as ECHO_BACK, the same 64 bytes' worth, from the control port",
             String.format(Locale.ROOT, "%.2f ms", ms));
         best = Math.min(best, ms);
         pause(100);
@@ -389,9 +411,9 @@ public final class Smoke {
       hostMs = Math.max(1, Math.round(best));
 
       // The host opens a room
-      Read c1 = readOrNothing(ask(host, CONTROL, msg(HOST_OPEN)));
+      Read c1 = readOrNothing(ask(host, c.control(), msg(HOST_OPEN)));
       check(c1.type() == COOKIE, "HOST_OPEN first gets a COOKIE");
-      Read opened = readOrNothing(ask(host, CONTROL, msg(HOST_OPEN, c1.secret(), null, 0, 0)));
+      Read opened = readOrNothing(ask(host, c.control(), msg(HOST_OPEN, c1.secret(), null, 0, 0)));
       check(opened.type() == HOST_OPENED && CODE.matcher(opened.code()).matches() && !allZero(opened.pass())
           && Math.abs(opened.passTime() - System.currentTimeMillis() / 1000.0) < 5 && allZero(opened.tail()),
           "HOST_OPENED: a token, a code, a pass and a pass time of now");
@@ -405,15 +427,15 @@ public final class Smoke {
       check(posted.status() == 201 && ownerFound.matches(), "POST /v1/games with the pass: 201 and an owner key");
       String owner = ownerFound.matches() ? ownerFound.group(1) : "";
       Reply shown = api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null);
-      check(games(shown) == 1 && shown.body().contains("\"region\":\"virginia\",\"code\":\"" + code + "\",\"name\":\"Smoke test\"")
+      check(games(shown) == 1 && shown.body().contains("\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"name\":\"Smoke test\"")
           && shown.body().contains("\"levelNumber\":12") && !shown.body().contains(owner) && !shown.body().contains(pass),
           "the listing shows, with no owner key or pass in it");
 
       // A joiner joins
-      Read c2 = readOrNothing(ask(joiner, CONTROL, msg(JOIN, null, code, 0, 0)));
+      Read c2 = readOrNothing(ask(joiner, c.control(), msg(JOIN, null, code, 0, 0)));
       check(c2.type() == COOKIE, "JOIN first gets a COOKIE");
-      Read joined = readOrNothing(ask(joiner, CONTROL, msg(JOIN, c2.secret(), code, 0, 0)));
-      check(joined.type() == JOIN_PORT && joined.port() >= FIRST_RELAY_PORT && joined.port() <= LAST_RELAY_PORT && joined.code().equals(code),
+      Read joined = readOrNothing(ask(joiner, c.control(), msg(JOIN, c2.secret(), code, 0, 0)));
+      check(joined.type() == JOIN_PORT && joined.port() >= c.firstRelayPort() && joined.port() <= c.lastRelayPort() && joined.code().equals(code),
           "JOIN_PORT: a ticket and a relay port", "port " + joined.port());
       Read note = readOrNothing(next(host, 1000));
       check(note.type() == NEW_JOINER && note.port() == joined.port() && Arrays.equals(note.secret(), token),
@@ -474,7 +496,7 @@ public final class Smoke {
       }
 
       // Keep and renew
-      Read kept = readOrNothing(ask(host, CONTROL, msg(HOST_KEEP, token, null, 0, 0)));
+      Read kept = readOrNothing(ask(host, c.control(), msg(HOST_KEEP, token, null, 0, 0)));
       check(kept.type() == HOST_KEPT && kept.number() == 1 && !allZero(kept.pass()), "HOST_KEPT: 1 joiner, and a fresh pass");
       String freshPass = HexFormat.of().formatHex(kept.pass());
       Reply put = api(tls, "PUT", "/v1/games", listing(owner, code, freshPass, kept.passTime(), 2));
@@ -483,21 +505,21 @@ public final class Smoke {
       // Hostile packets, from a third socket
       byte[] tooLong = new byte[65];
       Arrays.fill(tooLong, (byte) 1);
-      send(stranger, CONTROL, tooLong);
+      send(stranger, c.control(), tooLong);
       byte[] wrongMagic = msg(ECHO, random(16), null, 0, 0);
       wrongMagic[0] = 0x42;
-      send(stranger, CONTROL, wrongMagic);
+      send(stranger, c.control(), wrongMagic);
       byte[] huge = new byte[1600];
       Arrays.fill(huge, (byte) 2);
-      send(stranger, CONTROL, huge);
-      send(stranger, CONTROL, msg(ECHO_BACK, random(16), null, 0, 1));
+      send(stranger, c.control(), huge);
+      send(stranger, c.control(), msg(ECHO_BACK, random(16), null, 0, 1));
       byte[] keptForged = msg(HOST_KEPT, random(16), null, 0, 0);
       keptForged[40] = 9;
-      send(stranger, CONTROL, keptForged);
-      send(stranger, CONTROL, msg(JOIN, null, code, 5, 0));
+      send(stranger, c.control(), keptForged);
+      send(stranger, c.control(), msg(JOIN, null, code, 5, 0));
       check(next(stranger, 500) == null,
           "six bad control packets (65 bytes, wrong magic, 1,600 bytes, an ECHO_BACK, a HOST_KEPT, a JOIN with a port) get no answer");
-      Read refused = readOrNothing(ask(stranger, CONTROL, msg(HOST_KEEP, random(16), null, 0, 0)));
+      Read refused = readOrNothing(ask(stranger, c.control(), msg(HOST_KEEP, random(16), null, 0, 0)));
       check(refused.type() == REFUSED && refused.number() == 1, "a HOST_KEEP with a wrong token: REFUSED 1");
       send(stranger, port, "a stranger on the joiner's port".getBytes(StandardCharsets.US_ASCII));
       check(next(host, 500) == null && next(joiner, 300) == null, "a stranger's packet on the joiner's port reaches nobody");
@@ -516,14 +538,14 @@ public final class Smoke {
 
       // The end of the game
       pause(1100);
-      check(api(tls, "DELETE", "/v1/games", "{\"region\":\"virginia\",\"code\":\"" + code + "\",\"owner\":\"" + owner + "\"}").status() == 204,
+      check(api(tls, "DELETE", "/v1/games", "{\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"owner\":\"" + owner + "\"}").status() == 204,
           "DELETE with the owner key: 204");
       pause(1100);
       check(games(api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null)) == 0, "the listing is gone");
-      send(host, CONTROL, msg(HOST_CLOSE, token, null, 0, 0));
+      send(host, c.control(), msg(HOST_CLOSE, token, null, 0, 0));
       pause(100);
-      Read c3 = readOrNothing(ask(joiner, CONTROL, msg(JOIN, null, code, 0, 0)));
-      Read after = readOrNothing(ask(joiner, CONTROL, msg(JOIN, c3.secret(), code, 0, 0)));
+      Read c3 = readOrNothing(ask(joiner, c.control(), msg(JOIN, null, code, 0, 0)));
+      Read after = readOrNothing(ask(joiner, c.control(), msg(JOIN, c3.secret(), code, 0, 0)));
       check(after.type() == REFUSED && after.number() == 1, "after HOST_CLOSE, a JOIN gets REFUSED 1");
       check(notLoopback == 0, "every packet came from 127.0.0.1");
 
@@ -535,12 +557,50 @@ public final class Smoke {
     finish();
   }
 
+  // The config of the server installed on this machine, from its own settings, read as the server reads them
+  private static Config installed(List<String> words) throws Exception {
+    Settings settings = Settings.read(INSTALLED_SETTINGS);
+    Settings.ListSettings list = settings.list();
+
+    if (list == null) {
+      throw new IllegalStateException("this machine's settings have no list, and the smoke test needs one: it lists a game");
+    }
+
+    String name = null;
+    StringBuilder relays = new StringBuilder("{\"relays\":[");
+
+    for (int i = 0; i < list.relays().size(); i++) {
+      Listings.Relay r = list.relays().get(i);
+      relays.append(i > 0 ? "," : "").append("{\"region\":\"").append(r.region()).append("\",\"host\":\"").append(r.host())
+          .append("\",\"port\":").append(r.port()).append('}');
+
+      if (r.region().equals(settings.region())) {
+        name = r.host();
+      }
+    }
+
+    relays.append("]}");
+    int given = words.indexOf("--name");
+
+    if (given >= 0) {
+      name = given + 1 < words.size() && DNS_NAME.matcher(words.get(given + 1)).matches() ? words.get(given + 1) : null;
+
+      if (name == null) {
+        throw new IllegalArgumentException("--name needs a DNS name after it");
+      }
+    }
+
+    int[] ports = settings.relayPorts();
+    return new Config(name, list.port(), settings.controlPort(), ports[0], ports[ports.length - 1], settings.region(), relays.toString(),
+        Path.of(list.certFile()), null);
+  }
+
   // The log: wait for the once-a-minute lines, up to 75 s, then the six checks of what they say and what they never hold
   private static void checkLog(String code, byte[] token, byte[] ticket, String owner, String pass) throws Exception {
     String text = "";
 
     for (int i = 0; i < 75; i++) {
-      text = Files.exists(LOG) ? Files.readString(LOG, StandardCharsets.UTF_8) : "";
+      text = Files.exists(c.log()) ? Files.readString(c.log(), StandardCharsets.UTF_8) : "";
 
       if (text.contains("relay: in the last") && text.contains("list: in the last")) {
         break;

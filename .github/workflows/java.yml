@@ -39,10 +39,10 @@ jobs:
 
       - name: The same code makes the same jar, byte for byte
         run: |
-          first=$(sha256sum java/build/avpx-server.jar | cut -d ' ' -f 1)
+          first=$(sha256sum java/build/avpx-server.jar java/build/avpx-smoke.jar | cut -d ' ' -f 1)
           sh java/build.sh > /dev/null
-          second=$(sha256sum java/build/avpx-server.jar | cut -d ' ' -f 1)
-          echo "first build $first, second build $second"
+          second=$(sha256sum java/build/avpx-server.jar java/build/avpx-smoke.jar | cut -d ' ' -f 1)
+          echo "first build" $first "second build" $second
           test "$first" = "$second"
 
       # CODING-STANDARD.md's rules, every one CheckStandard checks, over the whole repository: run from its top folder
@@ -126,7 +126,7 @@ jobs:
           "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-server.jar" > java-server.out 2>&1 &
           server=$!
           status=0
-          "$JAVA_HOME/bin/java" -cp "$GITHUB_WORKSPACE/java/build/tools" avpx.tools.Smoke || status=$?
+          "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" || status=$?
           kill "$server"
           wait "$server" || true
           echo "----- what the Java server wrote to its screen"

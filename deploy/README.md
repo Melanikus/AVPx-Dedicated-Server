@@ -178,7 +178,8 @@ Then in the console, as root (`sudo -i` if you aren't), do **section C above, st
 
 To play the game against this machine from your own PC (PO gives the game's side of the steps), it's opened to **your own IP only**, in both firewalls:
 - **DigitalOcean's firewall:** add inbound **TCP 443** and **UDP 27500-27564**, each from your IP only.
-- **On the machine:** `ufw allow from YOUR.IP to any port 443 proto tcp && ufw allow from YOUR.IP to any port 27500:27564 proto udp`.
+- **On the machine,** as root, from the fetched commit's folder: `sh deploy/open-for-tester.sh YOUR.IP`. It checks the address is one plain IPv4 address, opens exactly those two ports to it, and prints nothing of the address.
+- **When the test is over:** `sh deploy/close-for-tester.sh YOUR.IP` takes those two rules out again, and the same ports come out of DigitalOcean's firewall.
 
 Nothing is open to anyone else. **To be done with it:** destroy the droplet in DigitalOcean; its pass key and certificate go with it.
 

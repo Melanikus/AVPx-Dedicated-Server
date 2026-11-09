@@ -1,0 +1,32 @@
+# Puts one pinned version of Node.js on the runner, from nodejs.org, and checks it before anything runs it. Written 2026-11-08 by
+# Melanikus for AVPx Dedicated Server.
+#
+# Why not actions/setup-node: it downloads a Node built by GitHub with no hash of ours to check it against (AVP Tao 1: untrusted until
+# checked). This takes nodejs.org's own release and refuses it unless its SHA-256 is the one written below.
+#
+# The hash comes from that release's SHASUMS256.txt, whose signature is checked against the Node release team's keys
+# (github.com/nodejs/release-keys) by a person before it's written here, once per version. Until it is, KEY is "not-pinned-yet" and
+# this step fails: nothing runs on a Node nobody has checked.
+name: Pinned Node.js
+description: Node.js from nodejs.org, checked against a pinned SHA-256
+runs:
+  using: composite
+  steps:
+    - name: Download and check Node.js
+      shell: bash
+      env:
+        VERSION: v24.22.0
+        KEY: not-pinned-yet
+      run: |
+        set -euo pipefail
+        if ! [[ "$KEY" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "Node $VERSION has no checked SHA-256 here yet, so it is not run (see the comment at the top of this file)"
+          exit 1
+        fi
+        file="node-$VERSION-linux-x64.tar.xz"
+        curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/$file" "https://nodejs.org/dist/$VERSION/$file"
+        echo "$KEY  $RUNNER_TEMP/$file" | sha256sum --check --strict
+        mkdir -p "$RUNNER_TEMP/node"
+        tar -xJf "$RUNNER_TEMP/$file" -C "$RUNNER_TEMP/node" --strip-components=1
+        echo "$RUNNER_TEMP/node/bin" >> "$GITHUB_PATH"
+        "$RUNNER_TEMP/node/bin/node" --version

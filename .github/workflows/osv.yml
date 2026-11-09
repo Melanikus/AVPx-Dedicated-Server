@@ -1,0 +1,47 @@
+# OSV-Scanner: every dependency in the lock file against the OSV database (GATES.md). Written 2026-11-08 by Melanikus for AVPx
+# Dedicated Server.
+#
+# The scanner is Google's own release binary, v2.7.0, checked against the SHA-256 in that release's osv-scanner_SHA256SUMS (looked up
+# on GitHub by PO; commit google/osv-scanner@bfe2f84abd2f09fe0b83ba7f6dad40d296762f40). The server has no dependencies, so the scan
+# must still say it read package-lock.json, or a scan that read nothing would pass (a blind spot fails the gate).
+name: OSV-Scanner
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 6 * * *'
+
+permissions:
+  contents: read
+
+jobs:
+  osv:
+    name: OSV-Scanner
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Download and check OSV-Scanner v2.7.0
+        env:
+          KEY: 160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/osv-scanner" \
+            https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64
+          echo "$KEY  $RUNNER_TEMP/osv-scanner" | sha256sum --check --strict
+          chmod +x "$RUNNER_TEMP/osv-scanner"
+      - name: Scan
+        run: |
+          set -uo pipefail
+          "$RUNNER_TEMP/osv-scanner" scan source --lockfile package-lock.json 2>&1 | tee osv-output.txt
+          status=${PIPESTATUS[0]}
+          grep -q 'package-lock.json' osv-output.txt || { echo 'the scan did not say it read package-lock.json'; exit 1; }
+          # 0 is "no vulnerabilities". 128 is "no packages found", which is right for a lock file with none, and only then
+          if [ "$status" -eq 0 ]; then exit 0; fi
+          if [ "$status" -eq 128 ] && grep -q 'found 0 packages' osv-output.txt; then exit 0; fi
+          echo "OSV-Scanner ended with $status"
+          exit 1

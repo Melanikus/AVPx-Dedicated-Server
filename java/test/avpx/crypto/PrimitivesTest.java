@@ -19,7 +19,7 @@ import java.security.spec.NamedParameterSpec;
 import java.util.Arrays;
 import java.util.HexFormat;
 
-// The tests of the primitives' own behaviour (Gcm, P384, MlKem, Signatures): what each seals, agrees or signs comes back only exactly as
+// The tests of the primitives' own behaviour (Gcm, P384, MlKem): what each seals, agrees or signs comes back only exactly as
 // it was made, and anything else is refused. Written 2026-11-09 by Melanikus for AVPx Dedicated Server. NIST's and Wycheproof's own
 // known answers are in their own tests, read from test-vectors/crypto-kat; these hold the code's edges.
 public final class PrimitivesTest {
@@ -33,7 +33,7 @@ public final class PrimitivesTest {
     return c;
   }
 
-  // A key pair of a parameter set version 2 doesn't use (ML-KEM-512, ML-DSA-44), made by Java itself: what ours must refuse
+  // A key pair of a parameter set version 2 doesn't use (ML-KEM-512), made by Java itself: what ours must refuse
   private static KeyPair otherSet(NamedParameterSpec set) throws GeneralSecurityException {
     KeyPairGenerator generator = KeyPairGenerator.getInstance(set.getName());
     generator.initialize(set, ScriptedRandom.seeded(15));
@@ -153,41 +153,10 @@ public final class PrimitivesTest {
       same(one.secret(), two.secret(), "and the same secret");
     });
 
-    test("ECDSA P-384 (96 bytes, r then s) and ML-DSA-87 (4,627 bytes): each checks what it signed, and nothing changed", () -> {
-      byte[] message = bytes(48, 0x5d);
-      KeyPair ec = Signatures.ecdsaKeys(ScriptedRandom.seeded(6));
-      byte[] ecSig = Signatures.ecdsaSign(ec.getPrivate(), message, ScriptedRandom.seeded(7));
-      same(ecSig.length, 96, "ECDSA: 96 bytes");
-      ok(Signatures.ecdsaVerify(ec.getPublic(), message, ecSig), "it checks");
-      ok(!Signatures.ecdsaVerify(ec.getPublic(), flip(message, 3), ecSig), "not for another message");
-      ok(!Signatures.ecdsaVerify(ec.getPublic(), message, flip(ecSig, 3)), "not with a bit of it changed");
-      ok(!Signatures.ecdsaVerify(ec.getPublic(), message, Arrays.copyOf(ecSig, 95)), "not at 95 bytes");
-      ok(!Signatures.ecdsaVerify(Signatures.ecdsaKeys(ScriptedRandom.seeded(8)).getPublic(), message, ecSig), "not under another key");
-
-      KeyPair ml = Signatures.mlDsaKeys(ScriptedRandom.seeded(9));
-      byte[] mlPublic = Signatures.mlDsaEncode(ml.getPublic());
-      same(mlPublic.length, 2592, "an ML-DSA-87 public key of 2,592 bytes");
-      same(Signatures.mlDsaEncode(Signatures.mlDsaDecode(mlPublic)), mlPublic, "it reads back the same");
-      byte[] mlSig = Signatures.mlDsaSign(ml.getPrivate(), message, ScriptedRandom.seeded(10));
-      same(mlSig.length, 4627, "ML-DSA-87: 4,627 bytes");
-      ok(Signatures.mlDsaVerify(Signatures.mlDsaDecode(mlPublic), message, mlSig), "it checks, under the key as it went on the wire");
-      ok(!Signatures.mlDsaVerify(ml.getPublic(), flip(message, 3), mlSig), "not for another message");
-      ok(!Signatures.mlDsaVerify(ml.getPublic(), message, flip(mlSig, 30)), "not with a bit of it changed");
-      ok(!Signatures.mlDsaVerify(ml.getPublic(), message, Arrays.copyOf(mlSig, 4626)), "not at 4,626 bytes");
-      same(Signatures.mlDsaDecode(Arrays.copyOf(mlPublic, 2591)), null, "a public key of 2,591 bytes");
-
-      // Only ML-DSA-87: a key of a smaller set, made by Java itself, can't sign here
-      KeyPair small = otherSet(NamedParameterSpec.ML_DSA_44);
-      throwsWith(() -> Signatures.mlDsaSign(small.getPrivate(), message, ScriptedRandom.seeded(14)), "can't sign with ML-DSA-87",
-          "an ML-DSA-44 key is refused");
-    });
-
     test("every key Java gives out is in the raw form the wire uses, with nothing hidden in front", () -> {
       byte[] kemKey = MlKem.encode(MlKem.generate(ScriptedRandom.seeded(11)).getPublic());
-      byte[] dsaKey = Signatures.mlDsaEncode(Signatures.mlDsaKeys(ScriptedRandom.seeded(12)).getPublic());
-      ok(kemKey.length == 1568 && dsaKey.length == 2592, "FIPS 203's and FIPS 204's sizes");
+      ok(kemKey.length == 1568, "FIPS 203's size");
       ok(!hex(kemKey).startsWith("3082"), "no DER left in front of the ML-KEM key");
-      ok(!hex(dsaKey).startsWith("3082"), "nor the ML-DSA key");
     });
 
     test("P384.pair takes the two halves of one key only: never a number with another key's point, 0, the order, or a point off the curve", () -> {

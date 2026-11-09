@@ -130,16 +130,16 @@ public final class NoiseTest {
       same(b.decryptAndHash(sealed), bytes(4, 5), "and the true one, after it, still opens: a refusal changed nothing");
     });
 
-    test("Split: HKDF-SHA-384 with ck as its salt, no input, the info \"AVPX split v2\", 88 bytes, in 5.1's order", () -> {
+    test("Split: HKDF-SHA-384 with ck as its salt, no input, the info \"AVPX split v2\", 120 bytes, in 5.1's order", () -> {
       Noise noise = new Noise(HandshakeA.PROTOCOL);
       noise.mixKey(bytes(32, 8));
       byte[] ck = noise.ck();
-      byte[] out = Hkdf.derive(ck, NOTHING, "AVPX split v2".getBytes(StandardCharsets.US_ASCII), 88);
+      byte[] out = Hkdf.derive(ck, NOTHING, "AVPX split v2".getBytes(StandardCharsets.US_ASCII), 120);
       Noise.Split s = noise.split();
-      same(s.initiatorKey(), Arrays.copyOfRange(out, 0, 32), "the game-to-relay key, first");
-      same(s.responderKey(), Arrays.copyOfRange(out, 32, 64), "the relay-to-game key");
-      same(s.initiatorIv(), Arrays.copyOfRange(out, 64, 76), "the game-to-relay IV");
-      same(s.responderIv(), Arrays.copyOfRange(out, 76, 88), "the relay-to-game IV, last");
+      same(s.initiatorSecret(), Arrays.copyOfRange(out, 0, 48), "the game-to-relay secret, first: 48 bytes");
+      same(s.responderSecret(), Arrays.copyOfRange(out, 48, 96), "the relay-to-game secret");
+      same(s.initiatorIv(), Arrays.copyOfRange(out, 96, 108), "the game-to-relay IV");
+      same(s.responderIv(), Arrays.copyOfRange(out, 108, 120), "the relay-to-game IV, last");
     });
 
     test("wiping: ck and h are zero after, and so is k (seen by what it seals: the all-zero key's seal)", () -> {

@@ -21,10 +21,11 @@ import java.util.Arrays;
 // Each direction has its own key, IV and counter, from Split (the game sends with the initiator's, the relay with the responder's), and
 // the nonce is that direction's IV XOR the counter (Noise.nonce). Counters start at 0, and go up by one a message.
 //
-// KEYS CHANGE BY THEMSELVES (CRYPTO.md section 9, settled for this channel too with Third): an epoch is 2^20 messages. Epoch 0's key is
-// Split's key itself; epoch e from 1 is HKDF-Expand(Split's key, "AVPX epoch v2" || e as 4 bytes little-endian, 32 bytes). Both sides
-// change at the same counter, with no message. A session ends at 2^32 messages either way, or 24 hours, or after FAILED_TAGS tags that
-// fail: then a new handshake is needed.
+// KEYS CHANGE BY THEMSELVES (CRYPTO.md section 9, settled for this channel too with Third): an epoch is 2^20 messages, and every epoch's
+// key, epoch 0's too, is HKDF-Expand(Split's 48-byte secret for that direction, "AVPX epoch v2" || e as 4 bytes little-endian, 32
+// bytes). The secret itself never seals anything (CRYPTO.md section 5.1 point 3: until 2026-11-09 epoch 0 sealed with it, one key with
+// two jobs). Both sides change at the same counter, with no message. A session ends at 2^32 messages either way, or 24 hours, or after
+// FAILED_TAGS tags that fail: then a new handshake is needed.
 //
 // The relay never answers anything that fails its tag; it only counts it.
 public final class Channel {
@@ -38,15 +39,19 @@ public final class Channel {
   private static final int AAD_BYTES = 24;
   private static final byte[] EPOCH_INFO = "AVPX epoch v2".getBytes(StandardCharsets.US_ASCII);
 
-  // One direction's key and IV, and the epoch key now in use
+  // One direction's secret and IV, and the epoch key now in use
   private static final class Way {
-    private final byte[] key;
+    private final byte[] secret;
     private final byte[] iv;
     private long epoch = -1;
     private byte[] epochKey;
 
-    Way(byte[] key, byte[] iv) {
-      this.key = key.clone();
+    Way(byte[] secret, byte[] iv) {
+      if (secret == null || secret.length != Noise.SECRET_BYTES || iv == null || iv.length != Noise.IV_BYTES) {
+        throw new IllegalArgumentException("Channel: each direction has a 48-byte secret and a 12-byte IV, from Split");
+      }
+
+      this.secret = secret.clone();
       this.iv = iv.clone();
     }
 
@@ -55,7 +60,7 @@ public final class Channel {
 
       if (e != epoch) {
         Noise.wipe(epochKey);
-        epochKey = e == 0 ? key.clone() : Hkdf.expand(key, epochInfo(e), Noise.KEY_BYTES);
+        epochKey = epochKey(secret, e);
         epoch = e;
       }
 
@@ -63,10 +68,16 @@ public final class Channel {
     }
 
     void wipe() {
-      Noise.wipe(key);
+      Noise.wipe(secret);
       Noise.wipe(iv);
       Noise.wipe(epochKey);
     }
+  }
+
+  // Epoch e's key from one direction's secret, epoch 0's as every other's (CRYPTO.md section 9): for this channel, and for the games'
+  // own sealed datagrams, which seal by the same rule
+  static byte[] epochKey(byte[] secret, long epoch) {
+    return Hkdf.expand(secret, epochInfo(epoch), Noise.KEY_BYTES);
   }
 
   static byte[] epochInfo(long epoch) {
@@ -88,24 +99,25 @@ public final class Channel {
   private long failedTags;
   private boolean over;
 
-  // ourKey and ourIv seal what this side sends; theirKey and theirIv open what it's sent. now is when the session started.
-  public Channel(byte[] sessionId, byte[] ourKey, byte[] ourIv, byte[] theirKey, byte[] theirIv, long now) {
+  // ourSecret and ourIv seal what this side sends; theirSecret and theirIv open what it's sent (each secret 48 bytes, each IV 12). now is
+  // when the session started.
+  public Channel(byte[] sessionId, byte[] ourSecret, byte[] ourIv, byte[] theirSecret, byte[] theirIv, long now) {
     this.sessionId = sessionId.clone();
-    this.out = new Way(ourKey, ourIv);
-    this.in = new Way(theirKey, theirIv);
+    this.out = new Way(ourSecret, ourIv);
+    this.in = new Way(theirSecret, theirIv);
     this.startedAt = now;
   }
 
   // The relay's side of a session, from handshake A's keys: it sends with the responder's, and opens the game's with the initiator's
   public static Channel relaySide(HandshakeA.Keys keys, long now) {
     Noise.Split s = keys.split();
-    return new Channel(keys.sessionId(), s.responderKey(), s.responderIv(), s.initiatorKey(), s.initiatorIv(), now);
+    return new Channel(keys.sessionId(), s.responderSecret(), s.responderIv(), s.initiatorSecret(), s.initiatorIv(), now);
   }
 
   // The game's side, the other way round
   public static Channel gameSide(HandshakeA.Keys keys, long now) {
     Noise.Split s = keys.split();
-    return new Channel(keys.sessionId(), s.initiatorKey(), s.initiatorIv(), s.responderKey(), s.responderIv(), now);
+    return new Channel(keys.sessionId(), s.initiatorSecret(), s.initiatorIv(), s.responderSecret(), s.responderIv(), now);
   }
 
   public byte[] sessionId() {

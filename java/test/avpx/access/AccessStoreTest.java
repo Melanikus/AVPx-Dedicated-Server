@@ -445,7 +445,7 @@ public final class AccessStoreTest {
                 "each folder refused and counted once");
             store.turn(NOW);
             line = store.countsLine();
-            ok(line.contains("0 decision files refused") && line.contains("0 that couldn't be deleted"), "and at the next turn, not again");
+            ok(line.contains(", 0 decision files refused, 0 that couldn't be deleted"), "and at the next turn, not again");
           } finally {
             remove(folder);
           }

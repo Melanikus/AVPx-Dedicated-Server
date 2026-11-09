@@ -1,6 +1,5 @@
 package avpx.crypto;
 
-import java.io.ByteArrayOutputStream;
 import java.security.GeneralSecurityException;
 import java.util.Arrays;
 import javax.crypto.Mac;
@@ -77,17 +76,22 @@ public final class Hkdf {
       throw new IllegalArgumentException("HKDF gives at most 255 blocks of its hash");
     }
 
-    ByteArrayOutputStream out = new ByteArrayOutputStream();
+    // The output's own array, its length known from the start, filled block by block: so no copy of a key is left anywhere but in it and
+    // the blocks, and each block is wiped as soon as it's copied (Secondary's read of the server, 6.1: a growing stream used to leave
+    // copies of every key HKDF made in arrays nobody could wipe)
+    byte[] result = new byte[length];
     byte[] block = new byte[0];
+    int done = 0;
 
-    for (int i = 1; out.size() < length; i++) {
-      block = hmac(algorithm, prk, block, info, new byte[] {(byte) i});
-      out.writeBytes(block);
+    for (int i = 1; done < length; i++) {
+      byte[] next = hmac(algorithm, prk, block, info, new byte[] {(byte) i});
+      Arrays.fill(block, (byte) 0);
+      block = next;
+      int take = Math.min(block.length, length - done);
+      System.arraycopy(block, 0, result, done, take);
+      done += take;
     }
 
-    byte[] all = out.toByteArray();
-    byte[] result = Arrays.copyOf(all, length);
-    Arrays.fill(all, (byte) 0);
     Arrays.fill(block, (byte) 0);
     return result;
   }

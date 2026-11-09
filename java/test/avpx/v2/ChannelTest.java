@@ -24,9 +24,9 @@ public final class ChannelTest {
   }
 
   private static final byte[] ID = bytes(8, 0x5a);
-  private static final byte[] GAME_KEY = bytes(32, 0x01);
+  private static final byte[] GAME_KEY = bytes(48, 0x01);
   private static final byte[] GAME_IV = bytes(12, 0x02);
-  private static final byte[] RELAY_KEY = bytes(32, 0x03);
+  private static final byte[] RELAY_KEY = bytes(48, 0x03);
   private static final byte[] RELAY_IV = bytes(12, 0x04);
   private static final long DAY = 24L * 60 * 60 * 1000;
 
@@ -47,12 +47,9 @@ public final class ChannelTest {
 
   // ----- The channel's datagrams, by hand from CRYPTO.md section 7 and 5.1
 
-  // Epoch 0's key is the key itself; epoch e's is HKDF-Expand(key, "AVPX epoch v2" || e as 4 bytes little-endian, 32)
+  // Every epoch's key, epoch 0's too, is HKDF-Expand(the 48-byte secret, "AVPX epoch v2" || e as 4 bytes little-endian, 32): the secret
+  // itself never seals anything (CRYPTO.md 5.1 point 8)
   private static byte[] epochKey(byte[] key, long epoch) {
-    if (epoch == 0) {
-      return key.clone();
-    }
-
     byte[] words = "AVPX epoch v2".getBytes(StandardCharsets.US_ASCII);
     byte[] info = Arrays.copyOf(words, words.length + 4);
 
@@ -188,7 +185,7 @@ public final class ChannelTest {
     test("THE KEYS CHANGE BY THEMSELVES every 2^20 messages: the last of epoch 0 and the first of epoch 1, as made by hand", () -> {
       Channel relay = relay(0);
       long edge = 1L << 20;
-      same(relay.open(byHand(GAME_KEY, GAME_IV, edge - 1, message(1)), 0), message(1), "counter 2^20 - 1, under the key itself");
+      same(relay.open(byHand(GAME_KEY, GAME_IV, edge - 1, message(1)), 0), message(1), "counter 2^20 - 1, under epoch 0's key");
       same(relay.open(byHand(GAME_KEY, GAME_IV, edge, message(2)), 0), message(2), "counter 2^20, under epoch 1's key");
 
       // Counter 2^20 + 1 sealed under the old key: refused, so both sides must change at the very same counter
@@ -201,12 +198,13 @@ public final class ChannelTest {
       }
 
       byte[] underOldKey = Arrays.copyOf(aad, 104);
-      System.arraycopy(Gcm.seal(GAME_KEY, nonce, aad, message(3)), 0, underOldKey, 24, 80);
+      System.arraycopy(Gcm.seal(epochKey(GAME_KEY, 0), nonce, aad, message(3)), 0, underOldKey, 24, 80);
       same(relay.open(underOldKey, 0), null, "counter 2^20 + 1 under epoch 0's key");
       same(relay.lastRefusal(), Channel.Refusal.TAG, "its tag fails");
       same(relay.open(old, 0), message(3), "and under epoch 1's, it opens");
 
-      ok(!Arrays.equals(epochKey(GAME_KEY, 1), GAME_KEY), "epoch 1's key isn't the key itself");
+      ok(!Arrays.equals(epochKey(GAME_KEY, 0), Arrays.copyOf(GAME_KEY, 32)), "epoch 0's key isn't the secret, nor its first 32 bytes");
+      ok(!Arrays.equals(epochKey(GAME_KEY, 1), epochKey(GAME_KEY, 0)), "epoch 1's key isn't epoch 0's");
       ok(!Arrays.equals(epochKey(GAME_KEY, 1), epochKey(GAME_KEY, 2)), "nor epoch 2's");
       byte[] info = Arrays.copyOf("AVPX epoch v2".getBytes(StandardCharsets.US_ASCII), 17);
       info[13] = 1;

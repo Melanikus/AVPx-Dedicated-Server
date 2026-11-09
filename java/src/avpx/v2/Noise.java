@@ -16,18 +16,22 @@ import java.util.Arrays;
 //       depends on all of them. That's how the hybrid holds unless both halves are broken.
 //   k   the key that seals now, 32 bytes, or none yet; n counts what k has sealed.
 //
-// Settled with Third and Fifth, 2026-11-09 (to be written into CRYPTO.md):
+// Settled with Third and Fifth, 2026-11-09 (CRYPTO.md section 5.1):
 // - MixKey is RFC 5869 HKDF-SHA-384 with an empty info, 80 bytes: ck is the first 48, k the next 32.
 // - Before Split there's no IV: the nonce is 4 zero bytes, then n as 8 bytes LITTLE-endian. Noise's own AESGCM puts n big-endian; this
 //   differs on purpose, to match the sealed channel's nonces (section 5's nonce(n)). Don't "fix" it.
-// - Split is HKDF-SHA-384(salt = ck, input = nothing, info "AVPX split v2"), 88 bytes: the initiator-to-responder key (32), the
-//   responder-to-initiator key (32), the initiator-to-responder IV (12), the responder-to-initiator IV (12).
+// - Split is HKDF-SHA-384(salt = ck, input = nothing, info "AVPX split v2"), 120 bytes: the initiator-to-responder secret (48), the
+//   responder-to-initiator secret (48), the initiator-to-responder IV (12), the responder-to-initiator IV (12). A secret never seals
+//   anything itself: every key that seals is made from it, one for each epoch, epoch 0's too (Channel.java, CRYPTO.md section 9). Since
+//   2026-11-09 (Secondary's reads, finding 2.1): it used to be two 32-byte keys, and epoch 0 sealed with the very key the later epochs
+//   were made from, one key with two jobs. A secret is the hash's own length, 48 bytes, as RFC 5869 asks of a key HKDF expands.
 final class Noise {
   static final int HASH_BYTES = 48;
   static final int KEY_BYTES = 32;
+  static final int SECRET_BYTES = HASH_BYTES;
   static final int IV_BYTES = 12;
   private static final int MIX_KEY_BYTES = HASH_BYTES + KEY_BYTES;
-  private static final int SPLIT_BYTES = 2 * KEY_BYTES + 2 * IV_BYTES;
+  private static final int SPLIT_BYTES = 2 * SECRET_BYTES + 2 * IV_BYTES;
   private static final byte[] NOTHING = new byte[0];
   private static final byte[] SPLIT_INFO = "AVPX split v2".getBytes(StandardCharsets.US_ASCII);
   private static final byte[] ZERO_IV = new byte[IV_BYTES];
@@ -110,11 +114,11 @@ final class Noise {
     return text;
   }
 
-  // The keys and IVs for each direction, once the handshake is done
-  record Split(byte[] initiatorKey, byte[] responderKey, byte[] initiatorIv, byte[] responderIv) {
+  // The secrets and IVs for each direction, once the handshake is done: what each direction's epoch keys are made from (Channel.java)
+  record Split(byte[] initiatorSecret, byte[] responderSecret, byte[] initiatorIv, byte[] responderIv) {
     void wipe() {
-      Noise.wipe(initiatorKey);
-      Noise.wipe(responderKey);
+      Noise.wipe(initiatorSecret);
+      Noise.wipe(responderSecret);
       Noise.wipe(initiatorIv);
       Noise.wipe(responderIv);
     }
@@ -122,8 +126,9 @@ final class Noise {
 
   Split split() {
     byte[] out = Hkdf.derive(ck, NOTHING, SPLIT_INFO, SPLIT_BYTES);
-    Split split = new Split(Arrays.copyOfRange(out, 0, KEY_BYTES), Arrays.copyOfRange(out, KEY_BYTES, 2 * KEY_BYTES),
-        Arrays.copyOfRange(out, 2 * KEY_BYTES, 2 * KEY_BYTES + IV_BYTES), Arrays.copyOfRange(out, 2 * KEY_BYTES + IV_BYTES, SPLIT_BYTES));
+    Split split = new Split(Arrays.copyOfRange(out, 0, SECRET_BYTES), Arrays.copyOfRange(out, SECRET_BYTES, 2 * SECRET_BYTES),
+        Arrays.copyOfRange(out, 2 * SECRET_BYTES, 2 * SECRET_BYTES + IV_BYTES),
+        Arrays.copyOfRange(out, 2 * SECRET_BYTES + IV_BYTES, SPLIT_BYTES));
     wipe(out);
     return split;
   }

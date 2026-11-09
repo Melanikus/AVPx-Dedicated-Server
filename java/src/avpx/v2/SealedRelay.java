@@ -163,6 +163,7 @@ public final class SealedRelay implements Relay {
     long overLimit;
     long noSession;
     long dropped;
+    long unsealed;
     long revoked;
     final long[] refused = new long[REFUSALS + 1];
   }
@@ -592,6 +593,13 @@ public final class SealedRelay implements Relay {
       if (message == null) {
         Channel.Refusal why = candidate.lastRefusal();
         candidate.wipe();
+
+        // Counted with A3's own failures, to the same most: a handshake can't be tried for ever this way either (Secondary's read of the
+        // server, 7.3)
+        if (++answer.badA3 >= MOST_BAD_A3) {
+          giveUp(answer);
+        }
+
         return refusedFor(why);
       }
 
@@ -618,7 +626,14 @@ public final class SealedRelay implements Relay {
 
     s.heardAt = now;
     counts.opened++;
-    return sealAll(core.fromSession(localPort, address, port, s, message, now), now);
+
+    // The message in the clear is a room's token, a joiner's ticket or a pass: wiped once the core has read it, which keeps copies of
+    // only what it needs (Protocol.decode copies every field). Secondary's read of the server, 6.2.
+    try {
+      return sealAll(core.fromSession(localPort, address, port, s, message, now), now);
+    } finally {
+      Noise.wipe(message);
+    }
   }
 
   private List<Out> refusedFor(Channel.Refusal why) {
@@ -634,22 +649,29 @@ public final class SealedRelay implements Relay {
     }
   }
 
-  // RelayCore's answers, each sealed under the session it's for. A game's own packet (no session) goes as it is.
-  private List<Out> sealAll(List<Out> outs, long now) {
+  // RelayCore's answers to a sealed message, each sealed under the session it's for, and its plaintext wiped once sealed (6.2). Every one
+  // of them has its session: an answer goes to an end, and every end a version 2 core has came from a sealed message. One that came
+  // without a session, or with something that isn't one, is dropped and counted, never sent as it is: so "no plaintext, ever" doesn't
+  // rest on how RelayCore happens to work today (Secondary's read of the server, 7.1). The games' own packets never come here: they're
+  // passed on from a joiner's port by RelayCore.forward, unread.
+  List<Out> sealAll(List<Out> outs, long now) {
     List<Out> sealed = new ArrayList<>();
 
     for (Out o : outs) {
-      if (o.session() == null) {
-        sealed.add(o);
-      } else if (o.session() instanceof Session to) {
-        byte[] d = to.channel.seal(o.data(), now);
+      if (!(o.session() instanceof Session to)) {
+        Noise.wipe(o.data());
+        counts.unsealed++;
+        continue;
+      }
 
-        // A session at its end seals nothing: its end needs a new handshake, and the answer is dropped
-        if (d == null) {
-          end(to);
-        } else {
-          sealed.add(new Out(o.from(), o.address(), o.port(), d));
-        }
+      byte[] d = to.channel.seal(o.data(), now);
+      Noise.wipe(o.data());
+
+      // A session at its end seals nothing: its end needs a new handshake, and the answer is dropped
+      if (d == null) {
+        end(to);
+      } else {
+        sealed.add(new Out(o.from(), o.address(), o.port(), d));
       }
     }
 
@@ -750,7 +772,7 @@ public final class SealedRelay implements Relay {
     return "version 2: " + c.asked + " cookies asked, " + c.started + " handshakes started, " + c.again + " A2s sent again, " + c.finished
         + " finished, " + c.ended + " sessions ended, " + c.opened + " sealed messages opened; refused (by CRYPTO.md section 16's numbers): "
         + (refusals.length() > 0 ? refusals : "none") + "; " + c.overLimit + " over a limit, " + c.noSession + " for no session, " + c.dropped
-        + " dropped, " + c.revoked + " ended by a revoke. Now " + sessions.size() + " sessions, " + assembling.size()
-        + " A1s being put together, " + waiting.size() + " waiting for A3";
+        + " dropped, " + c.unsealed + " answers with no session dropped unsent, " + c.revoked + " ended by a revoke. Now " + sessions.size()
+        + " sessions, " + assembling.size() + " A1s being put together, " + waiting.size() + " waiting for A3";
   }
 }

@@ -98,7 +98,7 @@ public final class CryptoV2VectorsTest {
 
       // The keys, as the file gives them, open the sealed messages it gives, each way
       Map<String, Object> split = object(handshake.get("split"));
-      HandshakeA.Keys keys = new HandshakeA.Keys(new Noise.Split(bytes(split.get("keyGameToRelay")), bytes(split.get("keyRelayToGame")),
+      HandshakeA.Keys keys = new HandshakeA.Keys(new Noise.Split(bytes(split.get("secretGameToRelay")), bytes(split.get("secretRelayToGame")),
           bytes(split.get("ivGameToRelay")), bytes(split.get("ivRelayToGame"))), bytes(handshake.get("sessionId")),
           bytes(handshake.get("transcript")));
       Channel relay = Channel.relaySide(keys, 0);

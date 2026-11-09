@@ -4,7 +4,6 @@ import avpx.crypto.Gcm;
 import avpx.crypto.Hkdf;
 import avpx.crypto.MlKem;
 import avpx.crypto.P384;
-import avpx.crypto.Signatures;
 import avpx.list.Json;
 import avpx.testing.ScriptedRandom;
 import avpx.testing.SeededRandom;
@@ -165,7 +164,8 @@ public final class CryptoV2Vectors {
         + " identities and fingerprints, nJ and its commitment, nH, the transcript (h after B5) and the check code. Each side draws its"
         + " random values in the order they first appear in its own messages. B's datagrams are end to end (AVPE), with a cookie of 0."
         + " handshakeB.refusals are whole B messages a side must refuse, by refusal number (section 16). sealedGame is section 9's sealed"
-        + " game datagrams (AVPG), sealed under handshakeB's split: the joiner's with keyJoinerToHost, the host's with keyHostToJoiner."
+        + " game datagrams (AVPG), sealed under handshakeB's split: the joiner's with keys made from secretJoinerToHost, the host's from"
+        + " secretHostToJoiner, each epoch's key HKDF-Expand(that secret, \"AVPX epoch v2\" || the epoch, 32), epoch 0's too (5.1 point 8)."
         + " result is \"valid\" or \"invalid\".");
     top.put("protocol", HandshakeA.PROTOCOL);
     Map<String, Object> handshake = new LinkedHashMap<>();
@@ -181,7 +181,6 @@ public final class CryptoV2Vectors {
     top.put("epochKeys", epochKeys(keys));
     top.put("aesGcm", aesGcm());
     top.put("mlkem", mlkem());
-    top.put("signatures", signatures());
     top.put("sealedGame", sealedGame);
     top.put("refusals", refusals(datagrams, sealed));
     StringBuilder out = new StringBuilder();
@@ -304,7 +303,7 @@ public final class CryptoV2Vectors {
     must(hostKeys != null, "the host refused B5's nJ");
 
     for (HandshakeB.Keys k : List.of(done.keys(), hostKeys)) {
-      must(Arrays.equals(k.split().initiatorKey(), split.initiatorKey()) && Arrays.equals(k.split().responderKey(), split.responderKey())
+      must(Arrays.equals(k.split().initiatorSecret(), split.initiatorSecret()) && Arrays.equals(k.split().responderSecret(), split.responderSecret())
           && Arrays.equals(k.split().initiatorIv(), split.initiatorIv()) && Arrays.equals(k.split().responderIv(), split.responderIv())
           && Arrays.equals(k.transcript(), transcript), "HandshakeB's keys or transcript aren't the steps'");
     }
@@ -357,7 +356,7 @@ public final class CryptoV2Vectors {
         "skemToJoiner", fields("m", hex(toJoinerM), "ciphertext", hex(toJoiner.ciphertext()), "secret", hex(toJoiner.secret())),
         "nJ", hex(nJ), "commitment", hex(commitment), "nH", hex(nH),
         "b1", hex(b1), "b2", hex(b2), "b3", hex(b3), "b4", hex(b4), "b5", hex(b5), "steps", steps,
-        "split", fields("keyJoinerToHost", hex(split.initiatorKey()), "keyHostToJoiner", hex(split.responderKey()), "ivJoinerToHost",
+        "split", fields("secretJoinerToHost", hex(split.initiatorSecret()), "secretHostToJoiner", hex(split.responderSecret()), "ivJoinerToHost",
             hex(split.initiatorIv()), "ivHostToJoiner", hex(split.responderIv())),
         "transcript", hex(transcript), "checkCode", HandshakeB.checkCode(transcript), "datagrams", datagrams, "refusals", refusals);
   }
@@ -405,10 +404,10 @@ public final class CryptoV2Vectors {
       boolean fromJoiner = c[0].equals("joiner");
       long counter = (Long) c[1];
       byte[] message = r.next((Integer) c[2]);
-      byte[] key = fromJoiner ? split.initiatorKey() : split.responderKey();
+      byte[] secret = fromJoiner ? split.initiatorSecret() : split.responderSecret();
       byte[] iv = fromJoiner ? split.initiatorIv() : split.responderIv();
       long epoch = counter >>> Channel.EPOCH_SHIFT;
-      byte[] epochKey = epoch == 0 ? key : Hkdf.expand(key, Channel.epochInfo(epoch), Noise.KEY_BYTES);
+      byte[] epochKey = Channel.epochKey(secret, epoch);
       byte[] aad = new byte[12];
       aad[0] = 'A';
       aad[1] = 'V';
@@ -530,7 +529,7 @@ public final class CryptoV2Vectors {
     must(relayKeys != null, "the relay refused A3");
 
     for (HandshakeA.Keys k : List.of(done.keys(), relayKeys)) {
-      must(Arrays.equals(k.split().initiatorKey(), split.initiatorKey()) && Arrays.equals(k.split().responderKey(), split.responderKey())
+      must(Arrays.equals(k.split().initiatorSecret(), split.initiatorSecret()) && Arrays.equals(k.split().responderSecret(), split.responderSecret())
           && Arrays.equals(k.split().initiatorIv(), split.initiatorIv()) && Arrays.equals(k.split().responderIv(), split.responderIv()),
           "HandshakeA's keys aren't the steps'");
       must(Arrays.equals(k.transcript(), transcript) && Arrays.equals(k.sessionId(), sessionId), "HandshakeA's transcript or id isn't");
@@ -551,7 +550,7 @@ public final class CryptoV2Vectors {
     into.put("a2", hex(a2));
     into.put("a3", hex(a3));
     into.put("steps", steps);
-    into.put("split", fields("keyGameToRelay", hex(split.initiatorKey()), "keyRelayToGame", hex(split.responderKey()), "ivGameToRelay",
+    into.put("split", fields("secretGameToRelay", hex(split.initiatorSecret()), "secretRelayToGame", hex(split.responderSecret()), "ivGameToRelay",
         hex(split.initiatorIv()), "ivRelayToGame", hex(split.responderIv())));
     into.put("transcript", hex(transcript));
     return done.keys();
@@ -615,14 +614,15 @@ public final class CryptoV2Vectors {
     return out;
   }
 
-  // Epoch e's key: HKDF-Expand(the direction's key from Split, "AVPX epoch v2" || e as 4 bytes little-endian, 32) (5.1, point 8)
+  // Epoch e's key, epoch 0's too: HKDF-Expand(the direction's 48-byte secret from Split, "AVPX epoch v2" || e as 4 bytes little-endian,
+  // 32) (5.1, point 8). Written out here with Hkdf itself, so Channel's own epoch keys are held to the rule, not to themselves.
   private static List<Object> epochKeys(HandshakeA.Keys keys) {
     List<Object> out = new ArrayList<>();
-    byte[] key = keys.split().initiatorKey();
+    byte[] secret = keys.split().initiatorSecret();
 
-    for (long e : new long[] {1, 2, 4095}) {
+    for (long e : new long[] {0, 1, 2, 4095}) {
       byte[] info = Channel.epochInfo(e);
-      out.add(fields("key", hex(key), "epoch", e, "info", hex(info), "epochKey", hex(Hkdf.expand(key, info, 32))));
+      out.add(fields("secret", hex(secret), "epoch", e, "info", hex(info), "epochKey", hex(Hkdf.expand(secret, info, 32))));
     }
 
     return out;
@@ -662,40 +662,6 @@ public final class CryptoV2Vectors {
     must(rejection != null && !Arrays.equals(rejection, made.secret()), "a changed ciphertext gave no implicit rejection");
     return fields("mlkemSeed", hex(draws.get(0)), "mlkemPublic", hex(MlKem.encode(pair.getPublic())), "m", hex(draws.get(1)), "ciphertext",
         hex(made.ciphertext()), "secret", hex(made.secret()), "changedCiphertext", hex(changed), "implicitRejectionSecret", hex(rejection));
-  }
-
-  // Signatures to check, not to make again (ML-DSA may be randomised, CRYPTO.md section 15): each good one, and the same with a bit
-  // changed. The message is a D as section 12 makes one: SHA-384 of the words, then the bytes.
-  private static List<Object> signatures() {
-    byte[] d;
-
-    try {
-      d = MessageDigest.getInstance("SHA-384").digest(join("AVPX test vectors v2".getBytes(StandardCharsets.US_ASCII), message(0)));
-    } catch (java.security.GeneralSecurityException e) {
-      throw new IllegalStateException("this Java has no SHA-384", e);
-    }
-
-    KeyPair ec = Signatures.ecdsaKeys(ScriptedRandom.seeded(701));
-    byte[] ecSig = Signatures.ecdsaSign(ec.getPrivate(), d, ScriptedRandom.seeded(702));
-    KeyPair ml = Signatures.mlDsaKeys(ScriptedRandom.seeded(703));
-    byte[] mlSig = Signatures.mlDsaSign(ml.getPrivate(), d, ScriptedRandom.seeded(704));
-    must(Signatures.ecdsaVerify(ec.getPublic(), d, ecSig) && Signatures.mlDsaVerify(ml.getPublic(), d, mlSig), "a signature doesn't check");
-    byte[] ecBad = ecSig.clone();
-    ecBad[10] ^= 1;
-    byte[] mlBad = mlSig.clone();
-    mlBad[10] ^= 1;
-    byte[] ecPublic = P384.encode((ECPublicKey) ec.getPublic());
-    byte[] mlPublic = Signatures.mlDsaEncode(ml.getPublic());
-    List<Object> out = new ArrayList<>();
-    out.add(fields("scheme", "ECDSA P-384 SHA-384, r then s", "public", hex(ecPublic), "message", hex(d), "signature", hex(ecSig), "result",
-        "valid"));
-    out.add(fields("scheme", "ECDSA P-384 SHA-384, r then s", "public", hex(ecPublic), "message", hex(d), "signature", hex(ecBad), "result",
-        "invalid"));
-    out.add(fields("scheme", "ML-DSA-87, pure, the empty context", "public", hex(mlPublic), "message", hex(d), "signature", hex(mlSig),
-        "result", "valid"));
-    out.add(fields("scheme", "ML-DSA-87, pure, the empty context", "public", hex(mlPublic), "message", hex(d), "signature", hex(mlBad),
-        "result", "invalid"));
-    return out;
   }
 
   // Section 16's refusals, as bytes, each changed from a good datagram above in one way. 5 (a bad cookie) comes with the relay's cookie.

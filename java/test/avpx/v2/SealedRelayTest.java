@@ -393,6 +393,31 @@ public final class SealedRelayTest {
       same(relay.sessions.size(), 2, "the right A3, from A1's own address and port: the session");
     });
 
+    test("with A3 lost, first sealed messages that don't open count to A3's own most: after 4, the handshake is given up (7.3)", () -> {
+      SealedRelay relay = relay();
+      Begun lost = begin(relay, "10.0.0.1", 5000, 46, NOW);
+      HandshakeA.Initiator.Done done = lost.game().readA2(a2Of(sendAll(relay, "10.0.0.1", 5000, lost.a1(), NOW)));
+      byte[] good = Channel.gameSide(done.keys(), NOW).seal(Protocol.encode(Message.of(Type.HOST_OPEN)), NOW);
+
+      for (int i = 0; i < 4; i++) {
+        byte[] bad = good.clone();
+        bad[100] ^= (byte) (1 << i);
+        same(relay.receive(CONTROL, "10.0.0.1", 5000, bad, NOW).size(), 0, "a first sealed message with a bit of its tag changed: " + (i + 1));
+      }
+
+      same(relay.receive(CONTROL, "10.0.0.1", 5000, good, NOW).size(), 0, "after 4 of them, even the good one gets nothing: given up");
+      same(relay.sessions.size(), 0, "and there's no session");
+    });
+
+    test("an answer with no session is never sent as it is: it's dropped, wiped and counted (7.1)", () -> {
+      SealedRelay relay = relay();
+      byte[] plain = bytes(64, 7);
+      same(relay.sealAll(List.of(new Out(CONTROL, "10.0.0.1", 5000, plain)), NOW), List.of(), "nothing goes out");
+      same(relay.counts.unsealed, 1L, "it's counted");
+      same(plain, new byte[64], "and its bytes are wiped");
+      ok(relay.countsLine(NOW + 1000).contains("1 answers with no session dropped unsent"), "the counts line says so");
+    });
+
     test("a sealed message is taken once: again, or with a bit changed, it's refused (9, 8); after 65,536 bad tags the session ends", () -> {
       SealedRelay relay = relay();
       Player host = player(relay, "10.0.0.1", 5000, 46);

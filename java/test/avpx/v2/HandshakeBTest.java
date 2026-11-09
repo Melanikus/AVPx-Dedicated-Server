@@ -66,8 +66,8 @@ public final class HandshakeBTest {
       ok(h != null, "the host takes B5: the joiner's key confirmation, and the nJ it promised in B1");
 
       HandshakeB.Keys j = done.keys();
-      same(j.split().initiatorKey(), h.split().initiatorKey(), "the joiner-to-host key");
-      same(j.split().responderKey(), h.split().responderKey(), "the host-to-joiner key");
+      same(j.split().initiatorSecret(), h.split().initiatorSecret(), "the joiner-to-host secret");
+      same(j.split().responderSecret(), h.split().responderSecret(), "the host-to-joiner secret");
       same(j.split().initiatorIv(), h.split().initiatorIv(), "and the IVs");
       same(j.split().responderIv(), h.split().responderIv(), "both ways");
       same(j.transcript(), h.transcript(), "the transcript, h after B5");

@@ -1419,15 +1419,6 @@ file: java/src/avpx/crypto/Hkdf.java
 <<< to
 >>>
 
-=== ML-DSA by the family's name, so a key of any ML-DSA set is taken
-check: tests
-file: java/src/avpx/crypto/Signatures.java
-<<< from
-  private static final String ML_DSA = NamedParameterSpec.ML_DSA_87.getName();
-<<< to
-  private static final String ML_DSA = "ML-DSA";
->>>
-
 === ML-KEM by the family's name, so a key of any ML-KEM size is taken
 check: tests
 file: java/src/avpx/crypto/MlKem.java
@@ -1621,18 +1612,6 @@ file: java/src/avpx/relay/RelaySockets.java
 >>>
 
 # ----- Version 2's ML-DSA has the empty context only (the Reviewer's V2-2; CRYPTO.md 5.1 point 16 and section 12)
-
-=== Signatures.java gives ML-DSA a parameter
-check: tests
-file: java/src/avpx/crypto/Signatures.java
-<<< from
-      Signature s = Signature.getInstance(ML_DSA);
-      s.initVerify(key);
-<<< to
-      Signature s = Signature.getInstance(ML_DSA);
-      s.initVerify(key);
-      s.setParameter(null);
->>>
 
 # ----- The list's fingerprint and &code= (version-2 games; Requests.java, Listings.java, Routes.java)
 
@@ -2365,4 +2344,55 @@ file: java/src/avpx/v2/SealedRelay.java
 <<< from
     answered.values().removeIf(answer -> answer.player.equals(player));
 <<< to
+>>>
+
+# ----- Secondary's read of the server's v2 crypto (AvP-docs, 2026-11-09), and CRYPTO.md 5.1 point 3's new Split (Third's a7a369f).
+# Not here, because no test can see inside Java's heap: 6.1 (HKDF's output in one array, its blocks wiped) and 6.2 (the plaintexts
+# wiped). Signatures.java went (7.2), and its two rows with it; they come back with the signed relays directory.
+
+=== 2.1: epoch 0 seals with Split's secret itself
+check: tests
+file: java/src/avpx/v2/Channel.java
+<<< from
+    return Hkdf.expand(secret, epochInfo(epoch), Noise.KEY_BYTES);
+<<< to
+    return epoch == 0 ? Arrays.copyOf(secret, Noise.KEY_BYTES) : Hkdf.expand(secret, epochInfo(epoch), Noise.KEY_BYTES);
+>>>
+
+=== 2.1: Split's secrets are 32 bytes, short of the hash's length
+check: tests
+file: java/src/avpx/v2/Noise.java
+<<< from
+  static final int SECRET_BYTES = HASH_BYTES;
+<<< to
+  static final int SECRET_BYTES = KEY_BYTES;
+>>>
+
+=== 7.1: an answer with no session goes out as it is
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (!(o.session() instanceof Session to)) {
+        Noise.wipe(o.data());
+        counts.unsealed++;
+        continue;
+      }
+<<< to
+      if (!(o.session() instanceof Session to)) {
+        sealed.add(o);
+        continue;
+      }
+>>>
+
+=== 7.3: with A3 lost, a first sealed message may fail for ever
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+        if (++answer.badA3 >= MOST_BAD_A3) {
+          giveUp(answer);
+        }
+
+        return refusedFor(why);
+<<< to
+        return refusedFor(why);
 >>>

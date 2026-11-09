@@ -15,8 +15,9 @@ import java.security.spec.ECPrivateKeySpec;
 import java.security.spec.X509EncodedKeySpec;
 import java.util.Arrays;
 
-// ECDH and ECDSA on P-384 (P384.java, Signatures.java) against every published case in test-vectors/crypto-kat: NIST's and
-// Wycheproof's. Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
+// ECDH on P-384 (P384.java) against every published case in test-vectors/crypto-kat: NIST's and Wycheproof's. Written 2026-11-09 by
+// Melanikus for AVPx Dedicated Server. (ECDSA's cases went with Signatures.java, 2026-11-09: nothing in the server signs or checks a
+// signature until the signed relays directory, CRYPTO.md section 12, and they come back with it. git keeps both.)
 //
 // The other side's point always goes through P384.decode, the one way a point from outside gets in, so these cases are its check too:
 // a point off the curve, of the wrong length, or compressed (which version 2 never sends) must be refused there, and never reach Java's
@@ -121,49 +122,5 @@ public final class P384KatTest {
       }), 1047, "all 1,047");
     });
 
-    test("ECDSA P-384 SHA-384, NIST CAVP's 15 SigVer: each good signature checks, and each changed one doesn't", () -> {
-      String file = "ecdsa-p384-sha384/nist-cavp-sigver.json";
-      same(Kat.each(file, Kat.read(file), c -> {
-        ECPublicKey key = P384.decode(c.bytes("public"));
-
-        if (key == null) {
-          return "the key was refused";
-        }
-
-        boolean checks = Signatures.ecdsaVerify(key, c.bytes("msg"), c.bytes("sig"));
-        return c.valid() ? unless(checks, "it doesn't check") : unless(!checks, "it checks: " + c.text("reason"));
-      }), 15, "all 15");
-    });
-
-    // Java picks each signature's secret k itself, from the randomness it's given, and has no way to be handed NIST's k: so NIST's own
-    // signatures are checked, and so is one made here with this key, as the case's "about" says a signer picking its own k must make
-    test("ECDSA P-384 SHA-384, NIST CAVP's 15 SigGen: NIST's signature checks, and one made here with that key checks too", () -> {
-      String file = "ecdsa-p384-sha384/nist-cavp-siggen.json";
-      same(Kat.each(file, Kat.read(file), c -> {
-        ECPublicKey key = P384.decode(c.bytes("public"));
-
-        if (key == null) {
-          return "the key was refused";
-        }
-
-        byte[] ours = Signatures.ecdsaSign(ours(c.bytes("private")), c.bytes("msg"), ScriptedRandom.seeded(7));
-        return unless(Signatures.ecdsaVerify(key, c.bytes("msg"), c.bytes("sig")) && Signatures.ecdsaVerify(key, c.bytes("msg"), ours),
-            "a signature didn't check");
-      }), 15, "all 15");
-    });
-
-    test("ECDSA P-384 SHA-384 (r then s), Wycheproof's 280: every good one checks, every bad one doesn't, and none throws", () -> {
-      String file = "ecdsa-p384-sha384/wycheproof-p1363.json";
-      same(Kat.each(file, Kat.read(file), c -> {
-        ECPublicKey key = P384.decode(c.bytes("public"));
-
-        if (key == null) {
-          return "the key was refused";
-        }
-
-        boolean checks = Signatures.ecdsaVerify(key, c.bytes("msg"), c.bytes("sig"));
-        return c.valid() ? unless(checks, "it doesn't check") : unless(!checks, "it checks");
-      }), 280, "all 280");
-    });
   }
 }

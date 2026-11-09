@@ -28,6 +28,30 @@ Written 2026-11-08 by Melanikus. Nothing reaches `main` without passing every ch
   - CodeQL language `go`;
   - Tests are `go test ./...` and `go vet ./...`, with the Go version pinned in `go.mod` and by `actions/setup-go` by SHA;
   - OSV reads `go.mod` / `go.sum`, plus `govulncheck` for the standard library.
+- **Java** (the version in `java/`, checked by `.github/workflows/java.yml`; added 2026-11-09):
+  - **The JDK** is fetched by `java/tools/get-jdk.sh`, never by a setup action, and used only once all three hold: its signature is
+    good by Adoptium's key, pinned by its fingerprint (the key is fetched, but only that key is trusted); its sha256 is the pinned one;
+    and it says it is the pinned version. Downloaded code is untrusted until it's checked (AVP Tao 1).
+  - **Tests** are `sh java/build.sh` with `AVPX_LIVE=1`. That's javac with every warning on and any warning an error, then every test,
+    the live ones on 127.0.0.1 included. With `AVPX_LIVE=1`, a live test that doesn't run fails, so the check can't pass with them left
+    out.
+  - **The same jar from the same code:** two builds must give the same sha256, so anyone can rebuild what was shipped and get it byte for
+    byte (AVP Tao 2).
+  - **CodeQL** language `java-kotlin`, build mode `manual`, through `build.sh`, which compiles every `.java` file under `java/`, the
+    tools too. It uses the security-and-quality queries. It fails on any result in CodeQL's own SARIF, and on any tracked `.java` file
+    missing from what CodeQL read: a blind spot fails the gate. CodeQL runs only as workflows (advanced setup), because GitHub refuses a
+    workflow's results while its default setup is on.
+  - **OSV-Scanner and Snyk Open Source** have nothing to read for Java: there's no Maven or Gradle file, by design. A scan that finds
+    nothing can't be told from one that's broken, so the Java standard check proves there's nothing to find. It refuses any build file
+    that fetches packages, any compiled code anywhere in the repository, and a `module-info.java` that names any module (so javac
+    itself can use nothing but `java.base`). The repository-wide scans still run as they do for Node.
+  - **The JDK is the newest of its line:** the one thing from outside the Java version uses. The check fails when Adoptium's newest
+    Temurin 25 GA release is newer than the pin. Oracle's security updates come every quarter (January, April, July and October), so
+    each one is a card: look the new release up in two places, and move get-jdk.sh's four pinned lines together.
+  - **Coding standard:** `java/tools/CheckStandard.java`, the Java side of CODING-STANDARD.md's rules, plus one of Java's own: every test
+    file is named in `AllTests.java`, or it would never run.
+  - **Take-outs:** `java/tools/Takeouts.java` over `java/tools/takeouts.txt`. Each row breaks one thing in a copy, and must be noticed:
+    one row for each Node row, and more for what only Java has.
 
 ## Settings on GitHub (PO sets these up)
 

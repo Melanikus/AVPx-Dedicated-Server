@@ -9,6 +9,8 @@ on:
   pull_request:
   push:
     branches: [main, java]
+  # So a run can be started again by hand, by someone with write access to the repository
+  workflow_dispatch:
 
 # Nothing here may write to the repository. CodeQL alone may write its findings, in its own job.
 permissions:
@@ -46,6 +48,26 @@ jobs:
       # CODING-STANDARD.md's rules, the Java side (tools/check-standard.js keeps the Node side): run from the repository's top folder
       - name: The Java standard
         run: '"$JAVA_HOME/bin/java" -cp java/build/tools avpx.tools.CheckStandard'
+
+  # The pinned JDK is the one thing from outside the Java version uses, so it must be the newest of its line: when Adoptium has a newer
+  # Temurin 25, this fails until get-jdk.sh's pin moves to it (GATES.md)
+  jdk-current:
+    name: The JDK is the newest Temurin 25
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The pin against Adoptium's newest GA release
+        run: |
+          pinned="jdk-$(sed -n "s/^JDK_RELEASE='\(.*\)'$/\1/p" java/tools/get-jdk.sh)"
+          newest=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
+            'https://api.adoptium.net/v3/assets/latest/25/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse' \
+            | jq -r '.[0].release_name')
+          echo "pinned $pinned, Adoptium's newest $newest"
+          test "$pinned" = "$newest"
 
   takeouts:
     name: Java take-outs

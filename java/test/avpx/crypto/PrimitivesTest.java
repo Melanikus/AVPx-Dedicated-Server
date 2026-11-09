@@ -99,6 +99,30 @@ public final class PrimitivesTest {
       same(MlKem.decode(Arrays.copyOf(ek, 1567)), null, "an encapsulation key of 1,567 bytes");
     });
 
+    test("FIPS 203's encapsulation key check, at its edges: a 12-bit number up to 3,328 is taken, 3,329 and up refused, either half of a pair", () -> {
+      byte[] zero = new byte[1568];
+      ok(MlKem.inRange(zero), "all zeros");
+      byte[] seedOnes = zero.clone();
+      Arrays.fill(seedOnes, 1536, 1568, (byte) 0xff);
+      ok(MlKem.inRange(seedOnes), "the last 32 bytes, the seed, can be anything");
+
+      for (int pair : new int[] {0, 511}) {
+        int at = pair * 3;
+
+        for (int value : new int[] {3328, 3329, 4095}) {
+          byte[] low = zero.clone();
+          low[at] = (byte) value;
+          low[at + 1] = (byte) (value >> 8);
+          byte[] high = zero.clone();
+          high[at + 1] = (byte) ((value & 0x0f) << 4);
+          high[at + 2] = (byte) (value >> 4);
+          same(MlKem.inRange(low), value < 3329, "pair " + pair + ", its first number " + value);
+          same(MlKem.inRange(high), value < 3329, "pair " + pair + ", its second number " + value);
+          same(MlKem.decode(low) != null, value < 3329, "and decode agrees, pair " + pair + ", first number " + value);
+        }
+      }
+    });
+
     test("ML-KEM-1024's randomness can be fixed from outside, so a whole handshake can be written down as vectors", () -> {
       byte[] seeds = bytes(64, 0x42);
       byte[] ek1 = MlKem.encode(MlKem.generate(ScriptedRandom.of(seeds)).getPublic());

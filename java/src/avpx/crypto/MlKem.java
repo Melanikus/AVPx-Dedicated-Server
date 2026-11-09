@@ -59,9 +59,10 @@ public final class MlKem {
     return Arrays.copyOfRange(der, SPKI_PREFIX.length, der.length);
   }
 
-  // The encapsulation key in 1,568 raw bytes from outside, or null if Java won't take it as one
+  // The encapsulation key in 1,568 raw bytes from outside, or null if it isn't a good one. FIPS 203 section 7.2's check is made here, on
+  // the bytes, before Java is given them (see inRange): Java 25 takes a key that fails it, and refuses it only later, when it's used.
   public static PublicKey decode(byte[] raw) {
-    if (raw == null || raw.length != ENCAPSULATION_KEY_BYTES) {
+    if (raw == null || raw.length != ENCAPSULATION_KEY_BYTES || !inRange(raw)) {
       return null;
     }
 
@@ -73,6 +74,27 @@ public final class MlKem {
     } catch (GeneralSecurityException e) {
       return null;
     }
+  }
+
+  // FIPS 203 section 7.2, the encapsulation key check. A key is four polynomials of 256 numbers each, then 32 bytes of seed. Each number
+  // is 12 bits, packed two to every 3 bytes, low bits first: from bytes b0, b1, b2 come (b0, plus b1's low 4 bits on top) and (b1's high
+  // 4 bits, plus b2 on top). Every number must be below q = 3,329, the prime the polynomials are worked in: 12 bits can hold up to 4,095,
+  // and a key holding a number past q isn't one any honest key generation makes. The 32 seed bytes at the end can be anything.
+  private static final int Q = 3329;
+  private static final int PACKED_POLYNOMIALS_BYTES = 4 * 384;
+
+  static boolean inRange(byte[] raw) {
+    for (int i = 0; i < PACKED_POLYNOMIALS_BYTES; i += 3) {
+      int b0 = raw[i] & 0xff;
+      int b1 = raw[i + 1] & 0xff;
+      int b2 = raw[i + 2] & 0xff;
+
+      if ((b0 | ((b1 & 0x0f) << 8)) >= Q || ((b1 >> 4) | (b2 << 4)) >= Q) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   // What encapsulation gives: the ciphertext to send, and the secret, which stays here

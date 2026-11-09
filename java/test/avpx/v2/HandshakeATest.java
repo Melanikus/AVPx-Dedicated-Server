@@ -1,5 +1,6 @@
 package avpx.v2;
 
+import static avpx.testing.Tests.doesNotThrow;
 import static avpx.testing.Tests.ok;
 import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.test;
@@ -8,6 +9,9 @@ import static avpx.testing.Tests.throwsAny;
 import avpx.crypto.MlKem;
 import avpx.crypto.P384;
 import avpx.testing.ScriptedRandom;
+import java.security.KeyPair;
+import java.security.SecureRandom;
+import java.security.interfaces.ECPublicKey;
 import java.util.Arrays;
 
 // The tests of HandshakeA.java (CRYPTO.md sections 6 and 13): the game and the relay agree on every key, the relay is proved, and every
@@ -31,6 +35,28 @@ public final class HandshakeATest {
     byte[] c = b.clone();
     c[byteAt] ^= (byte) (1 << bit);
     return c;
+  }
+
+  // An A1 made by hand, step by step as CRYPTO.md writes it, around an ephemeral ML-KEM key given as raw bytes that needn't be a good
+  // one. Anyone can make an A1 whose tag checks: the game is anonymous, and A1 needs only the relay's public keys. So a relay must
+  // refuse a bad key in an A1 even when its tag is right.
+  private static byte[] a1Around(HandshakeA.RelayKeys relay, byte[] ephemeralKem, SecureRandom random) {
+    Noise noise = HandshakeA.start(REGION, relay.p384Public(), relay.kemPublic());
+    KeyPair e = P384.generate(random);
+    byte[] eP384 = P384.encode((ECPublicKey) e.getPublic());
+    noise.mixHash(eP384);
+    noise.mixHash(ephemeralKem);
+    noise.mixKey(P384.agree(e.getPrivate(), P384.decode(relay.p384Public())));
+    MlKem.Encapsulated toRelay = MlKem.encapsulate(MlKem.decode(relay.kemPublic()), random);
+    noise.mixHash(toRelay.ciphertext());
+    noise.mixKey(toRelay.secret());
+    byte[] tag = noise.encryptAndHash(new byte[0]);
+    byte[] a1 = new byte[HandshakeA.A1_BYTES];
+    System.arraycopy(eP384, 0, a1, 0, 97);
+    System.arraycopy(ephemeralKem, 0, a1, 97, 1568);
+    System.arraycopy(toRelay.ciphertext(), 0, a1, 97 + 1568, 1568);
+    System.arraycopy(tag, 0, a1, 97 + 2 * 1568, 16);
+    return a1;
   }
 
   public static void register() {
@@ -112,6 +138,32 @@ public final class HandshakeATest {
       HandshakeA.Keys stood = lost.keysWithoutA3();
       same(stood.split().initiatorKey(), done.keys().split().initiatorKey(), "with A3 lost, the relay's keys are the game's all the same");
       same(stood.transcript(), done.keys().transcript(), "and so is the transcript");
+    });
+
+    test("an A1 with a correct tag around an ML-KEM key that breaks FIPS 203's check is refused, and nothing is thrown", () -> {
+      HandshakeA.RelayKeys relay = relay(20);
+      byte[] good = MlKem.encode(MlKem.generate(ScriptedRandom.seeded(60)).getPublic());
+      ok(HandshakeA.readA1(relay, REGION, a1Around(relay, good, ScriptedRandom.seeded(61)), ScriptedRandom.seeded(62)) != null,
+          "first, the hand-made A1 around a good key is taken: so the A1s below differ from a true one only in their key");
+
+      // The key's first number set to q = 3,329 (0xd01: byte 0 is 0x01, byte 1's low half 0xd), its second to 4,095 (the most 12 bits
+      // hold: byte 1's high half and byte 2 all ones), and its last, the 1,024th, to q (byte 1,534's high half 0x1, byte 1,535 0xd0)
+      byte[] first = good.clone();
+      first[0] = 0x01;
+      first[1] = (byte) ((first[1] & 0xf0) | 0x0d);
+      byte[] second = good.clone();
+      second[1] = (byte) (second[1] | 0xf0);
+      second[2] = (byte) 0xff;
+      byte[] last = good.clone();
+      last[1534] = (byte) ((last[1534] & 0x0f) | 0x10);
+      last[1535] = (byte) 0xd0;
+
+      for (byte[] bad : new byte[][] {first, second, last}) {
+        byte[] a1 = a1Around(relay, bad, ScriptedRandom.seeded(61));
+        doesNotThrow(() -> HandshakeA.readA1(relay, REGION, a1, ScriptedRandom.seeded(62)), "the relay doesn't throw on it");
+        same(HandshakeA.readA1(relay, REGION, a1, ScriptedRandom.seeded(62)), null, "it refuses it");
+        ok(MlKem.decode(bad) == null, "decode refuses the key, before any other work");
+      }
     });
 
     test("the same A1 read twice gives the same A2 only with the same randomness: so the relay must keep its A2 to send again", () -> {

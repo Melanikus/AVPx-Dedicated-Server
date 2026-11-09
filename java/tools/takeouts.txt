@@ -1041,3 +1041,97 @@ file: java/src/avpx/list/Certificates.java
       checkPair(key, chain.get(0));
 <<< to
 >>>
+
+# ----- Version 2's rows (CRYPTO.md): java/src/avpx/crypto/ and java/src/avpx/v2/
+
+# Java 25 takes an ML-KEM key that fails FIPS 203's check, and refuses it only when it's used, by throwing: so MlKem.decode checks it
+=== an ML-KEM key with a number past q taken (FIPS 203 section 7.2's check)
+check: tests
+file: java/src/avpx/crypto/MlKem.java
+<<< from
+    if (raw == null || raw.length != ENCAPSULATION_KEY_BYTES || !inRange(raw)) {
+<<< to
+    if (raw == null || raw.length != ENCAPSULATION_KEY_BYTES) {
+>>>
+
+# Java 25 takes a point that isn't on the curve, and refuses it only in the ECDH, by throwing: so P384.decode checks it
+=== a P-384 point taken without checking it's on the curve
+check: tests
+file: java/src/avpx/crypto/P384.java
+<<< from
+    if (!onCurve(x, y)) {
+<<< to
+    if (false) {
+>>>
+
+=== the region left out of handshake A's start
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+    noise.mixHash(Arrays.copyOf(name, name.length + 1));
+<<< to
+    noise.mixHash(new byte[1]);
+>>>
+
+=== A3, the game's key confirmation, not checked
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+        if (a3 == null || a3.length != A3_BYTES || noise.decryptAndHash(a3) == null) {
+<<< to
+        if (a3 == null || a3.length != A3_BYTES) {
+>>>
+
+=== the chaining key not wiped when a handshake ends
+check: tests
+file: java/src/avpx/v2/Noise.java
+<<< from
+  void wipe() {
+    wipe(ck);
+<<< to
+  void wipe() {
+>>>
+
+=== a fragment's bytes after its part not held to 0
+check: tests
+file: java/src/avpx/v2/Fragments.java
+<<< from
+      if (d[i] != 0) {
+<<< to
+      if (false) {
+>>>
+
+=== the replay window that forgets what it took
+check: tests
+file: java/src/avpx/v2/ReplayWindow.java
+<<< from
+    return behind < WINDOW && !bit(counter);
+<<< to
+    return behind < WINDOW;
+>>>
+
+=== a sealed message's counter never marked taken
+check: tests
+file: java/src/avpx/v2/Channel.java
+<<< from
+    window.take(counter);
+<<< to
+>>>
+
+=== the keys that never change: one epoch for a whole session
+check: tests
+file: java/src/avpx/v2/Channel.java
+<<< from
+      long e = counter >>> EPOCH_SHIFT;
+<<< to
+      long e = 0;
+>>>
+
+=== one failed tag more than the limit before a session ends
+check: tests
+file: java/src/avpx/v2/Channel.java
+<<< from
+      if (++failedTags >= FAILED_TAGS) {
+<<< to
+      if (++failedTags > FAILED_TAGS) {
+>>>

@@ -39,7 +39,7 @@ exit 0
 STANDIN
 chmod +x "$fake/curl" "$fake/systemctl"
 
-# A machine for one case: the stand-in JDK, and a source tarball for $1 whose build.sh makes a jar holding $2 (or fails, if $2 is FAIL)
+# A machine for one case: the stand-in JDK, and a source tarball for $1 whose build.sh makes two jars holding $2 (or fails, if $2 is FAIL)
 machine() {
   m="$work/m$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"
   mkdir -p "$m/root/opt/avpx-jdk/bin" "$m/src/AVPx-Dedicated-Server-$1/java"
@@ -52,14 +52,19 @@ STANDIN
   if [ "$2" = FAIL ]; then
     printf '#!/bin/sh\nexit 1\n' > "$m/src/AVPx-Dedicated-Server-$1/java/build.sh"
   else
-    printf '#!/bin/sh\nmkdir -p "$(dirname "$0")/build"\nprintf %%s "%s" > "$(dirname "$0")/build/avpx-server.jar"\n' "$2" > "$m/src/AVPx-Dedicated-Server-$1/java/build.sh"
+    printf '#!/bin/sh\nmkdir -p "$(dirname "$0")/build"\nprintf %%s "%s" > "$(dirname "$0")/build/avpx-server.jar"\nprintf %%s "smoke %s" > "$(dirname "$0")/build/avpx-smoke.jar"\n' "$2" "$2" > "$m/src/AVPx-Dedicated-Server-$1/java/build.sh"
   fi
   tar -czf "$m/source.tar.gz" -C "$m/src" .
   : > "$m/log"
 }
 
-# The sha256 of a jar holding $1
-sha_of() { printf %s "$1" | sha256sum | cut -d ' ' -f 1; }
+# The jars' sha256 for a build whose jars hold $1: made the way remote-deploy.sh makes it, in a folder of its own
+sha_of() {
+  d=$(mktemp -d "$work/sha.XXXXXX")
+  printf %s "$1" > "$d/avpx-server.jar"
+  printf %s "smoke $1" > "$d/avpx-smoke.jar"
+  (cd "$d" && sha256sum avpx-server.jar avpx-smoke.jar) | sha256sum | cut -d ' ' -f 1
+}
 
 # Runs the script under test ($1) on the machine $m with the rest as its arguments; gives back its exit
 deploy() {
@@ -80,10 +85,12 @@ all_cases() {
 
   machine "$C1" one
   if deploy "$1" "$C1" "$(sha_of one)" && [ "$(linked)" = "$m/root/opt/avpx/releases/$C1" ] && [ "$(cat "$m/root/opt/avpx/releases/$C1/avpx-server.jar")" = one ] \
-    && grep -q "codeload.github.com/Melanikus/AVPx-Dedicated-Server/tar.gz/$C1\$" "$m/log" && grep -q 'systemctl restart avpx-java' "$m/log"; then :; else no 'a good deploy is put in place, from that commit, and the service restarted'; fi
+    && [ "$(cat "$m/root/opt/avpx/releases/$C1/avpx-smoke.jar")" = 'smoke one' ] \
+    && grep -q "codeload.github.com/Melanikus/AVPx-Dedicated-Server/tar.gz/$C1\$" "$m/log" && grep -q 'systemctl restart avpx-java' "$m/log" \
+    && grep -q 'java -jar .*/opt/avpx/current/avpx-smoke.jar --installed$' "$m/log"; then :; else no 'a good deploy puts both jars in place, from that commit, restarts the service, and runs the installed smoke test'; fi
 
   machine "$C1" one
-  if ! deploy "$1" "$C1" "$(sha_of other)" && [ ! -e "$m/root/opt/avpx/current" ] && [ ! -e "$m/root/opt/avpx/releases/$C1" ] && grep -q "isn't the one the gates built" "$m/out"; then :; else no 'a jar that is not the tested one is refused, and nothing is put in place'; fi
+  if ! deploy "$1" "$C1" "$(sha_of other)" && [ ! -e "$m/root/opt/avpx/current" ] && [ ! -e "$m/root/opt/avpx/releases/$C1" ] && grep -q "aren't the ones the gates built" "$m/out"; then :; else no 'a jar that is not the tested one is refused, and nothing is put in place'; fi
 
   # Bad values: each refused before anything is fetched (the stand-ins' log stays empty)
   refused_before_fetch() {
@@ -105,7 +112,7 @@ all_cases() {
   machine "$C1" one
   deploy "$1" "$C1" "$(sha_of one)" || true
   mkdir -p "$m/src2/AVPx-Dedicated-Server-$C2/java"
-  printf '#!/bin/sh\nmkdir -p "$(dirname "$0")/build"\nprintf %%s two > "$(dirname "$0")/build/avpx-server.jar"\n' > "$m/src2/AVPx-Dedicated-Server-$C2/java/build.sh"
+  printf '#!/bin/sh\nmkdir -p "$(dirname "$0")/build"\nprintf %%s two > "$(dirname "$0")/build/avpx-server.jar"\nprintf %%s "smoke two" > "$(dirname "$0")/build/avpx-smoke.jar"\n' > "$m/src2/AVPx-Dedicated-Server-$C2/java/build.sh"
   tar -czf "$m/source.tar.gz" -C "$m/src2" .
   if ! FAKE_SMOKE=1 deploy "$1" "$C2" "$(sha_of two)" && [ "$(linked)" = "$m/root/opt/avpx/releases/$C1" ] && grep -q 'going back to' "$m/out"; then :; else no 'an unhealthy release is rolled back to the one before'; fi
 

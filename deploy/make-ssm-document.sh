@@ -10,7 +10,7 @@
 #
 # The document takes two values, and AWS itself refuses any other shape before anything runs (allowedPattern):
 #   commit      40 hex digits, small letters
-#   jarSha256   64 hex digits, small letters
+#   jarsSha256  64 hex digits, small letters: the SHA-256 of what `sha256sum avpx-server.jar avpx-smoke.jar` prints
 # It writes the script to a file of its own, runs it with those two values, and removes it. The owner registers the document once, by
 # hand, from this file (deploy/README.md); the GitHub role may only run it, never change it.
 set -eu
@@ -28,16 +28,16 @@ make() {
   cat <<'HEAD'
 {
   "schemaVersion": "2.2",
-  "description": "AVPx Dedicated Server: puts one commit of the Java server on this machine, only if its jar is the one the gates tested (deploy/remote-deploy.sh). Made by deploy/make-ssm-document.sh; never edit by hand.",
+  "description": "AVPx Dedicated Server: puts one commit of the Java server on this machine, only if its jars are the ones the gates tested (deploy/remote-deploy.sh). Made by deploy/make-ssm-document.sh; never edit by hand.",
   "parameters": {
     "commit": {
       "type": "String",
       "description": "The commit to put in place: 40 hex digits, small letters.",
       "allowedPattern": "^[0-9a-f]{40}$"
     },
-    "jarSha256": {
+    "jarsSha256": {
       "type": "String",
-      "description": "The SHA-256 of the jar the gates built and tested for that commit: 64 hex digits, small letters.",
+      "description": "The SHA-256 of what sha256sum avpx-server.jar avpx-smoke.jar prints, for the jars the gates built and tested for that commit: 64 hex digits, small letters.",
       "allowedPattern": "^[0-9a-f]{64}$"
     }
   },
@@ -57,7 +57,7 @@ HEAD
   done < "$script"
   json_line "$marker"; echo ','
   json_line 'status=0'; echo ','
-  json_line "sh \"\$script\" '{{ commit }}' '{{ jarSha256 }}' || status=\$?"; echo ','
+  json_line "sh \"\$script\" '{{ commit }}' '{{ jarsSha256 }}' || status=\$?"; echo ','
   json_line 'rm -f "$script"'; echo ','
   json_line 'exit "$status"'; echo
   cat <<'TAIL'

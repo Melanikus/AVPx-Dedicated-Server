@@ -42,3 +42,5 @@ jobs:
         run: sh deploy/test-remote-deploy.sh
       - name: The SSM document is what remote-deploy.sh makes
         run: sh deploy/make-ssm-document.sh --check
+      - name: deploy.yml keeps its shape (by hand only, dry run by default, blockers first, the token in one job, every check required)
+        run: sh deploy/test-deploy-workflow.sh

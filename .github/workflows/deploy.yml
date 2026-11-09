@@ -1,0 +1,178 @@
+# The deploy: puts one commit of the Java server on the one machine, through AWS Systems Manager, with no key stored anywhere. Written
+# 2026-11-09 by Melanikus for AVPx Dedicated Server.
+#
+# It's started by hand only (Actions, "Deploy", Run workflow), with the commit to deploy. Each job needs the one before, and the first
+# that fails stops it all:
+#   1. Server blockers: refuses while SERVER-BLOCKERS.md lists anything (sh deploy/check-blockers.sh). So today it always refuses.
+#   2. Gates: the commit is on main, and every check named in REQUIRED below passed on it.
+#   3. Build: the two jars built from that commit with the pinned JDK (the server and its smoke test), and one SHA-256 of both, which
+#      goes to the machine. The machine builds them again from the same source and puts them in place only if they're byte for byte the
+#      same (deploy/remote-deploy.sh).
+#   4. Deploy: waits for the owner to approve the "production" environment. Only this job may ask GitHub for an identity token
+#      (id-token: write), which it trades with AWS for a role that may do one thing: run the SSM document avpx-deploy on the one
+#      machine (deploy/README.md says how the owner sets that role up). It sends the commit and the jars' SHA-256, and waits for the answer.
+#   A dry run (the default) does all of that but the sending, and says what it would have sent.
+#
+# The role, the machine and the region come from the repository's variables (not secrets: none of them gives access by itself), and
+# each is held to its shape; until they're set, the deploy job refuses. No action but checkout is used: the identity token is fetched
+# with curl from GitHub's own endpoint, and AWS is reached with the runner's own aws command line tool, both from GitHub's runner image.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'The commit to put on the machine: 40 hex digits, small letters, already on main'
+        required: true
+        type: string
+      dry_run:
+        description: 'Do everything but send it, and say what would have been sent'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+# One deploy at a time, and a second waits rather than cutting the first off
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+env:
+  COMMIT: ${{ inputs.commit }}
+  # The checks a commit must have passed, by name, all of them (GATES.md)
+  REQUIRED: 'Java tests|The JDK is the newest Temurin 25|Smoke test, 38 checks, against the running server|Java take-outs|CodeQL (Java)|Snyk|Server blockers|Deploy scripts'
+
+jobs:
+  blockers:
+    name: Server blockers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: The commit's shape
+        run: |
+          case "$COMMIT" in *[!0-9a-f]*) echo 'the commit must be 40 hex digits, small letters'; exit 1 ;; esac
+          [ "${#COMMIT}" -eq 40 ] || { echo 'the commit must be 40 hex digits, small letters'; exit 1; }
+      - name: Nothing blocks a deploy
+        run: sh deploy/check-blockers.sh
+
+  gates:
+    name: Gates
+    needs: blockers
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      checks: read
+    steps:
+      - name: The commit is on main, and passed every required check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          where=$(gh api "repos/$GITHUB_REPOSITORY/compare/$COMMIT...main" --jq .status)
+          case "$where" in ahead|identical) echo "the commit is on main" ;; *) echo "the commit isn't on main ($where)"; exit 1 ;; esac
+          gh api "repos/$GITHUB_REPOSITORY/commits/$COMMIT/check-runs?per_page=100" --jq '.check_runs[] | "\(.name)\t\(.conclusion)"' > runs.txt
+          missing=0
+          old_ifs=$IFS
+          IFS='|'
+          for name in $REQUIRED; do
+            if grep -qxF "$(printf '%s\tsuccess' "$name")" runs.txt; then echo "passed: $name"; else echo "NOT PASSED: $name"; missing=1; fi
+          done
+          IFS=$old_ifs
+          [ "$missing" -eq 0 ] || { echo 'the commit has not passed every required check'; exit 1; }
+
+  build:
+    name: Build
+    needs: gates
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      jars: ${{ steps.hash.outputs.jars }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - name: The pinned JDK, checked by its signature, its sha256 and its version
+        run: sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
+      - name: Build, with every test
+        run: JAVA_HOME="$RUNNER_TEMP/jdk" sh java/build.sh
+      # The SHA-256 of what sha256sum prints for both jars, in the build folder: deploy/remote-deploy.sh makes it the same way
+      - name: The jars' SHA-256
+        id: hash
+        run: |
+          jars=$( (cd java/build && sha256sum avpx-server.jar avpx-smoke.jar) | sha256sum | cut -d ' ' -f 1)
+          echo "the jars for $COMMIT: $jars"
+          echo "jars=$jars" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      JARS: ${{ needs.build.outputs.jars }}
+      ROLE: ${{ vars.AVPX_DEPLOY_ROLE_ARN }}
+      MACHINE: ${{ vars.AVPX_DEPLOY_MACHINE }}
+      REGION: ${{ vars.AVPX_DEPLOY_REGION }}
+      DRY_RUN: ${{ inputs.dry_run }}
+    steps:
+      - name: The role, the machine and the region are set, each in its shape
+        run: |
+          printf '%s' "$JARS" | grep -Eqx '[0-9a-f]{64}' || { echo "the build gave no SHA-256 for the jars"; exit 1; }
+          printf '%s' "$ROLE" | grep -Eqx 'arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]{1,64}' || { echo 'set the variable AVPX_DEPLOY_ROLE_ARN to the role (deploy/README.md)'; exit 1; }
+          printf '%s' "$MACHINE" | grep -Eqx 'mi-[0-9a-f]{17}' || { echo 'set the variable AVPX_DEPLOY_MACHINE to the machine id SSM gave it, mi- and 17 hex digits'; exit 1; }
+          printf '%s' "$REGION" | grep -Eqx '[a-z]{2}-[a-z]+-[0-9]' || { echo 'set the variable AVPX_DEPLOY_REGION, such as us-east-1'; exit 1; }
+
+      - name: A dry run says what it would send, and sends nothing
+        if: ${{ inputs.dry_run }}
+        run: |
+          echo "would run the SSM document avpx-deploy on $MACHINE in $REGION, as $ROLE, with:"
+          echo "  commit=$COMMIT"
+          echo "  jarsSha256=$JARS"
+
+      - name: Send it, and wait for the machine's answer
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -eu
+          # GitHub's identity token for this job, for AWS (audience sts.amazonaws.com)
+          token=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r .value)
+          echo "::add-mask::$token"
+          # Traded for the role, for 15 minutes at most; the keys stay in this step only, and are masked in the log
+          creds=$(aws sts assume-role-with-web-identity --region "$REGION" --role-arn "$ROLE" --role-session-name "avpx-deploy-$GITHUB_RUN_ID" \
+            --web-identity-token "$token" --duration-seconds 900 --output json)
+          AWS_ACCESS_KEY_ID=$(printf '%s' "$creds" | jq -r .Credentials.AccessKeyId)
+          AWS_SECRET_ACCESS_KEY=$(printf '%s' "$creds" | jq -r .Credentials.SecretAccessKey)
+          AWS_SESSION_TOKEN=$(printf '%s' "$creds" | jq -r .Credentials.SessionToken)
+          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+          echo "::add-mask::$AWS_SESSION_TOKEN"
+          export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+          unset creds token
+          id=$(aws ssm send-command --region "$REGION" --document-name avpx-deploy --instance-ids "$MACHINE" \
+            --parameters "commit=$COMMIT,jarsSha256=$JARS" --comment "AVPx deploy of $COMMIT" --query Command.CommandId --output text)
+          echo "sent: command $id"
+          # The machine's answer: every 15 s, for up to 40 minutes (the document itself gives up after 30)
+          for i in $(seq 1 160); do
+            sleep 15
+            status=$(aws ssm get-command-invocation --region "$REGION" --command-id "$id" --instance-id "$MACHINE" --query Status --output text 2>/dev/null || echo Pending)
+            case "$status" in
+              Success|Failed|Cancelled|TimedOut)
+                aws ssm get-command-invocation --region "$REGION" --command-id "$id" --instance-id "$MACHINE" --query StandardOutputContent --output text
+                echo "the machine says: $status"
+                [ "$status" = Success ]
+                exit $?
+                ;;
+            esac
+          done
+          echo 'no answer from the machine in 40 minutes'
+          exit 1

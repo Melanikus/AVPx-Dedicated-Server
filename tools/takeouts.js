@@ -18,7 +18,8 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const root = path.join(__dirname, '..');
-const COPY = ['relay', 'list', 'test', 'support', 'tools', '.github', 'main.js', 'settings.js', 'log.js', 'package.json', 'package-lock.json', 'CODING-STANDARD.md'];
+// What the copy holds: the code, its tests, and what the tests read (deploy/ has the example settings test/settings.test.js checks)
+const COPY = ['relay', 'list', 'test', 'support', 'tools', 'deploy', '.github', 'main.js', 'settings.js', 'log.js', 'package.json', 'package-lock.json', 'CODING-STANDARD.md'];
 const rows = JSON.parse(fs.readFileSync(path.join(__dirname, 'takeouts.json'), 'utf8')).rows;
 
 function makeCopy() {

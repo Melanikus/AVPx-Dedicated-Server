@@ -229,6 +229,10 @@ test('a body is exactly its call\'s fields, as JSON, at most 1 KB', () => {
   assert.strictEqual(call(L, 'POST', missing).status, 400, 'a field missing');
   assert.strictEqual(call(L, 'PUT', game()).status, 400, 'a PUT with no owner');
   assert.strictEqual(call(L, 'DELETE', { region: 'virginia', code: 'ABCD2345' }).status, 400, 'a DELETE with no owner');
+  // A good listing with spaces after it, which JSON allows: 1,024 bytes in all is taken, and 1,025 refused for its size alone
+  const padded = (code, size) => { const b = body(game({ code })); return Buffer.concat([b, Buffer.alloc(size - b.length, 0x20)]); };
+  assert.strictEqual(call(L, 'POST', padded('ABCD2398', 1024)).status, 201, 'a good listing of 1,024 bytes');
+  assert.strictEqual(call(L, 'POST', padded('ABCD2399', 1025)).status, 400, 'a good listing of 1,025 bytes');
   assert.strictEqual(call(L, 'POST', Buffer.from('{"region":')).status, 400, 'not JSON');
   assert.strictEqual(call(L, 'POST', Buffer.from('[1,2]')).status, 400, 'not an object');
   assert.strictEqual(call(L, 'POST', Buffer.from('null')).status, 400, 'null');

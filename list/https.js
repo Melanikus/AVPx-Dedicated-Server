@@ -4,7 +4,8 @@
 //
 // THE LIMITS, all from anyone on the internet (AVP Tao 3):
 // - headers at most 8 KB (Node refuses more), a body at most 1 KB (refused with 413 as soon as it's over, not after it's all come);
-// - 5 s to send the headers, and 10 s for the whole request: a sender who trickles a byte at a time is cut off;
+// - 5 s for the TLS handshake, 5 s to send the headers, and 10 s for the whole request, each checked every second: a sender who
+//   trickles a byte at a time is cut off;
 // - 200 connections at once in all, and 10 from one address;
 // - from one address, 5 requests a second (20 at once), and GET /v1/games and GET /v1/relays 1 a second (5 at once).
 // TLS is 1.2 or newer. Every answer is JSON, with headers that tell a browser to treat it as nothing but data, and HSTS.
@@ -27,9 +28,13 @@ const { kMostBodyBytes } = require('./requests');
 
 const LIMITS = {
   mostHeaderBytes: 8 * 1024,
+  handshakeMilliseconds: 5000,       // for the TLS handshake (Node's own default is 120 s)
   headersMilliseconds: 5000,
   requestMilliseconds: 10000,
   keepAliveMilliseconds: 5000,
+  // How often Node looks for requests past their time. Its default is 30 s, so a sender could hold a connection that long past its 5 s;
+  // looking every second keeps each limit within a second of what it says.
+  checkMilliseconds: 1000,
   mostConnections: 200,
   mostConnectionsPerAddress: 10,
   requestRate: 5, requestBurst: 20,
@@ -71,6 +76,7 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
     headersTimeout: LIMITS.headersMilliseconds,
     requestTimeout: LIMITS.requestMilliseconds,
     keepAliveTimeout: LIMITS.keepAliveMilliseconds,
+    connectionsCheckingInterval: LIMITS.checkMilliseconds,
   };
 
   const perAddress = new PerSender({ rate: LIMITS.requestRate, burst: LIMITS.requestBurst, most: LIMITS.mostSenders, hasher });
@@ -150,7 +156,7 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
     request.on('error', () => { /* the sender went away: nothing to answer */ });
   };
 
-  const server = makeServer ? makeServer(options, onRequest) : https.createServer({ ...options, cert: certificate.cert, key: certificate.key, minVersion: 'TLSv1.2' }, onRequest);
+  const server = makeServer ? makeServer(options, onRequest) : https.createServer({ ...options, cert: certificate.cert, key: certificate.key, minVersion: 'TLSv1.2', handshakeTimeout: LIMITS.handshakeMilliseconds }, onRequest);
   server.maxConnections = LIMITS.mostConnections;
 
   // At most so many connections from one address

@@ -109,11 +109,13 @@ function passKey(value, name) {
   return key.length === kPassKeyBytes ? key : refuse(`${name} must be 32 bytes`);
 }
 
-// A relay's DNS name: letters, digits and -, in parts joined by dots, with a letter somewhere, and never an address, so a relay can move
-// to another machine without a game update
+// A relay's DNS name, never an address, so a relay can move to another machine without a game update: letters, digits and -, in parts
+// joined by dots, and the last part starts with a letter. No real top-level domain starts with a digit, while every way of writing an
+// IPv4 address ends in a number (1.2.3.4, and forms some resolvers also take as addresses, such as 0x7f.0.0.1), so this refuses them
+// all, and IPv6 has colons, which no name has.
 function host(value, name) {
   if (typeof value !== 'string' || value.length > kMostHostLength || !/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*$/.test(value) ||
-      !/[A-Za-z]/.test(value) || net.isIP(value) !== 0) {
+      !/(^|\.)[A-Za-z][A-Za-z0-9-]*$/.test(value)) {
     refuse(`${name} must be a DNS name, 1 to ${kMostHostLength} characters, not an address`);
   }
 

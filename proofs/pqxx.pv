@@ -6,18 +6,22 @@
 
    WHAT IS MODELLED, as CRYPTO.md section 8 writes it:
    - each player has an identity: a static P-384 key and a static ML-KEM key. Its fingerprint is a hash of both;
-   - the prologue: the relay port, and the host's fingerprint as the listing gives it;
-   - B1, joiner to host: e (MixHash of the ephemeral P-384 key, then of the ephemeral ML-KEM key);
+   - the prologue: the region and a 0 byte, the joiner's relay port, and the host's fingerprint as the listing gives it (5.1 point 17);
+   - B1, joiner to host: e (MixHash of the ephemeral P-384 key, then of the ephemeral ML-KEM key), then the joiner's commitment to its
+     32 bytes for the check code, MixHashed (5.1 point 19);
    - B2, host to joiner: e, ee, ekem, s (the host's static keys, sealed), es, and an empty EncryptAndHash;
    - B3, joiner to host: skem (to the host's static ML-KEM key), s (the joiner's static keys, sealed), se, and an empty EncryptAndHash;
-   - B4, host to joiner: skem (to the joiner's static ML-KEM key), and an empty EncryptAndHash: the host's key confirmation;
-   - B5, joiner to host: an empty EncryptAndHash: the joiner's key confirmation, after B4's skem;
+   - B4, host to joiner: skem (to the joiner's static ML-KEM key), and an EncryptAndHash of the host's 32 bytes for the check code: the
+     host's key confirmation;
+   - B5, joiner to host: an EncryptAndHash of the joiner's 32 bytes, which the host checks against B1's commitment: the joiner's key
+     confirmation, after B4's skem;
    - Split, then each side sends a sealed game datagram holding a secret.
    The joiner takes the host only if the fingerprint of the static keys in B2 is the one the listing gave. The host takes any joiner (in
    the game, anyone may join), and what's proved is about a joiner whose identity it knows.
 
-   NOT MODELLED: the six-digit check code (it's for people to compare, and it's what catches a list that lies about the fingerprint;
-   here the listing is honest), counters and windows, fragments.
+   NOT MODELLED: the six-digit check code itself (it's for people to compare, and it's what catches a list that lies about the
+   fingerprint; here the listing is honest). Its commitment and its two values travel here as they do on the wire, but no query is
+   about the code: why the commitment stops anyone grinding it is argued in CRYPTO.md 5.1 point 19. Also counters, windows, fragments.
 
    THE QUERIES (proofs/run.sh says what each must give):
    1. the joiner's secret stays secret; 2. the host's secret stays secret: both even when every static key is given away after the
@@ -31,6 +35,7 @@
 free c: channel.
 
 const protoname: bitstring.
+const region: bitstring.
 const relayport: bitstring.
 const empty: bitstring.
 
@@ -58,6 +63,8 @@ fun kdfk(bitstring, bitstring): key.
 fun splitir(bitstring): key.
 fun splitri(bitstring): key.
 fun fp(G, kempk): bitstring.
+(* The joiner's commitment to its 32 bytes for the check code: SHA-384, as a hash of its own *)
+fun commit(bitstring): bitstring.
 
 type nonce.
 const n0: nonce.
@@ -88,13 +95,14 @@ let Joiner(jdh: exponent, jkem: kemsk, hostfp: bitstring) =
   new e: exponent;
   new ek: kemsk;
   new r3: coins;
+  new nj: bitstring;
   let h0 = hash0(protoname) in
   let ck0 = h0 in
-  let hp = hash(hash(h0, relayport), hostfp) in
+  let hp = hash(hash(hash(h0, region), relayport), hostfp) in
   (* B1: e *)
   let epub = exp(g, e) in
-  let h1 = hash(hash(hp, G2b(epub)), kempk2b(kemPub(ek))) in
-  out(c, (epub, kemPub(ek)));
+  let h1 = hash(hash(hash(hp, G2b(epub)), kempk2b(kemPub(ek))), commit(nj)) in
+  out(c, (epub, kemPub(ek), commit(nj)));
   (* B2: e, ee, ekem, s, es *)
   in(c, (hepub: G, ct2: bitstring, sealedS: bitstring, b2tag: bitstring));
   let h2 = hash(h1, G2b(hepub)) in
@@ -139,11 +147,10 @@ let Joiner(jdh: exponent, jkem: kemsk, hostfp: bitstring) =
   (*LEAKKEM out(c, ss4); LEAKKEM*)
   let ck6 = kdfck(ck5, ss4) in
   let k6 = kdfk(ck5, ss4) in
-  let m4 = adec(k6, n0, h9, b4tag) in
-  if m4 = empty then
+  let nh = adec(k6, n0, h9, b4tag) in
   let h10 = hash(h9, b4tag) in
   (* B5, and Split *)
-  let b5tag = aenc(k6, n1, h10, empty) in
+  let b5tag = aenc(k6, n1, h10, nj) in
   let kir = splitir(ck6) in
   let kri = splitri(ck6) in
   event JKeys(hsdh, jdhPub, h10, kir, kri);
@@ -156,11 +163,11 @@ let Host(hdh: exponent, hkem: kemsk, honestJ: G) =
   let hdhPub = exp(g, hdh) in
   let hkemPub = kemPub(hkem) in
   let hostfp = fp(hdhPub, hkemPub) in
-  in(c, (epub: G, ekPub: kempk));
+  in(c, (epub: G, ekPub: kempk, cj: bitstring));
   let h0 = hash0(protoname) in
   let ck0 = h0 in
-  let hp = hash(hash(h0, relayport), hostfp) in
-  let h1 = hash(hash(hp, G2b(epub)), kempk2b(ekPub)) in
+  let hp = hash(hash(hash(h0, region), relayport), hostfp) in
+  let h1 = hash(hash(hash(hp, G2b(epub)), kempk2b(ekPub)), cj) in
   (* B2 *)
   new he: exponent;
   new r2: coins;
@@ -197,12 +204,13 @@ let Host(hdh: exponent, hkem: kemsk, honestJ: G) =
   let h8 = hash(h7, b3tag) in
   (* B4: skem to the joiner's static key, and the host's confirmation *)
   new r4: coins;
+  new nh: bitstring;
   let ct4 = kemct(jkemPub, r4) in
   let h9 = hash(h8, ct4) in
   let ss4 = kemss(jkemPub, r4) in
   let ck6 = kdfck(ck5, ss4) in
   let k6 = kdfk(ck5, ss4) in
-  let b4tag = aenc(k6, n0, h9, empty) in
+  let b4tag = aenc(k6, n0, h9, nh) in
   let h10 = hash(h9, b4tag) in
   let kir = splitir(ck6) in
   let kri = splitri(ck6) in
@@ -210,8 +218,8 @@ let Host(hdh: exponent, hkem: kemsk, honestJ: G) =
   out(c, (ct4, b4tag));
   (* B5: the joiner's confirmation *)
   in(c, b5tag: bitstring);
-  let m5 = adec(k6, n1, h10, b5tag) in
-  if m5 = empty then
+  let nj = adec(k6, n1, h10, b5tag) in
+  if commit(nj) = cj then
   if jdhPub = honestJ then
   event HDone(hdhPub, jdhPub, h10, kir, kri);
   out(c, aenc(kri, n0, empty, secretH)).

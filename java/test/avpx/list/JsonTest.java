@@ -108,7 +108,10 @@ public final class JsonTest {
     test("a number from outside is read by adding its digits up, and nothing it holds can make that throw", () -> {
       same(Json.digitsValue("0", 10), 0L, "0");
       same(Json.digitsValue("42", 42), 42L, "at its most");
-      same(Json.digitsValue("9999999999999999", Json.MOST_WHOLE), 9999999999999999L, "16 digits");
+      // 16 digits is the most it reads, because PROTOCOL.md's biggest number, a pass time, goes to 9,007,199,254,740,991: 16 digits
+      same(Json.digitsValue("9007199254740991", Json.MOST_WHOLE), Json.MOST_WHOLE, "16 digits, at the protocol's most");
+      same(Json.digitsValue("9007199254740992", Json.MOST_WHOLE), -1L, "one past the protocol's most");
+      same(Json.digitsValue("9999999999999999", Long.MAX_VALUE), 9999999999999999L, "the biggest 16 digits, which a long holds");
       same(Json.digitsValue("43", 42), -1L, "past its most");
       same(Json.digitsValue("12345678901234567", Long.MAX_VALUE), -1L, "17 digits, refused before any adding");
       same(Json.digitsValue("99999999999999999999999999999999", Long.MAX_VALUE), -1L, "far more digits than a long holds");

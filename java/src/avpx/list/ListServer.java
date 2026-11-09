@@ -475,6 +475,15 @@ public final class ListServer {
     closeQuietly(server);
     timers.shutdownNow();
 
+    // The counts since the last line, so the last part of a minute isn't lost
+    String line;
+
+    synchronized (lock) {
+      line = listings.countsLine(now.getAsLong());
+    }
+
+    log.accept(line);
+
     for (Socket s : live) {
       closeQuietly(s);
     }

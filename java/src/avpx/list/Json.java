@@ -302,8 +302,9 @@ public final class Json {
 
   // The value of a text that is nothing but the digits 0 to 9, 1 to 16 of them, if it's at most `most`; -1 for anything else. It adds the
   // digits up itself, so whatever the text holds, it never throws: every number the server reads from outside is read with this, and a
-  // number from outside must never stop anything with an exception (AVP Tao 3). 16 digits is at most 9,999,999,999,999,999, which a long
-  // holds.
+  // number from outside must never stop anything with an exception (AVP Tao 3). 16 digits because PROTOCOL.md's biggest number, a pass
+  // time, goes to 9,007,199,254,740,991 (MOST_WHOLE), which has 16; and 16 digits is at most 9,999,999,999,999,999, which a long holds,
+  // so the adding can't overflow. `most` is the caller's own limit: MOST_WHOLE for a JSON number, 1,024 for a Content-Length.
   public static long digitsValue(String text, long most) {
     if (text == null || text.isEmpty() || text.length() > MOST_WHOLE_DIGITS) {
       return -1;

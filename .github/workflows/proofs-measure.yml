@@ -1,0 +1,70 @@
+# FOR MEASURING ONLY: runs on a push to the proofs-measure branch, which is never merged. Written 2026-11-09 by Melanikus for AVPx
+# Dedicated Server.
+#
+# The Proofs check had never finished (32 of its last 36 runs stopped by the 30-minute limit, inside pqnk's both-broken variant). This
+# runs each model's each variant as a job of its own, with a long limit, and prints ProVerif's output (proofs/measure.sh), so the log's
+# times show which variants end, how long each takes, and where the time goes. Three more jobs a model try both-broken with a setting
+# that may let it end, to see what it does to the answers. The real check is decided from these numbers, in proofs.yml.
+#
+# ProVerif is fetched, checked and built exactly as proofs.yml does it, and the comments there say why each step is so.
+name: Proofs, measured
+
+on:
+  push:
+    branches: [proofs-measure]
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: ${{ matrix.model }} ${{ matrix.variant }} ${{ matrix.setting }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        model: [pqnk, pqik, pqxx]
+        variant: [as-written, dh-broken, kem-broken, both-broken]
+        setting: ['']
+        include:
+          - { model: pqnk, variant: both-broken, setting: notrace }
+          - { model: pqik, variant: both-broken, setting: notrace }
+          - { model: pqxx, variant: both-broken, setting: notrace }
+          - { model: pqnk, variant: both-broken, setting: depth8 }
+          - { model: pqik, variant: both-broken, setting: depth8 }
+          - { model: pqxx, variant: both-broken, setting: depth8 }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Usually seconds. One run's mirror took 19 minutes for this, so a slow one stops here and says so, instead of eating the job.
+      - name: OCaml, from Ubuntu's signed archive (5 minutes at most)
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ocaml-nox
+          ocamlopt -version
+      - name: ProVerif 2.05 from INRIA's source, checked by its pinned SHA-256, then built (10 minutes at most)
+        timeout-minutes: 10
+        env:
+          URL: https://bblanche.gitlabpages.inria.fr/proverif/proverif2.05.tar.gz
+          KEY: 4871f53c32ab4a04669a060c4886ba5d9080496963fb980a9a62d2c429ceabc4
+        run: |
+          set -eu
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-time 300 -o "$RUNNER_TEMP/proverif.tar.gz" "$URL"
+          echo "$KEY  $RUNNER_TEMP/proverif.tar.gz" | sha256sum --check --strict
+          tar -tzf "$RUNNER_TEMP/proverif.tar.gz" > "$RUNNER_TEMP/proverif.list"
+          if grep -v '^proverif2\.05/' "$RUNNER_TEMP/proverif.list" | grep -q .; then echo 'a path outside proverif2.05/'; exit 1; fi
+          if grep -q '\.\.' "$RUNNER_TEMP/proverif.list"; then echo 'a path with ..'; exit 1; fi
+          tar -xzf "$RUNNER_TEMP/proverif.tar.gz" -C "$RUNNER_TEMP"
+          (cd "$RUNNER_TEMP/proverif2.05" && sh ./build -nointeract)
+          [ -x "$RUNNER_TEMP/proverif2.05/proverif" ] || { echo 'the build made no proverif'; exit 1; }
+          echo "$RUNNER_TEMP/proverif2.05" >> "$GITHUB_PATH"
+      - name: The one variant, with ProVerif's output
+        env:
+          MODEL: ${{ matrix.model }}
+          VARIANT: ${{ matrix.variant }}
+          SETTING: ${{ matrix.setting }}
+        run: |
+          if [ -n "$SETTING" ]; then sh proofs/measure.sh "$MODEL" "$VARIANT" "$SETTING"; else sh proofs/measure.sh "$MODEL" "$VARIANT"; fi

@@ -1,0 +1,32 @@
+# Proofs: the formal models of CRYPTO.md's handshakes, run with ProVerif, every answer checked (proofs/run.sh). Written 2026-11-09 by
+# Melanikus for AVPx Dedicated Server.
+#
+# ProVerif comes from Ubuntu's own package archive, which apt checks against Ubuntu's signing keys before it installs anything; the
+# version is the one Ubuntu 24.04 carries, printed in the log. Building it from source, pinned to a release and its hash, is owed (a card
+# of its own). Every action is pinned to a full commit hash (CODING-STANDARD.md rule 7).
+name: Proofs
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  proofs:
+    name: Proofs (ProVerif)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: ProVerif, from Ubuntu's signed archive
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends proverif
+          dpkg-query -W proverif
+      - name: Every model, every variant, every answer the one it must be
+        run: sh proofs/run.sh

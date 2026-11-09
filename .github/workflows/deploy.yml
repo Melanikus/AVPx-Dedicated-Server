@@ -46,7 +46,7 @@ concurrency:
 env:
   COMMIT: ${{ inputs.commit }}
   # The workflows whose latest run for the commit must have succeeded, by file, all of them (GATES.md): every one but this file
-  REQUIRED: 'java.yml blockers.yml snyk.yml'
+  REQUIRED: 'java.yml blockers.yml snyk.yml proofs.yml'
 
 jobs:
   blockers:

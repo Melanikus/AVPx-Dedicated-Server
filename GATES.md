@@ -1,34 +1,32 @@
 # The gates: what every change must pass
 
-Written 2026-11-08 by Melanikus. Nothing reaches `main` without passing every check below (AVP Tao 1: security is paramount).
+Written 2026-11-08 by Melanikus; for the Java server from 2026-11-09. Nothing reaches `main` without passing every check below (AVP Tao 1: security is paramount).
 - A failing check fails the change, for everyone. Admins can't bypass it, and nothing is report-only.
 - A finding is fixed in the code, never hidden: no ignore lists, and no checks switched off for one file.
 - A blind spot fails the gate too: a file a scanner can't read, or code it doesn't reach.
 
 ## The checks (all required on `main`'s branch protection, with "Include administrators" on)
 
-| Check | What it does | When it fails |
-|---|---|---|
-| **Tests** | The server's own tests, on a clean Ubuntu runner, with the language's runtime pinned to one version | Any test failing, or no tests found |
-| **CodeQL** | GitHub's static analysis, for the server's language, with the security-and-quality queries | Any alert at any severity |
-| **OSV-Scanner** | Every dependency in the lock file, against the OSV database | Any known vulnerability. With no dependencies, the scan must still run and say it found the lock file, or the step fails |
-| **Snyk** | Snyk Code (static) and Snyk Open Source (dependencies), on Snyk's free account | Any issue at any severity |
-| **No packages** | Refuses any third-party dependency: an npm `dependencies` / `devDependencies` / `node_modules` for Node, or any `require` line in `go.mod` beyond the standard library for Go | Any found |
-| **Coding standard** | CODING-STANDARD.md's checks (to come, one rule at a time, each with its reason): every file ASCII; every limit a named constant; no `eval` or `Function(` (Node), no `unsafe` or cgo (Go); no address written to a log | Any found |
-| **Secret scanning and push protection** | GitHub's own, switched on for the repository | A secret in a push is refused before it lands |
-| **Server blockers** | SERVER-BLOCKERS.md: every deploy workflow's first step is `sh deploy/check-blockers.sh`, which refuses while anything is listed; this check runs deploy/test-check-blockers.sh, which proves that refusal works and that its own cases would notice the checker going wrong | The refusal test failing. (A deploy fails on its own while anything is listed) |
-| **Pinned actions** | Every `uses:` in a workflow is pinned to a full commit SHA, with the version in a comment | One that isn't |
+| Check | Workflow | What it does | When it fails |
+|---|---|---|---|
+| **Java tests** | java.yml | `sh java/build.sh` with `AVPX_LIVE=1`: javac with every warning an error, then every test, the live ones on 127.0.0.1 included; the coding standard (CheckStandard); and the same jars from the same code, on two filesystems | Any test failing or not run, any warning, any rule broken, two builds that differ |
+| **The JDK is the newest Temurin 25** | java.yml | Adoptium's newest Temurin 25 release against the one get-jdk.sh pins | A newer release is out (a quarterly security update: move the pin) |
+| **Smoke test, 38 checks, against the running server** | java.yml | `java/tools/Smoke.java` against the server running on 127.0.0.1, from outside its process | Any check failing |
+| **Java take-outs** | java.yml | `java/tools/Takeouts.java` over `java/tools/takeouts.txt`: each row breaks one thing in a copy, and the check it names must notice | A row not noticed, or not found |
+| **CodeQL (Java)** | java.yml | GitHub's static analysis, language `java-kotlin`, the security-and-quality queries, through `build.sh` | Any result in CodeQL's own SARIF, or any tracked `.java` file CodeQL didn't read |
+| **Snyk** | snyk.yml | Snyk Code (static analysis) on the whole repository | Any issue at any severity, or no `SNYK_TOKEN` |
+| **Server blockers** | blockers.yml | `deploy/test-check-blockers.sh`: the refusal of every deploy while SERVER-BLOCKERS.md lists anything works, and its own cases would notice the checker going wrong | The refusal's test failing. (A deploy refuses on its own while anything is listed) |
+| **Deploy scripts** | blockers.yml | `deploy/test-remote-deploy.sh` (the machine's side, with stand-ins: no machine, no network, no AWS), `make-ssm-document.sh --check`, `test-deploy-workflow.sh` (deploy.yml's shape, the tools' rules included), `test-open-for-tester.sh`, `test-firewall.sh` and `test-get-aws-cli.sh` (with stand-ins: no firewall touched, nothing fetched), and `check-ubuntu-tools.sh` on the runner itself | Any case, take-out or rule failing |
+| **Secret scanning and push protection** | GitHub's own | Switched on for the repository | A secret in a push is refused before it lands |
 
-## Which version of each check, by language
+**What isn't a check, and why:**
+- **No dependency scan** (OSV-Scanner, Snyk Open Source): the Java server has no Maven or Gradle file and fetches no package, by design, so there's nothing for one to read. A scan that reads nothing can't be told from a broken one, so what proves there's nothing to find is the coding standard's rule 2 (CheckStandard): no build file that fetches packages, no compiled code anywhere in the repository, and a `module-info.java` naming no module but `java.base`.
+- **The JDK** is the one thing from outside, and it's held two ways: get-jdk.sh fetches it and checks its signature (by Adoptium's key, pinned by fingerprint), its sha256 and its version before anything runs it; and "The JDK is the newest Temurin 25" fails as soon as a newer security release is out.
 
-- **Node.js:**
-  - CodeQL language `javascript-typescript`;
-  - Tests are `node --test`, on the pinned Node of the Ubuntu runner, or `actions/setup-node` pinned by SHA;
-  - OSV reads `package-lock.json`, an empty one with no dependencies.
-- **Go:**
-  - CodeQL language `go`;
-  - Tests are `go test ./...` and `go vet ./...`, with the Go version pinned in `go.mod` and by `actions/setup-go` by SHA;
-  - OSV reads `go.mod` / `go.sum`, plus `govulncheck` for the standard library.
+## The workflows that aren't checks
+
+- **Deploy** (`deploy.yml`): started by hand, with a commit, as a dry run unless told otherwise. It refuses while SERVER-BLOCKERS.md lists anything. Then it checks the commit is on main and that the latest run of every workflow above, for that commit, succeeded. Then it builds the jars and waits for the owner to approve the `production` environment before anything is sent (deploy/README.md).
+- **Test build** (`test-build.yml`): started by hand; builds a commit's jars and prints what the owner types into AWS for a deploy to the test machine by hand. It can't reach AWS.
 
 ## Settings on GitHub (PO sets these up)
 
@@ -38,12 +36,10 @@ Written 2026-11-08 by Melanikus. Nothing reaches `main` without passing every ch
   - conversations resolved;
   - no force pushes or deletions;
   - "Include administrators" on.
-- **Repository settings:** Dependabot alerts on (already on), and security updates on. Private vulnerability reporting on (already on).
+- **Repository settings:** Dependabot alerts and security updates on. Private vulnerability reporting on (SECURITY.md).
+- **Code scanning:** CodeQL's default setup off, because GitHub refuses a workflow's results while it's on; CodeQL runs only as java.yml's job.
 - **Actions:**
-  - only actions from GitHub and verified creators, each pinned by SHA;
+  - only actions from GitHub and verified creators, each pinned by SHA (CODING-STANDARD.md rule 7);
   - the `GITHUB_TOKEN` read-only by default;
   - workflows from forks need approval.
-
-## Nothing deployed from here yet
-
-There's no deploy workflow. When the server is first put on a machine, deploying is a separate step that needs the owner's word, and it gets its own gate: the same commit must have passed everything above.
+- **The `production` environment:** the owner is its only reviewer. It holds no secret: the deploy's role, machine and region are repository variables, and the role is reached through GitHub's OIDC.

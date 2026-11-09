@@ -24,10 +24,13 @@ Everything that arrives is treated as hostile (AVP Tao 3). Every field has a wri
 5. **A player picks the game** from `GET /v1/games`, which says each game's relay region. Its game looks that region up in `GET /v1/relays`. A player who types a code instead: its game asks every relay, and only the one with that room answers `JOIN_PORT` (the rest answer `REFUSED`, reason 1).
 6. **The joiner asks that relay to join.** It sends `JOIN` with the code to the control port, and gets a cookie first, as the host did.
    - The relay answers `JOIN_PORT`: a **ticket** (16 random bytes, the joiner's proof) and a relay port of its own for this joiner.
-   - The relay tells the host `NEW_JOINER`, with that port.
-7. **Both say hello on that port,** from their game's own socket: the host `HOST_HELLO` with its token, the joiner `JOINER_HELLO` with its ticket. That fixes, for the relay, where each one's packets come from through its NAT.
+   - The same `JOIN` again, from the same address and port, before that port is claimed (step 7), gets the same port and ticket again, never a second port: the joiner's game asks each second until it hears, so its first `JOIN_PORT` was lost.
+7. **The joiner says hello on that port, and claims it.** It sends `JOINER_HELLO` with its ticket, from its game's own socket, at once and then every half second.
+   - **Only then** does the relay tell the host `NEW_JOINER`, with that port, and count the joiner as one of the room's players. Until the host has said hello there, it tells the host again at most once a second, in case a `NEW_JOINER` was lost.
+   - The host says `HOST_HELLO` with its token on that port. The two hellos fix, for the relay, where each one's packets come from through its NAT.
+   - A `JOIN` that's never followed by its joiner's hello holds nothing for long (section 6 says why): its port is freed 5 s after `JOIN_PORT`, it isn't one of the room's players, and the host never hears of it.
 8. **When both have said hello,** the relay sends `READY` to the joiner. The joiner's game starts its ENet connection to that relay port. The relay then passes every packet between the two, unread and unchanged.
-9. **The end.** A joiner's port is freed after 30 s with no packets, or 15 s after `JOIN_PORT` if both haven't said hello. The room ends on `HOST_CLOSE` with its token, or after 45 s with no `HOST_KEEP`; all its joiners' ports go with it. The listing ends on `DELETE /v1/games` with its owner key, or after 45 s with no good `PUT`. A host that closes its game does both.
+9. **The end.** A joiner's port is freed after 30 s with no packets, 5 s after `JOIN_PORT` if the joiner hasn't claimed it, or 15 s after `JOIN_PORT` if the host hasn't said hello. The room ends on `HOST_CLOSE` with its token, or after 45 s with no `HOST_KEEP`; all its joiners' ports go with it. The listing ends on `DELETE /v1/games` with its owner key, or after 45 s with no good `PUT`. A host that closes its game does both.
 
 **The game's own packets have no header added.** The relay port they come in on says which room and which joiner they're for. So the game's ENet packets are never changed, and the host's ENet sees each joiner as a peer of its own, because each comes from a relay port of its own.
 
@@ -180,11 +183,13 @@ Every number is a starting point, written in one place in the code, and changed 
 | Control messages from everyone, echoes among them | 2,000 a second, 4,000 at once |
 | `REFUSED` answers to one address | 1 a second, 2 at once |
 | Rooms on one relay | 500 in all; 2 for one address |
-| Joiners in one room | 8 |
+| Joiners in one room | 8, counting the ports their joiners have claimed (said hello on) |
 | Joins to one room | 4 a second, 8 at once |
-| Hellos on one joiner's port | 20 a second, 40 at once |
+| Hellos with the right secret on one joiner's port | 20 a second, 40 at once; one with a wrong secret is dropped before this is spent (section 6) |
+| Joiners' ports for one address | 2 at once not yet claimed (one more `JOIN` gets no answer, and the joiner's game asks again a second later); 8 at once in all, claimed or not (one more gets `REFUSED`, reason 3) |
 | Game traffic on one joiner's port, each way | 400 packets a second (800 at once), and 256 KB a second (512 KB at once) |
-| A joiner's port waiting for both hellos | 15 s |
+| A joiner's port not claimed by its joiner's hello | 5 s after `JOIN_PORT` |
+| A joiner's port waiting for its host's hello | 15 s after `JOIN_PORT` |
 | A joiner's port with no traffic | 30 s |
 | A room with no `HOST_KEEP` | 45 s |
 | A pass | good 60 s after its pass time; refused if its pass time is more than 5 s ahead |
@@ -220,3 +225,11 @@ Never an address, a code, a token, a ticket, a pass, an owner key or a name.
 - **What a listing says is the host's word.** Its name, players, level and round trip are shown to players and used to pick a level, never trusted for anything else.
 - **Every game goes through a relay.** Hole punching, a direct path when both players' NATs allow it, comes later, with the relay as the fallback.
 - **IPv4 only, as the game's ENet is.**
+- **Anyone can join a listed game, because the list shows every code.** That's what a public list is for. Two things follow, fixed on 2026-11-09 after the independent review (AvP-docs/engine/review-server-Reviewer.md, V1-1 and V1-2):
+  - **A `JOIN` alone holds nothing for long.** Before, a `JOIN` held a player's place and a port for 15 s, so one address sending one `JOIN` every 2 s could keep a room full forever, and a few could take every port. Now the place is taken only when the joiner's hello claims the port; an unclaimed port goes after 5 s; and an address may have only 2 unclaimed at once.
+  - **A hello's secret is checked before anything is spent on it.** Before, a stranger who knew a joiner's port could send hellos with wrong secrets and use up the port's hellos, so the real ones were dropped. Now a hello with a wrong secret is dropped at once, and spends nothing. The real ones are held only to their own limit, which nothing else uses.
+  - **Why the hellos on a joiner's port have no limit for each address:** an address on a UDP packet can be anyone's. A limit for each address would let someone who puts a real player's address on its packets use up that player's limit, and keep them out, which is the very thing the limit is for. And it would cost the relay a hash of the address for every packet, more than the check of the secret it would guard.
+  - **What's left:** someone who reads a code, joins, *and* says the joiner's hello is a joiner as far as the relay can tell. The host's game answers its hello by itself, so it holds a player's place until its port has no traffic for 30 s, and can join again. One address can hold at most 8 places at once in all, so keeping a room full takes at least one address, and keeping many takes many. Only the host's game can tell a real player from one that never plays. A host could close such a game and open another, whose code is new; telling the relay which joiner to drop is a later change.
+  - **One address for many players:** behind carrier-grade NAT, many homes share one address. Their players can still join, but at most 8 of them at once on one relay, and at most 2 at once can be between their `JOIN` and their hello. The numbers are a starting point, to change with what the running relays show.
+- **A `COOKIE` or `ECHO_BACK` goes to whatever address a packet says it's from,** and a UDP sender can put anyone's there, so the relay can be made to send them to someone who never asked. It's never more than was sent (64 bytes for 64), and everything the control port sends in all is held to 2,000 a second (section 5), so it can't be used to multiply anyone's traffic. A cookie has to go to the address it's for; that's how it proves the address. (The independent review's note, 2026-11-09.)
+- **An error nobody expected stops the whole server** (V1-3). If something throws out of a turn of the relay's loop or of the list's timers, the server writes one line saying what kind of error, and where, but never its words, and stops with 1. systemd starts it again 5 s later, with no limit on how often (deploy/avpx-java.service). Every room on it ends, and every host and joiner must start again. That's the price of never carrying on from tables nobody can vouch for. Before, such an error ended the relay's thread alone, and the server looked up while it passed no games.

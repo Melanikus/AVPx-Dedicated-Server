@@ -1,0 +1,59 @@
+# Test build: builds one commit's two jars and prints what the owner types into AWS to put them on the test machine by hand. Written
+# 2026-11-09 by Melanikus for AVPx Dedicated Server.
+#
+# WHY IT EXISTS: SERVER-BLOCKERS.md stops deploy.yml while anything is listed, and one of the things listed is a first deploy to a test
+# machine nobody else can reach. That first deploy is done by the owner's own hand (deploy/README.md, "The first test machine"): they
+# run the SSM document avpx-deploy in the AWS console, with the commit and the jars' SHA-256 this prints. So nothing automatic ever goes
+# around the blockers: this workflow can't reach AWS at all (no identity token, no secret, no variable), and only reads the repository.
+#
+# The machine builds the jars again from the same commit and takes them only if they're byte for byte these (deploy/remote-deploy.sh).
+# Every action is pinned to a full commit hash (CODING-STANDARD.md rule 7).
+name: Test build
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: 'The commit to build: 40 hex digits, small letters'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  COMMIT: ${{ inputs.commit }}
+
+jobs:
+  build:
+    name: 'Test build: jars'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: The commit's shape
+        run: |
+          case "$COMMIT" in *[!0-9a-f]*) echo 'the commit must be 40 hex digits, small letters'; exit 1 ;; esac
+          [ "${#COMMIT}" -eq 40 ] || { echo 'the commit must be 40 hex digits, small letters'; exit 1; }
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.commit }}
+          persist-credentials: false
+      - name: The pinned JDK, checked by its signature, its sha256 and its version
+        run: sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
+      - name: Build, with every test
+        run: JAVA_HOME="$RUNNER_TEMP/jdk" sh java/build.sh
+      # The SHA-256 of what sha256sum prints for both jars, in the build folder: deploy/remote-deploy.sh makes it the same way
+      - name: What to type into AWS
+        run: |
+          jars=$( (cd java/build && sha256sum avpx-server.jar avpx-smoke.jar) | sha256sum | cut -d ' ' -f 1)
+          script=$(sha256sum deploy/remote-deploy.sh | cut -d ' ' -f 1)
+          {
+            echo '### For the deploy by hand (deploy/README.md)'
+            echo ''
+            echo "- commit: \`$COMMIT\`"
+            echo "- jarsSha256: \`$jars\`"
+            echo "- remote-deploy.sh's SHA-256 (for a machine with no AWS): \`$script\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "commit:            $COMMIT"
+          echo "jarsSha256:        $jars"
+          echo "remote-deploy.sh:  $script"

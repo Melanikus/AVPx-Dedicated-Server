@@ -40,3 +40,15 @@ jobs:
           persist-credentials: false
       - name: remote-deploy.sh, every case and its take-outs
         run: sh deploy/test-remote-deploy.sh
+      - name: The SSM document is what remote-deploy.sh makes
+        run: sh deploy/make-ssm-document.sh --check
+      - name: deploy.yml keeps its shape (by hand only, dry run by default, blockers first, the token in one job, every check required)
+        run: sh deploy/test-deploy-workflow.sh
+      - name: open-for-tester.sh and close-for-tester.sh (one address, the server's ports only), with a stand-in ufw
+        run: sh deploy/test-open-for-tester.sh
+      - name: firewall.sh (the list machine, and a relay-only one), with a stand-in ufw
+        run: sh deploy/test-firewall.sh
+      - name: get-aws-cli.sh (the pinned AWS CLI, its signature, sha256 and version), against a made-up release signed with a test key
+        run: sh deploy/test-get-aws-cli.sh
+      - name: The curl, jq, gpg, unzip and sha256sum the deploy uses are Ubuntu's own on this runner, unchanged
+        run: sh deploy/check-ubuntu-tools.sh

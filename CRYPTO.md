@@ -1,6 +1,6 @@
 # How AVPx keeps games secret, sealed and fair (protocol version 2, a design)
 
-Written 2026-11-08 by Melanikus. **This is a design, not code.** Nothing here is built yet. The game (Fifth), the Node server (Third), the Java server (Primary) and the list page (Fourth) build from it, after a fresh reviewer has read it. PROTOCOL.md stays the plain version 1 that the first test runs use. Version 2 is a new deployment: there's no mixing of the two and no negotiation.
+Written 2026-11-08 by Melanikus. **This is a design, not code.** Nothing here is built yet. The game (Fifth), the Java server (Primary) and the list page (Fourth) build from it, after a fresh reviewer has read it. PROTOCOL.md stays the plain version 1 that the first test runs use. Version 2 is a new deployment: there's no mixing of the two and no negotiation.
 
 **How to read the marks:** **[CHECK]** means a fact from memory, not yet checked against the document named beside it. Every [CHECK] is confirmed, and the mark taken out, before any code is written on it. **[DECIDE]** marks a choice that belongs to the user (section 19).
 
@@ -61,10 +61,20 @@ No third-party crypto on the servers (AVP Tao 1). Each platform's own:
 | Platform | P-384, ECDSA, AES-GCM, SHA-384, HKDF | ML-KEM-1024, ML-DSA-87 |
 |---|---|---|
 | Java 25 (LTS) | `KeyAgreement "ECDH"`, `Signature "SHA384withECDSA"`, `Cipher "AES/GCM/NoPadding"`; HKDF through the KDF API, JEP 510, final in JDK 25. **[CHECK: the JEP's example is HKDF-SHA256. Confirm HKDF-SHA384 is among JDK 25's KDF algorithm names; if not, write HKDF by hand over HMAC-SHA384, `javax.crypto.Mac`, in java.base]** | ML-KEM, JEP 496, and ML-DSA, JEP 497, both in JDK 24, through `javax.crypto.KEM` (JEP 452) and `Signature` |
-| Node.js 24 (LTS) | `node:crypto`: `diffieHellman` on P-384 keys, `sign`/`verify`, `createCipheriv('aes-256-gcm')`, `hkdfSync('sha384')` | ML-DSA keys from v24.6.0, ML-KEM from v24.7.0, both on OpenSSL 3.5 (the KeyObject history in nodejs.org/api/crypto.html). **[CHECK: `crypto.encapsulate`'s own "Added in" line, once.]** The server's `engines` is already `>=24.22.1` (f03cc0e), which is past both |
 | The game, Windows CNG (bcrypt.dll) | `BCRYPT_ECDH_P384_ALGORITHM`, `BCRYPT_ECDSA_P384_ALGORITHM`, `BCRYPT_AES_ALGORITHM` with `BCRYPT_CHAIN_MODE_GCM`, `BCRYPT_SHA384_ALGORITHM` with the HMAC flag. These have been in Windows since Windows 7 | ML-KEM and ML-DSA have been **generally available since the November 2025 update, on Windows 11 24H2 and 25H2** (at least the 2025-10 update KB5067036, per Microsoft's AD CS document), **and Windows Server 2025. Not on Windows 10.** Handles: `BCRYPT_MLKEM_ALG_HANDLE` (0x481) and `BCRYPT_MLDSA_ALG_HANDLE` (0x471), with the parameter set chosen through `BCryptSetProperty(BCRYPT_PARAMETER_SET_NAME, BCRYPT_MLKEM_PARAMETER_SET_1024 ...)`. Sources: Microsoft's Tech Community post "Post-Quantum Cryptography APIs Now Generally Available on Microsoft Platforms", and the AD CS document for the update number. Microsoft's sample page still says "prerelease"; that's out of date |
 
 The platform facts in this table were read in the official documents by PO on 2026-11-08. The two marks left are each to be confirmed once, in code, before the code relies on them.
+
+**What JDK 25 does, measured** (by Primary on the pinned Temurin 25.0.5+8, 2026-11-09). Each point is checked in the Java server's code, with a test and a take-out row:
+1. **Key generation matches NIST's vectors exactly:**
+   - ML-KEM-1024's key generation takes d and z as one 64-byte draw from the SecureRandom it's given, and gives NIST's encapsulation key exactly;
+   - ML-DSA-87's takes the 32-byte seed, and gives NIST's public key exactly.
+2. **Private keys:** PKCS#8's expandedKey form imports NIST's raw decapsulation key (3,168 bytes) and signing key (4,896 bytes). The JDK's own getEncoded writes the 64-byte seed form instead.
+3. **Where JDK 25 checks too late** (it takes the key, and throws only when it's used), so our code checks first, before the JDK sees anything:
+   - an ML-KEM encapsulation key with a coefficient of q or more (FIPS 203 section 7.2);
+   - a long-form decapsulation key whose stored hash isn't H(ek) (FIPS 203 section 7.3);
+   - a P-384 point that isn't on the curve: our code checks y^2 = x^3 + ax + b mod p before the key factory gets it.
+4. **No ML-DSA context:** it signs and verifies with the empty context only (section 5.1, point 16).
 
 **What the game does where Windows lacks ML-KEM or ML-DSA (decided below).** Neither choice falls back to classical-only. A fallback is an attack path, so there isn't one.
 - **(a) CNG only.** Online play needs a Windows that has them. Others get a plain refusal: "Online play needs Windows 11 24H2 or later, with the October 2025 update or newer." This adds no code, but players on Windows 10, or on Windows 11 before 24H2, can't play online.
@@ -205,13 +215,13 @@ The ECDH results and the ML-KEM secrets go into the same chain one after another
 **The start:**
 - `h = SHA-384(the protocol name)` and `ck = h`.
 - The names are `AVPX_pqNK_P384+MLKEM1024_AESGCM_SHA384_v2` (handshake A) and `AVPX_pqXX_P384+MLKEM1024_AESGCM_SHA384_v2` (handshake B).
-- Then MixHash(the prologue): the region and the relay's static keys for A, and the relay port and the host's fingerprint for B.
+- Then MixHash(the prologue), and the pattern's pre-messages, exactly as section 5.1 writes them.
 
 **Big messages over UDP.** Handshake messages are 1.6 to 3.4 KB, more than a datagram should carry. Each is cut into fragments, and **every handshake datagram, either way, is exactly 1,200 bytes**: the smallest size the internet carries whole, as QUIC also uses.
 
 | Bytes | Field |
 |---|---|
-| 0-3 | `AVPR` (to the relay) or `AVPE` (host to joiner) |
+| 0-3 | `AVPR` (to the relay), or `AVPE` (handshake B, end to end, either way) |
 | 4 | version, 2 |
 | 5 | kind (section 6 and section 8) |
 | 6 | this fragment's number, from 0 |
@@ -221,6 +231,47 @@ The ECDH results and the ML-KEM secrets go into the same chain one after another
 | 32-33 | the whole message's length |
 | 34-35 | where this fragment starts in it |
 | 36-1199 | up to 1,164 bytes of the message, then 0 |
+
+### 5.1 The byte-exact choices (settled 2026-11-09 with Primary, the Java server, and Fifth, the game)
+
+Every implementation must make the same bytes. Where Noise leaves a choice, or where this differs from Noise, it's written here.
+1. **MixKey's HKDF:** HKDF-SHA-384 (RFC 5869) with salt `ck`, input the secret, and **empty info**, giving 80 bytes: the new `ck` (48), then `k` (32). That's exactly Noise's two-output HKDF.
+2. **The handshake's nonce,** before Split: the IV is 12 zero bytes, so the nonce is 4 zero bytes, then `n` as 8 bytes **little-endian**. **Noise itself writes `n` big-endian for AES-GCM; this differs on purpose, the same as section 9's sealed datagrams. Don't "fix" it.**
+3. **Split's 88 bytes,** from HKDF-SHA-384(salt `ck`, input empty, info "AVPX split v2"), in this order: the key initiator-to-responder (32), the key responder-to-initiator (32), the IV initiator-to-responder (12), the IV responder-to-initiator (12).
+4. **Handshake A's prologue:** the region's name in ASCII, then one 0 byte (one MixHash).
+5. **Handshake A's pre-message `<- s`,** as Noise NK has it: after the prologue, MixHash(the relay's static P-384 key, 97 bytes), then MixHash(its static ML-KEM-1024 encapsulation key, 1,568 bytes). The prologue holds no keys, so nothing is hashed twice.
+6. **The `e` token:** the initiator does MixHash(its ephemeral P-384 key, 97), then MixHash(its ephemeral ML-KEM encapsulation key, 1,568), two calls. A responder does the first only. A1's bytes, in order: e's P-384 key, e's encapsulation key, the ciphertext to the relay's static key, the tag (3,249).
+7. **ECDH's output** is the shared point's x coordinate, 48 bytes, as Java's and CNG's ECDH give it. **Every P-384 key received is checked to be on the curve, and not the point at infinity, before it's used.**
+8. **Epochs** (section 9) **apply to the sealed control channel too.** Epoch 0's key is Split's key itself. Epoch e, from 1, is HKDF-Expand(Split's key for that direction, "AVPX epoch v2" || e as 4 bytes little-endian, 32). The IV stays Split's. The counters start at 0 in each direction.
+9. **A0 (COOKIE_ASK) and A3 headers:**
+   - A0 is fragment 0 of 1, length 0, offset 0, cookie 0.
+   - A3 is fragment 0 of 1, length 16, offset 0, and carries the cookie again, checked with no memory as for A1, so a forged A3 costs nothing. The relay finds A3's handshake by its id, and checks it came from A1's address and port.
+10. **Fragments are read only one way:**
+    - every fragment but the last is exactly 1,164 bytes of the message;
+    - fragment k starts at k x 1,164;
+    - the count is ceil(length / 1,164), 1 to 4, and every fragment carries the same length and count;
+    - every byte after the part is 0.
+    - Anything else is refusal 6.
+11. **Inside the sealed channel, version 1's inner cookie round goes:** the handshake's cookie already proved the address, so HOST_OPEN and JOIN are taken without one. **ECHO goes too:** the A0/A0' round trip is the timing echo (1,200 bytes asked, 64 answered, nothing kept), so the host times each relay without a handshake.
+12. **The limits on handshakes are kept by address and port,** not by address alone. Behind carrier-grade NAT, many homes share one address, and those are the players the relay exists for. One handshake being put together, and 2 a second (4 at once), per address and port; a ceiling of 16 at once per address; 1,000 at once in all (section 17). **Sessions are capped per address, at 64,** more than handshakes, because a session lasts far longer than a handshake, and many homes behind one carrier's NAT share an address. Handshakes waiting for A3 count as sessions.
+13. **The replay window is 1,024 messages, one per direction:** behind the highest counter taken from the other side. Counters count messages, never fragments. The relay's sealed answers stay exactly 104 bytes.
+14. **The test vectors** (section 15) are made by a Java tool, and fix whole handshakes: A1, A2 and A3 as bytes, and every `h` and `ck`, with seeded randomness given to ML-KEM's key generation and encapsulation. A Java test makes the file again and fails if it differs. **Each side draws its random values in the order they first appear in its own messages,** so the seeds fix the same bytes in every implementation. For B: the joiner draws e's P-384 key, e's ML-KEM key, `nJ` (its commitment ends B1), then B3's encapsulation; the host draws e's P-384 key, B2's encapsulation, B4's encapsulation, then `nH` (B4's sealed part comes after its ciphertext). ProVerif's order of `new` means nothing, so the models don't say this.
+15. **"The transcript" is `h` after the last handshake message:** after A3 for handshake A, after B5 for handshake B. That's Noise's own handshake hash. It's what a handshake gives back with its two keys, what the test vectors hold as each handshake's transcript, and what the check code (section 8) is made from. The Java server already does this (HandshakeA's Keys.transcript); settled 2026-11-09 from Primary's read of the model.
+16. **ML-DSA signs and checks with the empty context.** JDK 25's ML-DSA has no way to give a context: it signs and verifies with the empty one only, and exposes no lower-level call to build FIPS 204's message any other way (measured by Primary on the pinned JDK, 2026-11-09). The separation a context would give is already in the signed message: `D = SHA-384("AVPX <what> v2" || the bytes)` starts with the words, so a signature over one kind of thing can't be taken for another. This is FIPS 204's own pure ML-DSA with an empty context, which the game can do too. NIST's and Wycheproof's test cases with a non-empty context can't be checked by Java 25's ML-DSA; the Java tests name them as such, never skip them silently.
+17. **Handshake B's prologue** is three MixHashes, in this order:
+    - the region's name in ASCII, then one 0 byte (as A's);
+    - the joiner's relay port, as 2 bytes little-endian (the joiner has it from JOIN_PORT, the host from NEW_JOINER);
+    - the host's fingerprint as the listing gives it, 16 bytes.
+    There's no pre-message: XX has none. The region binds B to the relay as well as to the port, at no cost. Settled 2026-11-09 with Primary; proofs/pqxx.pv has the same three.
+18. **Handshake B's datagrams** are `AVPE` both ways, never the relay's `AVPR`. They use kinds 16 to 20, the handshake id the joiner chose, a cookie of 16 zero bytes (the relay checks none), and point 10's fragments. On a joiner's port the relay passes them on unread (section 7).
+19. **The check code, committed before it's made.** Each side puts in 32 random bytes that the other can't see until it's too late to steer the code:
+    - **B1** ends with the joiner's commitment, `SHA-384(nJ)` (48 bytes), where `nJ` is the joiner's 32 random bytes. It is MixHashed after e's two keys.
+    - **B4's** EncryptAndHash carries the host's 32 random bytes, `nH`, in place of empty.
+    - **B5's** carries `nJ`. The host checks `SHA-384(nJ)` against B1's commitment, and ends the handshake if they differ (refusal 21).
+    - **The code** is HKDF-SHA-384(salt = the transcript, `h` after B5; input empty; info "AVPX check code v2"), 8 bytes, read as an unsigned 64-bit number, little-endian, then taken mod 1,000,000 and shown as 6 digits with leading zeros. With 8 bytes, the remainder's bias is too small to matter (under 1 in 10^13).
+    - **Why the commitment:** made from the transcript alone, the code could be ground by someone in the middle. On one of its two sides, it's always the last to add randomness (its B4 to the joiner, or its B3 to the host). So it could try a million values in the seconds a handshake allows, until both screens showed the same 6 digits. With the commitment, every choice it can make is fixed before the value that decides each side's code is shown: `nJ` on the joiner's side, which it saw only as a hash; `nH` on the host's side, which comes after its last move. So one handshake is one try, at one in a million, and a failed try is seen. This is ZRTP's commit-then-reveal (RFC 6189), for the same reason.
+    - Settled 2026-11-09, by Third, on Tao 1 grounds, when Primary asked for the code's exact form.
+20. **Split's info for B** is the same `"AVPX split v2"` as A's. The two never collide: each starts from the hash of its own protocol name.
 
 ## 6. Handshake A: a game and its relay (pattern pqNK, hybrid)
 
@@ -242,7 +293,7 @@ The game knows the relay's static keys from the signed directory (section 12) be
 **No amplification:**
 - **A0':** 64 bytes, answering a 1,200-byte ask.
 - **The cookie:** HMAC-SHA-384 of the address, the port, a 10-second slot and the handshake id, cut to 16 bytes, as PROTOCOL.md section 3 describes. Every A1 datagram carries it, and **the relay checks it, with no memory, before it keeps a single byte**.
-- **What the relay keeps:** one handshake being put together per address, at most 4 KB, for at most 2 s; at most 1,000 at once in all.
+- **What the relay keeps:** one handshake being put together per address and port, at most 4 KB, for at most 2 s; at most 16 at once from one address, and 1,000 at once in all (section 5.1, point 12).
 - **When the expensive work starts:** ML-KEM and ECDH work happens only when the whole of A1 is in.
 - **The datagram rule:** for any handshake, the relay never sends more datagrams than it was sent, and all of them are the same size: 3 in, 2 out.
 
@@ -250,6 +301,11 @@ The game knows the relay's static keys from the signed directory (section 12) be
 - The game sends A1 again if no A2 comes in 0.5 s, then waits 1 s, 2 s and 4 s, and then gives up with the reason "the relay doesn't answer".
 - The relay keeps its A2 bytes for 10 s, keyed by the handshake id and the hash of A1. An A1 that comes again gets **the same A2, byte for byte**: never a fresh one, which would make a second set of keys.
 - If A3 is lost, the game's first sealed message (section 7) counts as its confirmation.
+
+**How the relay takes A3** (settled 2026-11-09 from Primary's relay side):
+- A3 is an empty EncryptAndHash, so its 16 bytes are fixed by everything before it. The relay works them out when it makes A2, and compares A3 with them in constant time.
+- It takes the keys on that comparison or, if A3 was lost, on the first sealed message that opens under them. **Either one must come from A1's own address and port.** The cookie alone doesn't tie A3 to A1's sender: anyone on the path can ask for a cookie for their own port with the game's handshake id, which travels in the clear, and then copy the game's A3. Anything else is refusal 18.
+- Until then, the handshake waits for at most 10 s (as long as its A2 is kept), and counts as a session in section 17's limits.
 
 ## 7. The sealed control channel (game and relay)
 
@@ -271,18 +327,20 @@ Every control message of PROTOCOL.md (the 64-byte HOST_OPEN, JOIN, hellos and th
 - **Tokens, tickets, passes and codes are never seen on the path again.** That closes PROTOCOL.md's first two known limits.
 - **The hellos on a joiner's port are sealed too,** under the sender's session. A sealed hello from a new address that passes its tag moves that end there, which is how NAT rebinding keeps working.
 - **The relay still never answers anything that fails its tag,** and counts it.
+- **On a joiner's port, a version 2 relay passes on only three things:** sealed game datagrams (`AVPG`, at least 28 bytes, which is section 9's overhead, and at most the relay's 1,500), handshake B's datagrams (`AVPE`, exactly 1,200 bytes: section 8), and sealed hellos. Anything else is dropped, counted and never answered (refusal 19): no plaintext, ever (section 9).
+- **How long a session lasts** (section 17): while something holds it (a host's session while its game is open; a joiner's session while either end of its port is in use), or otherwise 60 s after the last message that opened under it. A joiner's session goes quiet after READY, but it's still needed for a sealed hello if its NAT moves it, so being held counts. A session nothing holds must end, or a busy relay would fill its table in a day. And never past 24 hours, 2^32 messages, or 65,536 failed tags.
 
 ## 8. Handshake B: a joiner and its host, end to end (pattern pqXX, hybrid)
 
-This runs on the joiner's relay port after READY, from game to game. The relay forwards these datagrams as it forwards any game packet: it can't read them, and it never answers them. Each player has an identity key (section 4). A **fingerprint** is the first 16 bytes of `SHA-384("AVPX-ID-2" || its P-384 key || its ML-KEM key)`, 32 hex digits, and the host's goes in its listing (version 2 of the list).
+This runs on the joiner's relay port after READY, from game to game. The relay forwards these datagrams as it forwards any game packet: it can't read them, and it never answers them. Each player has an identity key (section 4). A **fingerprint** is the first 16 bytes of `SHA-384("AVPX-ID-2" || its P-384 key || its ML-KEM key)`: the 9 ASCII bytes of "AVPX-ID-2" with nothing after them, then the raw keys as they travel (97 bytes, then 1,568). It's shown as 32 hex digits, and the host's goes in its listing (version 2 of the list).
 
 | Step | From, to | Kind | Tokens | Size |
 |---|---|---|---|---|
-| B1 | joiner to host | 16 | `e` | 1,665 bytes: 2 datagrams |
+| B1 | joiner to host | 16 | `e`, then the joiner's commitment (5.1 point 19) | 1,665 + 48 = 1,713 bytes: 2 datagrams |
 | B2 | host to joiner | 17 | `e, ee, ekem, s, es`, then EncryptAndHash(empty) | 97 + 1,568 + (1,665 + 16) + 16 = 3,362 bytes: 3 datagrams |
 | B3 | joiner to host | 18 | `skem, s, se`, then EncryptAndHash(empty) | 1,568 + (1,665 + 16) + 16 = 3,265 bytes: 3 datagrams |
-| B4 | host to joiner | 19 | `skem`, then EncryptAndHash(empty) | 1,568 + 16 = 1,584 bytes: 2 datagrams |
-| B5 | joiner to host | 20 | EncryptAndHash(empty) | 16 bytes: 1 datagram |
+| B4 | host to joiner | 19 | `skem`, then EncryptAndHash(`nH`, the host's 32 bytes for the check code) | 1,568 + (32 + 16) = 1,616 bytes: 2 datagrams |
+| B5 | joiner to host | 20 | EncryptAndHash(`nJ`, the joiner's 32 bytes, which its commitment in B1 promised) | 32 + 16 = 48 bytes: 1 datagram |
 
 **Who is proved to whom:**
 - **The host to the joiner:** by `es` (classical) and the joiner's `skem` to the host's static ML-KEM key (post-quantum). The joiner also checks that the fingerprint of the static keys in B2 matches the listing's. If it doesn't, nothing more is sent, and the reason is "this isn't the host the list named".
@@ -293,11 +351,11 @@ This runs on the joiner's relay port after READY, from game to game. The relay f
   - That's **mutual authentication, classical and post-quantum, before any game byte**.
 
 **The check code:**
-- Both screens show **6 digits from `HKDF(h, "AVPX check code v2")`**, the same on both only if no one is in the middle. **It's always shown on the join screen** (decided 2026-11-08).
+- Both screens show **6 digits made from the transcript** (exactly as 5.1 point 19 writes it), the same on both only if no one is in the middle. **It's always shown on the join screen** (decided 2026-11-08).
 - Two players who read them to each other (voice, chat) catch even a list that lied about the fingerprint.
-- It's 20 bits, so one try in a million fools them, and a failed try is seen.
+- **One handshake is one try, at one in a million,** and a failed try is seen. That holds only because of the commitment in B1: without it, someone in the middle could steer both codes to match (5.1 point 19 says how, and why the commitment stops it).
 
-**Losses:** the same rule as handshake A. The joiner resends B1 and B3 on the same schedule. The host keeps its B2 and B4 for 10 s and sends them again byte for byte. If B5 is lost, the joiner's first sealed datagram (section 9) counts as its confirmation, just as A3's loss is handled.
+**Losses:** the same rule as handshake A. The joiner resends B1 and B3 on the same schedule. The host keeps its B2 and B4 for 10 s and sends them again byte for byte. **B5 can't be stood in for,** unlike A3, because it holds `nJ`, which the host needs for the check code. So the joiner sends B5 again on the same schedule until the host's first sealed datagram comes in, which the host sends only once B5 has checked.
 
 ## 9. Sealed game traffic (every ENet datagram)
 
@@ -320,9 +378,8 @@ After the handshake (B4 checked on the joiner's side, B5 on the host's), every d
 - **Padding game packets to fixed sizes: no, for now.** Packet sizes would show roughly what's going on (a firefight, a chat line's length). That's worth little to anyone, and padding to buckets would nearly double the relay's traffic. The handshake already uses only one size. This can be revisited.
 - **Wiping keys at the end:**
   - the game: `BCryptDestroyKey`, then `SecureZeroMemory` on every buffer that held a key or a secret;
-  - Node: `fill(0)` on every Buffer of ours;
   - Java: `Arrays.fill` on every array of ours, and `destroy()` where a key class has it.
-  - **A known limit:** Node's garbage collector and some Java key classes may leave copies we can't reach, so a memory dump of a running server can still hold keys. That's true of every managed-language server.
+  - **A known limit:** Java's garbage collector and some Java key classes may leave copies we can't reach, so a memory dump of a running server can still hold keys. That's true of every managed-language server.
 
 ## 10. Proving the host: a PAKE, or a signed identity
 
@@ -362,10 +419,9 @@ This is already in the handshakes: A2 and A3, and B3, B4 and B5. Each is a **cha
 ## 12. Signed files: the release manifest, the relays directory, the list's answers
 
 **The rule for every signature:** an ECDSA P-384 signature and an ML-DSA-87 signature, both over the same 48-byte digest `D = SHA-384("AVPX <what> v2" || the bytes)`. **Both must check.** Exactly, so the three implementations agree byte for byte:
-- **ML-DSA-87:** *pure* ML-DSA (FIPS 204's ML-DSA.Sign and ML-DSA.Verify, not HashML-DSA), with the 48 bytes of `D` as its message, and the context string `AVPX <what> v2` as ASCII. The signature is 4,627 bytes. The game checks that length before calling.
+- **ML-DSA-87:** *pure* ML-DSA (FIPS 204's ML-DSA.Sign and ML-DSA.Verify, not HashML-DSA), with the 48 bytes of `D` as its message, and **the empty context** (5.1, point 16). The words `AVPX <what> v2` are already the first bytes hashed into `D`, so each kind of signature still means one thing only. The signature is 4,627 bytes. The game checks that length before calling.
 - **ECDSA P-384:** ECDSA with SHA-384, with the 48 bytes of `D` as its message, so the curve signs `SHA-384(D)`. The signature is r then s, 48 bytes each, big-endian (96 bytes, IEEE P1363).
   - Java's `SHA384withECDSA` takes `D` and gives DER, so it's converted.
-  - Node's `crypto.verify('sha384', D, {key, dsaEncoding: 'ieee-p1363'}, sig)` takes `D` and the 96 bytes.
   - CNG's `BCryptVerifySignature` takes the hash itself, so the game passes `SHA-384(D)` and the 96 bytes.
   - The test vectors (section 15) hold one signature of each kind, so all three can be checked against the same bytes.
 
@@ -407,23 +463,25 @@ So a hijacked DNS name or certificate can't feed the game false relays.
 
 ## 14. The formal model
 
-- **Tool:** ProVerif (INRIA). It's downloaded, so untrusted until reviewed (AVP Tao 1): built from source with its own hash checked, and run offline.
+- **Tool:** ProVerif 2.05 (INRIA). It's downloaded, so untrusted until reviewed (AVP Tao 1): the "Proofs" check builds it from INRIA's source, with that source's sha256 pinned, and runs it offline. It's never run on the user's PC.
+- **Where it lives:** `proofs/pqnk.pv` (handshake A) and `proofs/pqxx.pv` (handshake B). `proofs/run.sh` runs each model, and the copies of it with one half of the hybrid broken, and checks every `RESULT` line against the answer it must give. `proofs/README.md` says how. `.github/workflows/proofs.yml` runs it on every change.
 - **What it models:**
-  - handshakes A and B;
+  - both handshakes, message by message, as sections 6 and 8 write them, with the prologues of 5.1 points 4, 5 and 17;
   - ECDH as Diffie-Hellman equations, and ML-KEM as an ideal KEM (decapsulate of encapsulate gives the secret);
-  - the hybrid as two separate secrets, each with an oracle that can break it, to show either one alone is enough.
-- **What it queries:**
-  - secrecy of the session keys;
-  - injective agreement on the transcript, both ways for B and relay-to-game for A;
-  - secrecy after the static keys leak (forward secrecy);
-  - no agreement across protocol names (no downgrade).
-- **Where it lives:** `model/handshakes.pv`, with `model/README.md` giving the command and the `RESULT ... is true.` lines it must print. A check runs it on every change.
-- **Who:** I (Third) write it; Primary reads it against the Java code, and the fresh reviewer reads it against this file.
+  - the hybrid as two separate secrets: copies give the attacker one of them (`LEAKDH`, `LEAKKEM`), to show either alone is enough, and both, to show the queries can fail.
+- **What it asks:**
+  - secrecy of what each side sends under the session keys, even when every static key is given away after the sessions end (forward secrecy);
+  - injective agreement on the keys and the transcript: relay to game for A, and both ways for B.
+- **Not modelled, and why:**
+  - **the check code** (5.1 point 19): it's for people to compare, and the models take the listing as honest. B1's commitment and B4's and B5's 32 bytes travel in the model as they do on the wire, but no query is about the code. Why the commitment stops grinding is argued in 5.1 point 19, not proved here;
+  - **a downgrade:** there's one suite and one protocol name for each handshake, so there's nothing to downgrade to within version 2. Version 1, in the clear, never goes in the wild (SERVER-BLOCKERS.md, item 1);
+  - counters, replay windows, epochs and fragments: the Java tests and the test vectors hold the code to those.
+- **Who:** I (Third) write the models; Primary reads them line by line against the Java code, and the fresh reviewer reads them against this file.
 - **The limit:** ProVerif proves the pattern, not our code. The code is held to the pattern by the test vectors (section 15) and the tests in section 13.
 
 ## 15. Test vectors: `test-vectors/crypto-v2.json`
 
-These come from tools/make-vectors.js, with fixed keys, and are read by the Node, Java and game tests:
+These are made by a Java tool, with fixed keys and seeded randomness (section 5.1, point 14), and are read by the Java and game tests:
 - HKDF chains from fixed inputs;
 - AES-GCM seals;
 - each handshake's every `h` and `ck`, from fixed ephemeral and static keys;
@@ -456,6 +514,10 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 15. The coin cheated (P).
 16. Too many bad packets (P: "the connection was attacked, and closed").
 17. No post-quantum support, under section 3's choice (a) (P: names the Windows version needed).
+18. A handshake's A3, or the first sealed message standing in for it, from an address and port other than its A1's (section 6).
+19. On a joiner's port, anything but a sealed game datagram, a handshake B datagram, or a sealed hello (section 7).
+20. Too many sessions: 10,000 in all, or 64 from one address (section 17). A new handshake is refused at A1; no session already open is ended for it.
+21. Handshake B's `nJ` in B5 doesn't match the joiner's commitment in B1 (5.1 point 19): the host ends the handshake.
 
 ## 17. Every timer and limit
 
@@ -464,14 +526,18 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 | A handshake datagram | exactly 1,200 bytes; at most 4 fragments a message |
 | COOKIE answer | 64 bytes |
 | Cookie life | 10 to 20 s (as now) |
-| A handshake being put together | 4 KB, 2 s, one per address, 1,000 in all |
-| Handshakes started, one address | 2 a second, 4 at once |
+| A handshake being put together | 4 KB, 2 s; one per address and port, 16 at once per address, 1,000 in all |
+| Handshakes started, one address and port | 2 a second, 4 at once |
 | Handshakes started, everyone | 200 a second, 400 at once |
 | Retries | after 0.5, 1, 2 and 4 s, then give up |
 | A finished answer kept, to send again | 10 s |
 | A sealed control message | exactly 104 bytes |
 | Sealed game overhead | 28 bytes a datagram |
 | An epoch (one key) | 2^20 datagrams each way |
+| A handshake waiting for A3 | 10 s (as long as its A2 is kept); counts as a session in the two rows below |
+| Sessions, in all | 10,000 |
+| Sessions, one address | 64 |
+| A session nothing holds | 60 s after the last message that opened under it (section 7 says what holds one) |
 | A session | 2^32 datagrams each way, or 24 hours |
 | Replay window | 1,024 datagrams |
 | Failed tags before a session ends | 65,536 |

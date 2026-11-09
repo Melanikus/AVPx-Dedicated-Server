@@ -69,6 +69,85 @@ jobs:
           echo "pinned $pinned, Adoptium's newest $newest"
           test "$pinned" = "$newest"
 
+  # The smoke test (java/tools/Smoke.java, 38 checks from outside the process) against the running Java server, and against the Node
+  # server too while it's still here, with the same certificate, settings and expected results: proof the two speak the same wire
+  smoke:
+    name: Smoke test, 38 checks, against each server
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The pinned JDK, checked as above
+        run: |
+          sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
+          echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/node
+
+      - name: Build
+        run: sh java/build.sh
+
+      # One certificate for localhost and 127.0.0.1, made for this run and thrown away with it (the key in PKCS#8 form, OpenSSL 3's
+      # own), and the settings both servers read: the list on 8443 and the relay on 127.0.0.1 only, as Smoke.java expects
+      - name: A throwaway certificate, and the settings
+        run: |
+          dir="$RUNNER_TEMP/smoke"
+          mkdir -p "$dir"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -keyout "$dir/privkey.pem" -out "$dir/list-test.pem" 2> /dev/null
+          key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+          cat > "$dir/settings.json" <<EOF
+          {
+            "region": "virginia",
+            "passKey": "$key",
+            "relayAddress": "127.0.0.1",
+            "controlPort": 27500,
+            "relayPorts": "27501-27564",
+            "logFile": "$dir/server.log",
+            "list": {
+              "address": "127.0.0.1",
+              "port": 8443,
+              "certFile": "$dir/list-test.pem",
+              "keyFile": "$dir/privkey.pem",
+              "relays": [{ "region": "virginia", "host": "localhost", "port": 27500 }]
+            }
+          }
+          EOF
+          # The Java server reads its settings from /etc/avpx/settings.json and nowhere else
+          sudo install -d -m 0755 /etc/avpx
+          sudo install -m 0644 "$dir/settings.json" /etc/avpx/settings.json
+
+      - name: The Java server, and the 38 checks against it
+        run: |
+          cd "$RUNNER_TEMP/smoke"
+          rm -f server.log
+          "$JAVA_HOME/bin/java" -jar "$GITHUB_WORKSPACE/java/build/avpx-server.jar" > java-server.out 2>&1 &
+          server=$!
+          status=0
+          "$JAVA_HOME/bin/java" -cp "$GITHUB_WORKSPACE/java/build/tools" avpx.tools.Smoke || status=$?
+          kill "$server"
+          wait "$server" || true
+          echo "----- what the Java server wrote to its screen"
+          cat java-server.out
+          exit "$status"
+
+      - name: The Node server, and the same 38 checks against it (while the Node version is still here)
+        run: |
+          cd "$RUNNER_TEMP/smoke"
+          rm -f server.log
+          node "$GITHUB_WORKSPACE/main.js" /etc/avpx/settings.json > node-server.out 2>&1 &
+          server=$!
+          status=0
+          "$JAVA_HOME/bin/java" -cp "$GITHUB_WORKSPACE/java/build/tools" avpx.tools.Smoke || status=$?
+          kill "$server"
+          wait "$server" || true
+          echo "----- what the Node server wrote to its screen"
+          cat node-server.out
+          exit "$status"
+
   takeouts:
     name: Java take-outs
     runs-on: ubuntu-24.04

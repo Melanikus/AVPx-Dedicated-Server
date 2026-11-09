@@ -114,6 +114,20 @@ The platform facts in this table were read in the official documents by PO on 20
   - **So whether our build computes ML-KEM and ML-DSA right rests on tests:** upstream's own, NIST's ACVP vectors, and ours.
   - Its timing rests on upstream's valgrind checks, and on the reviewer's reading of the code that handles secrets. The game's own checks (the sanitizers, CodeQL, the take-outs) stand on their own, with no "already proved" credit.
 
+### 3.1.1 What the game takes from each library, and nothing more
+
+This comes from Fourth's list (AvP-docs, engine/pq-native-needs.md). The names of upstream's functions and build switches are confirmed by the reviewer at the pinned commits; until then they're described, not named.
+
+| From | The game uses | And requires |
+|---|---|---|
+| mlkem-native | ML-KEM-1024 only, chosen when it's built: keypair, encapsulate, decapsulate | **encapsulate refuses a bad encapsulation key** (FIPS 203 section 7.2, the modulus check), and the game refuses the handshake on that error; decapsulate checks the decapsulation key's hash (section 7.3), and implicit rejection gives a pseudo-random secret, never an error the network can see |
+| mlkem-native | the fixed-coins ("derand") keypair and encapsulate | **for test vectors only**, never in play |
+| mlkem-native | a random-bytes hook the game supplies: `BCryptGenRandom(NULL, ..., BCRYPT_USE_SYSTEM_PREFERRED_RNG)` | **a failure stops the handshake.** If the hook can't report one, the game ends the session itself |
+| mldsa-native | ML-DSA-87 **verify only**: the game signs nothing (section 4) | a malformed signature is refused, never read past; a verify-only build if v2.0.0 has a switch for it, or else the linker drops the rest (`/OPT:REF`). All of it is still read and scanned |
+| both | their own FIPS 202 (SHAKE, SHA-3), built in | **a namespace prefix on every exported symbol of each,** since two Keccaks are linked into one program |
+| both | plain C, one compilation unit if upstream offers one, no assembly | **built as C with the game's flags, /J included** (char unsigned). The reviewer checks neither relies on a signed char. Warnings are fixed in our own patches, never switched off, as with ENet |
+| both | stack use within Windows' default 1 MB a thread | the reviewer notes each one's worst case; ML-DSA-87 verification runs on the list's thread |
+
 ### 3.2 One code path: the game never uses CNG for ML-KEM or ML-DSA, even where Windows has them
 
 - **Two paths mean twice the bugs.** Each path would need its own tests, its own reading, and its own failure modes in the field. A fault in the path most players don't use would hide the longest.
@@ -131,10 +145,28 @@ The platform facts in this table were read in the official documents by PO on 20
 | **Directory key** | ECDSA plus ML-DSA | offline, beside the root | signs the relays directory (section 12) |
 | **List key** | ECDSA plus ML-DSA | on the list's machine | signs each answer of `GET /v1/games` |
 | **A relay's static key** | ECDH P-384 plus ML-KEM-1024 | on that relay's machine | proves the relay, in handshake A |
-| **A player's identity key** | ECDH P-384 plus ML-KEM-1024 | made on first run, in the player's save folder | proves a host or joiner, in handshake B |
+| **A player's identity key** | ECDH P-384 plus ML-KEM-1024 | made on first run, in the player's save folder, sealed with Windows' DPAPI (section 4.1) | proves a host or joiner, in handshake B |
 | **Session keys** | AES-256 per direction | memory only, wiped at the end (section 9) | seal the messages |
 
 **Pinned in the game:** the root's public keys. There are two roots: the one in use, and the next one, made at the same time and kept offline apart. So a root can be replaced without the game being left with none.
+
+**The game signs nothing.** A player's identity key is ECDH plus ML-KEM, and it proves itself by key agreement and decapsulation (section 8), never by a signature. The only signers are the root, the release key (the user, by hand), the directory key (offline), and the list key (on the list's machine). So the game verifies ML-DSA and ECDSA signatures, and never makes one.
+
+### 4.1 A player's identity key at rest: DPAPI
+
+This was Fourth's suggestion, and it's taken as the secure option: it's Windows' own, with no library.
+- **How it's kept:** the private halves of the P-384 key and the ML-KEM decapsulation key (3,168 bytes) are sealed with `CryptProtectData`:
+  - for **this Windows user only** (never `CRYPTPROTECT_LOCAL_MACHINE`);
+  - with `CRYPTPROTECT_UI_FORBIDDEN`;
+  - with the optional entropy `AVPX identity v2`.
+  - The sealed blob and the public halves go in the save folder. The plain private keys exist only in memory while the game runs, and are wiped (`SecureZeroMemory`) when it ends.
+- **What it protects against:** someone who copies the save folder, a backup, or the disk. Only the same Windows user can open it.
+- **What it can't:** a program running as that same user can unseal the blob too, and so can malware with the user's rights. That's true of every key a program keeps for its user.
+- **When it fails:** when `CryptUnprotectData` refuses, because the profile moved to another machine, the password was reset by an administrator, or the file is damaged. The game then:
+  - makes a **new identity**;
+  - throws the old blob away;
+  - tells the player: "Your online identity couldn't be unlocked on this Windows account, so a new one was made. Friends who remembered your old one will see a new fingerprint."
+  - It never tries anything else to get the old key back.
 
 **Rotation:**
 - The release and directory keys get one-year certificates from the root. The list key gets a 90-day certificate from the directory key.
@@ -329,7 +361,13 @@ This is already in the handshakes: A2 and A3, and B3, B4 and B5. Each is a **cha
 
 ## 12. Signed files: the release manifest, the relays directory, the list's answers
 
-**The rule for every signature:** an ECDSA P-384 signature and an ML-DSA-87 signature, both over `SHA-384("AVPX <what> v2" || the bytes)`. ML-DSA uses its context string, also "AVPX <what> v2". **Both must check.**
+**The rule for every signature:** an ECDSA P-384 signature and an ML-DSA-87 signature, both over the same 48-byte digest `D = SHA-384("AVPX <what> v2" || the bytes)`. **Both must check.** Exactly, so the three implementations agree byte for byte:
+- **ML-DSA-87:** *pure* ML-DSA (FIPS 204's ML-DSA.Sign and ML-DSA.Verify, not HashML-DSA), with the 48 bytes of `D` as its message, and the context string `AVPX <what> v2` as ASCII. The signature is 4,627 bytes. The game checks that length before calling.
+- **ECDSA P-384:** ECDSA with SHA-384, with the 48 bytes of `D` as its message, so the curve signs `SHA-384(D)`. The signature is r then s, 48 bytes each, big-endian (96 bytes, IEEE P1363).
+  - Java's `SHA384withECDSA` takes `D` and gives DER, so it's converted.
+  - Node's `crypto.verify('sha384', D, {key, dsaEncoding: 'ieee-p1363'}, sig)` takes `D` and the 96 bytes.
+  - CNG's `BCryptVerifySignature` takes the hash itself, so the game passes `SHA-384(D)` and the 96 bytes.
+  - The test vectors (section 15) hold one signature of each kind, so all three can be checked against the same bytes.
 
 **The release manifest:**
 - The release workflow writes `manifest.txt`, sorted ASCII lines of `sha384 size path`, one for every file shipped: the exe, the DLLs and every data file. It signs it with the release key, giving `manifest.sig`, together with the release key's certificate from the root.
@@ -450,6 +488,7 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 - **Stopping determined cheaters:** section 1. That needs a server that decides the game.
 - **Hardware keys for ML-DSA:** no consumer token holds ML-DSA keys yet. The root's ECDSA half could live on a hardware token.
 - **Hole punching (a direct path):** later, and it changes nothing here: handshake B and the sealing run the same over a direct path.
+- **Constant time of ML-KEM decapsulation as MSVC builds it for 32-bit x86: not yet known.** Upstream checks constant time with gcc and clang, and its constant-time proofs are for the assembly, which the game doesn't build (section 3.1). It's a card on AvP (posted by PO, 2026-11-08): look at MSVC's output for branches or table lookups that depend on secrets, and time decapsulation in a test. This line stays until that card is done. ML-DSA verification works on public data only, so it isn't affected.
 
 ## 19. For the user to decide
 

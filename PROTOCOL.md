@@ -165,7 +165,7 @@ Any other status, and every `{"error"}` answer, means the call didn't work. The 
   - every byte of a string is printable ASCII, and its only escapes are `\"` and `\\`;
   - a number is `0`, or 1 to 16 digits with no leading `0`, at most 9,007,199,254,740,991, with no sign, fraction or exponent (`1.0`, `1e0`, `-1` and `01` are all refused);
   - no key appears twice. Readers differ on which of two keys counts, and two programs that read one body two ways can be made to disagree about what it said;
-  - no key is `__proto__`, `constructor` or `prototype`. Those name parts of every JavaScript object, and a reader that wrote them into one could change how every other object behaves. No field here has those names, so every server refuses them, in any language, with the reason "the key X is refused: it names a part of every JavaScript object" (added 2026-11-09 as a fix, from a CodeQL finding).
+  - no key is `__proto__`, `constructor` or `prototype`. Those name parts of every JavaScript object, and a reader that wrote them into one could change how every other object behaves. No field here has those names, so every server refuses them, in any language (added 2026-11-09 as a fix, from a CodeQL finding). The Java server's words for it are "a field named __proto__, constructor or prototype, which name a part of every JavaScript object"; as with every refusal, the words are for the server's own tests, and never shown to a player.
 
   Anything else gets `400`.
 

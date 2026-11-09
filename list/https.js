@@ -56,14 +56,24 @@ const kHeaders = {
   'Referrer-Policy': 'no-referrer',
 };
 
+// A file's bytes and when it was last changed, both through one handle, so the date is the date of the very bytes read (looking the
+// date up by name, then reading, could pair one version's date with another's bytes: CodeQL calls that a file-system race)
+function readWithDate(file) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    return { bytes: fs.readFileSync(fd), changedAt: fs.fstatSync(fd).mtimeMs };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 // The certificate and key, read from their files: { cert, key, stamp }, stamp saying which version of the files they are
 function readCertificate(certFile, keyFile) {
-  const cert = fs.readFileSync(certFile);
-  const key = fs.readFileSync(keyFile);
+  const cert = readWithDate(certFile);
+  const key = readWithDate(keyFile);
   // Checks the pair can be used, before anything takes it up: this throws if the key doesn't match or either is broken
-  tls.createSecureContext({ cert, key });
-  const stamp = `${fs.statSync(certFile).mtimeMs}|${fs.statSync(keyFile).mtimeMs}`;
-  return { cert, key, stamp };
+  tls.createSecureContext({ cert: cert.bytes, key: key.bytes });
+  return { cert: cert.bytes, key: key.bytes, stamp: `${cert.changedAt}|${key.changedAt}` };
 }
 
 // The server. listings: the Listings (listings.js) it serves. certFile, keyFile: the PEM files. log(line): where its lines go. now(): the
@@ -186,13 +196,14 @@ function createListServer({ listings, certFile, keyFile, log, now = Date.now, ha
   server.on('tlsClientError', () => { counts.refusedForLimits++; });
   server.on('clientError', (error, socket) => { socket.destroy(); });
 
-  // A renewed certificate is taken up without a restart
+  // A renewed certificate is taken up without a restart. Both files are read again each time (they're a few KB, once an hour), and used
+  // only if their dates differ from the ones in use.
   const look = makeServer ? null : setInterval(() => {
     try {
-      const stamp = `${fs.statSync(certFile).mtimeMs}|${fs.statSync(keyFile).mtimeMs}`;
+      const fresh = readCertificate(certFile, keyFile);
 
-      if (stamp !== certificate.stamp) {
-        certificate = readCertificate(certFile, keyFile);
+      if (fresh.stamp !== certificate.stamp) {
+        certificate = fresh;
         server.setSecureContext({ cert: certificate.cert, key: certificate.key, minVersion: 'TLSv1.2' });
         log('list: the certificate files changed, and the new ones are in use');
       }

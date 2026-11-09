@@ -10,6 +10,25 @@ A small server for playing **AVPx** (the Aliens versus Predator port) over the i
 - **The list (HTTPS):** a host puts its game on it, and players read it.
 - **The relay (UDP):** the host and each joiner talk only to the relay, which passes the game's packets between them, unread and unchanged. Each joiner gets a relay port of its own.
 
+## Two versions: Node and Java
+
+The server is written twice, to one spec. Both speak PROTOCOL.md, byte for byte, and both read `test-vectors/relay-v1.json` in their own
+tests, so any difference between them fails a check.
+- **Node** (`relay/`, `list/`, `main.js`): the first version, and the reference. `node --test` runs its tests.
+- **Java** (`java/`): the version the owner chose to keep, "for maintainability". It uses Java SE only: no library, and no build tool
+  that fetches packages. `java/src/module-info.java` names no other module, so the compiler itself refuses anything but Java's own core.
+  PORTING.md says how it was ported.
+  - **What it needs:** the one JDK `java/tools/get-jdk.sh` fetches and checks (Temurin 25, by its signature, its sha256 and its
+    version), and nothing else.
+  - **Building it and running its tests:** `JAVA_HOME=<that JDK> sh java/build.sh`. That's plain javac and jar, with every warning an
+    error. Add `AVPX_LIVE=1` for the tests that open real sockets, on 127.0.0.1 only. It makes `java/build/avpx-server.jar`, the same
+    bytes every time for the same code.
+  - **Running it:** `java -jar avpx-server.jar`. It reads `/etc/avpx/settings.json` (the same file and settings as the Node version),
+    and nothing given on its command line. `deploy/README.md`, "The Java version", has the rest.
+  - **Its code:** `java/src/avpx/relay/` (the relay: messages, passes, limits, the core, the UDP sockets), `java/src/avpx/list/` (the
+    list: the strict JSON reader, requests, listings, the HTTPS server), `java/src/avpx/` (settings, the log, the start). The tests are in
+    `java/test/`, each ported from the Node test of the same name. The checks are in GATES.md, "Java".
+
 ## The rules this is built to
 
 - **Security first (AVP Tao 1).** Nothing third-party: no packages from npm or anywhere else. The scans gate every change (`GATES.md`, *to come*).

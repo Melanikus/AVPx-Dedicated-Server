@@ -1,0 +1,1035 @@
+# The Java version's take-out rows. Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
+#
+# Each row breaks one thing in a copy of the code, and the check it names must then fail: java/tools/Takeouts.java says how a row is
+# written, and runs them. Rows 0 to 86 are the Java version of tools/takeouts.json's rows 0 to 86 (the Node version's), in the same
+# order and with the same names, as PORTING.md asks; a row whose Java needs other words says so in a comment. Rows 87 on are for what
+# only the Java version has.
+#
+# Every "from" is whole lines, exactly as in its file, and found there exactly once.
+
+# ----- relay/core.js's rows: java/src/avpx/relay/RelayCore.java
+
+=== cookies are never checked
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    return secret != null
+        && (Crypto.same(secret, cookieFor(address, port, now, 0)) || Crypto.same(secret, cookieFor(address, port, now, 1)));
+<<< to
+    return true;
+>>>
+
+=== no size cap on a packet
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      if (data == null || data.length > limits.mostDatagramBytes) {
+<<< to
+      if (data == null) {
+>>>
+
+=== strangers are passed on
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (slot.state != Slot.State.ACTIVE || !(fromHost || fromJoiner)) {
+<<< to
+    if (slot.state != Slot.State.ACTIVE) {
+>>>
+
+=== no cap on games for one address
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (gamesPerSender.getOrDefault(sender, 0) >= limits.mostGamesPerSender) {
+<<< to
+    if (false) {
+>>>
+
+=== no cap on games in all
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (games.size() >= limits.mostGames) {
+<<< to
+    if (false) {
+>>>
+
+=== no cap on joiners in a game
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (game.joiners.size() >= limits.mostJoinersPerGame) {
+<<< to
+    if (false) {
+>>>
+
+=== a host hello with any token
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (m.type() == Type.HOST_HELLO && Crypto.same(m.secret(), slot.game.token) && m.port() == slot.port) {
+<<< to
+    if (m.type() == Type.HOST_HELLO && m.port() == slot.port) {
+>>>
+
+=== a joiner hello with any ticket
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    } else if (m.type() == Type.JOINER_HELLO && Crypto.same(m.secret(), slot.ticket)) {
+<<< to
+    } else if (m.type() == Type.JOINER_HELLO) {
+>>>
+
+=== no rate limit on a joiner's port
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (!way.packets().take(now) || !way.bytes().take(now, data.length)) {
+<<< to
+    if (false) {
+>>>
+
+=== no per-address limit on control messages
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (!perSender.allows(address, now) || !everyone.take(now)) {
+<<< to
+    if (!everyone.take(now)) {
+>>>
+
+=== no limit on control messages from everyone
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (!perSender.allows(address, now) || !everyone.take(now)) {
+<<< to
+    if (!perSender.allows(address, now)) {
+>>>
+
+=== refusals not limited
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (!refusals.allows(address, now)) {
+      return List.of();
+    }
+<<< to
+>>>
+
+=== games never expire
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      if (now - game.keptAt >= limits.gameLifeMilliseconds) {
+<<< to
+      if (false) {
+>>>
+
+=== ports never expire
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      if (waitedTooLong || idleTooLong) {
+<<< to
+      if (false) {
+>>>
+
+=== a keep keeps nothing
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    game.keptAt = now;
+<<< to
+>>>
+
+=== a freed port is lost
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    free.addLast(slot.port);
+<<< to
+>>>
+
+=== the log line on every tick
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (now - statsAt < limits.statsMilliseconds) {
+      return List.of();
+    }
+<<< to
+>>>
+
+=== an address in the log
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+        + " ports in use (" + pending + " waiting for both ends)";
+<<< to
+        + " ports in use (" + pending + " waiting for both ends) " + games.values().stream().map(g -> g.host.address()).toList();
+>>>
+
+=== a HOST_KEPT with no fresh pass
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    return List.of(control(address, port, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(game.joiners.size()), game, now)));
+<<< to
+    return List.of(control(address, port, Message.of(Type.HOST_KEPT).secret(game.token).number(game.joiners.size())));
+>>>
+
+=== a pass made for another region
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    return m.pass(Pass.make(passKey, region, game.code, passTime), passTime);
+<<< to
+    return m.pass(Pass.make(passKey, "paris", game.code, passTime), passTime);
+>>>
+
+=== a pass time in milliseconds, not seconds
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    long passTime = Math.floorDiv(now, 1000);
+<<< to
+    long passTime = now;
+>>>
+
+=== an echo answered with another count
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+        return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
+<<< to
+        return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number() + 1)));
+>>>
+
+=== an echo answered with an echo, so two relays could answer each other
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+        return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
+<<< to
+        return List.of(control(address, port, Message.of(Type.ECHO).secret(m.secret()).number(m.number())));
+>>>
+
+=== an ECHO_BACK answered
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      case Type.ECHO:
+<<< to
+      case Type.ECHO:
+      case Type.ECHO_BACK:
+>>>
+
+=== echoes answered before the limits
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    // The sender's own limit first, so one sender going too fast doesn't use up everyone's
+<<< to
+    Message early = Protocol.decode(data);
+
+    if (early != null && early.type() == Type.ECHO) {
+      counts.echoes++;
+      return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(early.secret()).number(early.number())));
+    }
+
+    // The sender's own limit first, so one sender going too fast doesn't use up everyone's
+>>>
+
+=== a relay with no region or pass key
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (!Pass.isRegion(region) || passKey == null || passKey.length != Pass.PASS_KEY_BYTES) {
+      throw new IllegalArgumentException("RelayCore: a region name, and a pass key of 32 bytes");
+    }
+<<< to
+>>>
+
+# ----- relay/protocol.js's rows: java/src/avpx/relay/Protocol.java
+
+=== the padding not checked
+check: tests
+file: java/src/avpx/relay/Protocol.java
+<<< from
+    for (int i = 60; i < MESSAGE_BYTES; i++) {
+      if (bytes[i] != 0) {
+        return null;
+      }
+    }
+<<< to
+>>>
+
+=== any code bytes taken
+check: tests
+file: java/src/avpx/relay/Protocol.java
+<<< from
+    if (!codeIsZero && !isCode(code)) {
+      return null;
+    }
+<<< to
+>>>
+
+=== fields a type does not use not checked
+check: tests
+file: java/src/avpx/relay/Protocol.java
+<<< from
+    if (!uses.containsAll(given(secretGiven, codeGiven, port, number, passGiven, passTime))) {
+      return null;
+    }
+<<< to
+>>>
+
+=== the relay may write fields a type does not use
+check: tests
+file: java/src/avpx/relay/Protocol.java
+<<< from
+      if (!uses.contains(field)) {
+        throw new IllegalArgumentException("encode: this type has no " + field);
+      }
+<<< to
+>>>
+
+=== a pass time past the most a number holds taken
+check: tests
+file: java/src/avpx/relay/Protocol.java
+<<< from
+    if (passTime < 0 || passTime > MOST_PASS_TIME) {
+      return null;
+    }
+<<< to
+    if (passTime < 0) {
+      return null;
+    }
+>>>
+
+=== the magic not checked
+check: tests
+file: java/src/avpx/relay/Protocol.java
+<<< from
+    for (int i = 0; i < MAGIC.length; i++) {
+      if (bytes[i] != MAGIC[i]) {
+        return null;
+      }
+    }
+<<< to
+>>>
+
+=== a message longer than 64 bytes taken
+check: tests
+file: java/src/avpx/relay/Protocol.java
+<<< from
+    if (bytes == null || bytes.length != MESSAGE_BYTES) {
+<<< to
+    if (bytes == null || bytes.length < MESSAGE_BYTES) {
+>>>
+
+# ----- relay/pass.js's rows: java/src/avpx/relay/Pass.java
+
+=== the region left out of a pass
+check: tests
+file: java/src/avpx/relay/Pass.java
+<<< from
+    what.writeBytes(region.getBytes(StandardCharsets.US_ASCII));
+<<< to
+>>>
+
+=== the time left out of a pass
+check: tests
+file: java/src/avpx/relay/Pass.java
+<<< from
+    what.writeBytes(time);
+<<< to
+>>>
+
+=== another label in a pass
+check: tests
+file: java/src/avpx/relay/Pass.java
+<<< from
+  private static final byte[] LABEL = "AVPX-PASS-1".getBytes(StandardCharsets.US_ASCII);
+<<< to
+  private static final byte[] LABEL = "AVPX-PASS-2".getBytes(StandardCharsets.US_ASCII);
+>>>
+
+# ----- relay/limits.js's rows: TokenBucket.java, PerSender.java, AddressHasher.java
+
+=== a bucket over its burst
+check: tests
+file: java/src/avpx/relay/TokenBucket.java
+<<< from
+      tokens = Math.min(burst, tokens + ((now - at) / 1000.0) * rate);
+<<< to
+      tokens = tokens + ((now - at) / 1000.0) * rate;
+>>>
+
+=== senders remembered without end
+check: tests
+file: java/src/avpx/relay/PerSender.java
+<<< from
+      if (buckets.size() >= most) {
+        buckets.remove(buckets.keySet().iterator().next());
+      }
+<<< to
+>>>
+
+=== the address secret kept for ever
+check: tests
+file: java/src/avpx/relay/AddressHasher.java
+<<< from
+    if (key == null || now - madeAt >= KEY_LIFE_MILLISECONDS || now < madeAt) {
+<<< to
+    if (key == null) {
+>>>
+
+# ----- list/requests.js's rows: java/src/avpx/list/Requests.java
+
+=== a body over 1 KB taken
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    if (bytes == null || bytes.length == 0 || bytes.length > MOST_BODY_BYTES) {
+<<< to
+    if (bytes == null || bytes.length == 0) {
+>>>
+
+=== a level of any length
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    if (!isPlainText(v.get("level"), MOST_LEVEL_LENGTH)) {
+<<< to
+    if (!isPlainText(v.get("level"), Integer.MAX_VALUE)) {
+>>>
+
+=== fields no call has taken
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    if (value.size() != fields.size() || !value.keySet().containsAll(fields)) {
+<<< to
+    if (!value.keySet().containsAll(fields)) {
+>>>
+
+=== hostMs of any size
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    if (!isWhole(v.get("hostMs"), 0, MOST_HOST_MILLISECONDS)) {
+<<< to
+    if (!isWhole(v.get("hostMs"), 0, Integer.MAX_VALUE)) {
+>>>
+
+=== a code of any capitals and digits
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+        || !Protocol.isCode(text.getBytes(StandardCharsets.ISO_8859_1))) {
+<<< to
+        || !text.matches("[A-Z0-9]{8}")) {
+>>>
+
+=== more players than maxPlayers
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    if (!isWhole(v.get("maxPlayers"), 1, MOST_PLAYERS) || !isWhole(v.get("players"), 1, (Long) v.get("maxPlayers"))) {
+<<< to
+    if (!isWhole(v.get("maxPlayers"), 1, MOST_PLAYERS) || !isWhole(v.get("players"), 1, MOST_PLAYERS)) {
+>>>
+
+=== a level number past 100
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    if (!isWhole(v.get("gameStyle"), 0, MOST_GAME_STYLE) || !isWhole(v.get("levelNumber"), 0, MOST_LEVEL_NUMBER)
+<<< to
+    if (!isWhole(v.get("gameStyle"), 0, MOST_GAME_STYLE) || !isWhole(v.get("levelNumber"), 0, 255)
+>>>
+
+=== any query taken
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    if (version < 1) {
+      throw new Refusal(400, "the query must be version=N, N from 1 to 65535");
+    }
+<<< to
+    if (version < 0) {
+      version = 1;
+    }
+>>>
+
+=== a pass time of any kind
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    if (!isWhole(v.get("passTime"), 0, Protocol.MOST_PASS_TIME)) {
+      throw new Refusal(400, "passTime must be a whole number of seconds");
+    }
+<<< to
+>>>
+
+# ----- list/listings.js's rows: java/src/avpx/list/Listings.java
+
+=== a pass never checked
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (!passIsGood(listing.region(), listing.code(), pass, listing.passTime(), now)) {
+<<< to
+    if (false) {
+>>>
+
+=== a pass of any age
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (now > madeAt + PASS_LIFE_MILLISECONDS || madeAt > now + MOST_PASS_AHEAD_MILLISECONDS || pass.length != Pass.PASS_BYTES) {
+<<< to
+    if (madeAt > now + MOST_PASS_AHEAD_MILLISECONDS || pass.length != Pass.PASS_BYTES) {
+>>>
+
+=== a pass from the future
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (now > madeAt + PASS_LIFE_MILLISECONDS || madeAt > now + MOST_PASS_AHEAD_MILLISECONDS || pass.length != Pass.PASS_BYTES) {
+<<< to
+    if (now > madeAt + PASS_LIFE_MILLISECONDS || pass.length != Pass.PASS_BYTES) {
+>>>
+
+=== anyone may renew a listing
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (!Crypto.same(owner, old.owner)) {
+      throw new Refusal(403, "that is not the owner key of that listing");
+    }
+
+    old.shown = listing;
+<<< to
+    old.shown = listing;
+>>>
+
+=== anyone may take a listing down
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (!Crypto.same(owner, old.owner)) {
+      throw new Refusal(403, "that is not the owner key of that listing");
+    }
+
+    Arrays.fill(old.owner, (byte) 0);
+<<< to
+    Arrays.fill(old.owner, (byte) 0);
+>>>
+
+=== an unrenewed listing can still be renewed
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    return entry != null && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS ? entry : null;
+<<< to
+    return entry;
+>>>
+
+=== an unrenewed listing is still shown
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+      if (entry.shown.version() == version && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
+<<< to
+      if (entry.shown.version() == version) {
+>>>
+
+=== no cap on listings
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (byGame.size() >= MOST_LISTINGS) {
+<<< to
+    if (false) {
+>>>
+
+=== a game listed twice
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (find(listing.region(), listing.code(), now) != null) {
+<<< to
+    if (false) {
+>>>
+
+=== the relays' keys in GET /v1/relays
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+      shown.put("port", r.port());
+<<< to
+      shown.put("port", r.port());
+      shown.put("passKey", Crypto.hex(r.passKey()));
+>>>
+
+=== a renewal starts the listing's time again
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    old.shown = listing;
+    old.renewedAt = now;
+<<< to
+    byGame.put(key(listing.region(), listing.code()), new Entry(listing, old.owner, now, now));
+>>>
+
+# ----- list/routes.js's rows: java/src/avpx/list/Routes.java
+
+# Node's row put the owner key in the answer. Routes.java never has the owner key to put (Listings gives it only what a listing shows),
+# so the Java row puts in a field in its place, which the tests must notice just the same.
+=== the owner key in GET /v1/games
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+          game.put("hostMs", g.hostMs());
+<<< to
+          game.put("hostMs", g.hostMs());
+          game.put("owner", "where the owner key would go");
+>>>
+
+=== seconds past a year
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+          game.put("seconds", Math.min(MOST_SECONDS, Math.max(0, Math.floorDiv(now - shown.listedAt(), 1000))));
+<<< to
+          game.put("seconds", Math.max(0, Math.floorDiv(now - shown.listedAt(), 1000)));
+>>>
+
+=== more than 100 games in an answer
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+        for (Listings.Shown shown : listings.games(version, now, MOST_GAMES)) {
+<<< to
+        for (Listings.Shown shown : listings.games(version, now, Integer.MAX_VALUE)) {
+>>>
+
+=== a GET /v1/games with a body
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+      if (method.equals("GET")) {
+        Requests.checkNoBody(body);
+<<< to
+      if (method.equals("GET")) {
+>>>
+
+# ----- list/strict-json.js's rows: java/src/avpx/list/Json.java
+
+=== a key twice taken
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+        if (out.containsKey(name)) {
+          throw new Bad("a field given twice");
+        }
+<<< to
+>>>
+
+=== any escape taken
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+          if (escaped != '"' && escaped != '\\') {
+            throw new Bad("a text with an escape other than \\\" and \\\\");
+          }
+<<< to
+>>>
+
+=== a number with a leading 0 taken
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+      if (digits > 1 && b[start] == '0') {
+        throw new Bad("a number with a 0 in front of its other digits");
+      }
+<<< to
+>>>
+
+=== a number past 2^53 - 1 taken
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+      long value = digitsValue(new String(b, start, digits, StandardCharsets.US_ASCII), MOST_WHOLE);
+<<< to
+      long value = digitsValue(new String(b, start, digits, StandardCharsets.US_ASCII), Long.MAX_VALUE);
+>>>
+
+=== control bytes and bytes past ASCII in a string
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+        } else if (c < 0x20 || c > 0x7e) {
+          throw new Bad("a text with a character that isn't printable ASCII");
+        } else {
+<<< to
+        } else {
+>>>
+
+=== something after the object taken
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+    Map<String, Object> value = r.object(1);
+    r.space();
+
+    if (r.at != bytes.length) {
+      throw new Bad("there is more after the end");
+    }
+<<< to
+    Map<String, Object> value = r.object(1);
+>>>
+
+# Node's row 69 read bodies with JSON.parse, which takes nesting and keeps the last of two keys. Java has only its own reader, so its
+# row lets that reader nest deeper than its caller allows, the part of JSON.parse's leniency a Java body could meet.
+=== a body read with JSON.parse, which keeps the last of two keys
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+      if (depth > mostDepth) {
+        throw new Bad("objects or lists nested deeper than they may be here");
+      }
+
+      at++;
+      Map<String, Object> out = new LinkedHashMap<>();
+<<< to
+      at++;
+      Map<String, Object> out = new LinkedHashMap<>();
+>>>
+
+# ----- settings.js's rows: java/src/avpx/Settings.java
+
+=== a pass key of all 0 taken
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (!(value instanceof String text) || !PASS_KEY.matcher(text).matches() || ALL_ZERO.matcher(text).matches()) {
+<<< to
+    if (!(value instanceof String text) || !PASS_KEY.matcher(text).matches()) {
+>>>
+
+=== an address for a relay's host
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (!(value instanceof String text) || text.length() > MOST_HOST_LENGTH || !HOST.matcher(text).matches()
+        || !HOST_LAST_PART.matcher(text).find()) {
+<<< to
+    if (!(value instanceof String text) || text.length() > MOST_HOST_LENGTH || !HOST.matcher(text).matches()) {
+>>>
+
+=== a list that does not name its own region
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (!regions.contains(ownRegion)) {
+<<< to
+    if (false) {
+>>>
+
+=== the own pass key written twice
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+      if (own && r.containsKey("passKey")) {
+<<< to
+      if (false) {
+>>>
+
+=== any number of relays
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (relays == null || relays.isEmpty() || relays.size() > MOST_RELAYS) {
+<<< to
+    if (relays == null || relays.isEmpty()) {
+>>>
+
+=== a setting nobody knows taken
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+      if (!known.contains(name)) {
+<<< to
+      if (false) {
+>>>
+
+# ----- log.js's row: java/src/avpx/Log.java
+
+=== a line break kept in a log line
+check: tests
+file: java/src/avpx/Log.java
+<<< from
+    String text = TIME.format(now.get()) + " " + String.valueOf(words).replace('\r', ' ').replace('\n', ' ') + "\n";
+<<< to
+    String text = TIME.format(now.get()) + " " + words + "\n";
+>>>
+
+# ----- The standard's rows: each makes a new file that breaks one rule of CODING-STANDARD.md, which tools/CheckStandard.java must
+# notice. Node's rows broke the rule in Node's way (console., eval, require); these break it in Java's.
+
+=== console. in the relay
+check: standard
+file: java/src/avpx/relay/TakeoutScreen.java
+<<< new file
+package avpx.relay;
+
+final class TakeoutScreen {
+  private TakeoutScreen() {
+  }
+
+  static void say() {
+    System.out.println("the screen, named outside Log.java");
+  }
+}
+>>>
+
+=== code made from text
+check: standard
+file: java/src/avpx/list/TakeoutScript.java
+<<< new file
+package avpx.list;
+
+import javax.script.ScriptEngineManager;
+
+final class TakeoutScript {
+  private TakeoutScript() {
+  }
+}
+>>>
+
+=== a package from outside
+check: standard
+file: java/src/avpx/relay/TakeoutImport.java
+<<< new file
+package avpx.relay;
+
+import org.example.Library;
+
+final class TakeoutImport {
+  private TakeoutImport() {
+  }
+}
+>>>
+
+# A byte this file can't hold (it must be ASCII itself), so the new file is written from hex: "// caf", the e with an accent (0xe9),
+# and a line feed
+=== a byte that is not ASCII
+check: standard
+file: java/src/avpx/relay/TakeoutAscii.java
+<<< new file in hex
+2f2f20636166e90a
+>>>
+
+=== an action not pinned to a commit
+check: standard
+file: .github/workflows/takeout-java.yml
+<<< new file
+on: push
+jobs:
+  x:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+>>>
+
+=== another program started by the server
+check: standard
+file: java/src/avpx/relay/TakeoutProgram.java
+<<< new file
+package avpx.relay;
+
+final class TakeoutProgram {
+  private TakeoutProgram() {
+  }
+
+  static Object start() {
+    return new ProcessBuilder("sh");
+  }
+}
+>>>
+
+=== a comment that silences a scanner
+check: standard
+file: java/src/avpx/relay/TakeoutSilence.java
+<<< new file
+package avpx.relay;
+
+final class TakeoutSilence {
+  private TakeoutSilence() {
+  }
+
+  @SuppressWarnings("unchecked")
+  static void quiet() {
+  }
+}
+>>>
+
+=== a file that silences a scanner
+check: standard
+file: java/.snyk
+<<< new file
+ignore: {}
+>>>
+
+# Node's row put a node_modules folder in the tree; Java's nearest is a library someone else compiled: a jar (its first 4 bytes)
+=== node_modules in the tree
+check: standard
+file: java/lib/library.jar
+<<< new file in hex
+504b0304
+>>>
+
+# Node's row put a package in package.json; Java's nearest is a build file that fetches packages
+=== a package in package.json
+check: standard
+file: java/pom.xml
+<<< new file
+<project></project>
+>>>
+
+# ----- Rows for what only the Java version has
+
+=== module-info names a module the server would then use
+check: standard
+file: java/src/module-info.java
+<<< from
+module avpx.server {
+<<< to
+module avpx.server {
+  requires java.net.http;
+>>>
+
+=== a test file that no one runs
+check: standard
+file: java/test/avpx/relay/ForgottenTest.java
+<<< new file
+package avpx.relay;
+
+final class ForgottenTest {
+  private ForgottenTest() {
+  }
+}
+>>>
+
+=== a field named __proto__, constructor or prototype taken
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+        if (JAVASCRIPT_NAMES.contains(name)) {
+<<< to
+        if (false) {
+>>>
+
+=== a number from outside read with a sum that can go past what it may be
+check: tests
+file: java/src/avpx/list/Json.java
+<<< from
+    return value <= most ? value : -1;
+<<< to
+    return value;
+>>>
+
+=== a line in a request's head ended by LF alone
+check: tests
+file: java/src/avpx/list/Http.java
+<<< from
+      if (line.indexOf('\r') >= 0 || line.indexOf('\n') >= 0) {
+<<< to
+      if (false) {
+>>>
+
+=== a request's head of any size
+check: tests
+file: java/src/avpx/list/Http.java
+<<< from
+      if (head.size() > most) {
+<<< to
+      if (false) {
+>>>
+
+=== the query from the last ? instead of the first
+check: tests
+file: java/src/avpx/list/Http.java
+<<< from
+    int mark = target.indexOf('?');
+<<< to
+    int mark = target.lastIndexOf('?');
+>>>
+
+=== a method in small letters taken
+check: tests
+file: java/src/avpx/list/Http.java
+<<< from
+  private static final Pattern METHOD = Pattern.compile("[A-Z]{1,16}");
+<<< to
+  private static final Pattern METHOD = Pattern.compile("[A-Za-z]{1,16}");
+>>>
+
+=== any number of connections from one address
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+      if (count >= MOST_CONNECTIONS_PER_ADDRESS) {
+<<< to
+      if (false) {
+>>>
+
+=== a minute, not 5 s, for a connection's TLS handshake and head
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+  static final long HEADERS_MILLISECONDS = 5000;
+<<< to
+  static final long HEADERS_MILLISECONDS = 60000;
+>>>
+
+=== a body sent in chunks taken
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+    if (!head.values("transfer-encoding").isEmpty()) {
+<<< to
+    if (false) {
+>>>
+
+=== two Content-Lengths taken
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+    if (lengths.size() > 1) {
+<<< to
+    if (false) {
+>>>
+
+=== a body over 1 KB read in, not refused with 413
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+      long declaredLength = Json.digitsValue(declared, Requests.MOST_BODY_BYTES);
+<<< to
+      long declaredLength = Json.digitsValue(declared, Long.MAX_VALUE);
+>>>
+
+=== a key used with a certificate it doesn't belong to
+check: live
+file: java/src/avpx/list/Certificates.java
+<<< from
+      checkPair(key, chain.get(0));
+<<< to
+>>>

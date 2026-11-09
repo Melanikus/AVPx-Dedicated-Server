@@ -134,6 +134,54 @@ Systems Manager runs the deploy on the machine for you, with no SSH key and no p
 - `journalctl -u avpx-java` shows its log: counts and times only, never an address, a code, a token or a name.
 - **To switch the test machine off:** in Lightsail, **Stop** (you still pay for its disk) or **Delete**. Its pass key and certificate go with it.
 
+## A test machine anywhere (no AWS), such as a DigitalOcean droplet
+
+The same test machine, on any host with Ubuntu 24.04 and a browser console, with **no Systems Manager, no cloud key, and nothing stored anywhere**: you run the deploy script yourself, by hand, in the console. It's the very script the SSM document wraps (`remote-deploy.sh`), so it does exactly the same checks.
+
+### 1. The droplet
+
+1. On DigitalOcean: **Create**, **Droplets**. Region **New York (NYC3)**. Image **Ubuntu 24.04 (LTS) x64**. Size **Basic**, the **2 GB** one. Name it `avpx-test-1`.
+2. **Networking**, **Firewalls**, **Create Firewall**: inbound rules **SSH (TCP 22)** from **your own IP only**, and no other inbound rule; outbound as it is. Apply it to `avpx-test-1`.
+3. Open the droplet, and choose **Access**, **Launch Droplet Console**. If the console won't connect through the firewall, use the **Recovery Console** there instead: it doesn't go through the network.
+
+### 2. Set it up
+
+**First run the Test build** (section 3, step 1), because step 8 below needs its commit.
+
+Then in the console, as root (`sudo -i` if you aren't), do **section C above, steps 2 to 8, exactly as written**: the updates and tools, ufw (SSH only), the users `avpx` and `avpx-build`, the folders, the throwaway certificate for `virginia.relay.avpx.test`, the settings, and the service. Step 9 holds too: the first deploy fetches the JDK.
+
+### 3. The first deploy, by hand
+
+1. **On GitHub:** Actions, **Test build**, **Run workflow**, with the commit to deploy. Its summary shows three values: **commit**, **jarsSha256**, and **remote-deploy.sh's SHA-256**.
+2. **In the console,** fetch exactly that commit with git, which names every file by its hash, so what arrives is that commit and nothing else. Put the commit in place of `COMMIT`:
+   ```
+   rm -rf /root/avpx-src && git init -q /root/avpx-src && cd /root/avpx-src && git fetch -q --depth 1 https://github.com/Melanikus/AVPx-Dedicated-Server.git COMMIT && git checkout -q FETCH_HEAD && git rev-parse HEAD
+   ```
+   The last line it prints must be the commit, exactly.
+3. **Check the script** against the Test build's value:
+   ```
+   sha256sum deploy/remote-deploy.sh
+   ```
+   The 64 digits must be **remote-deploy.sh's SHA-256** from the summary, exactly. If they aren't, stop, and tell PO.
+4. **Read it,** if you like (`less deploy/remote-deploy.sh`): it says in plain words what it does, step by step.
+5. **Run it,** with the commit and jarsSha256 from the summary:
+   ```
+   sh deploy/remote-deploy.sh COMMIT JARS_SHA256
+   ```
+   It takes a few minutes the first time: it fetches the commit again as `avpx-build` (with no access to your settings or the certificate), fetches and checks the JDK, builds with no network, and runs every test. Then it checks the jars are the ones GitHub built, puts them in place, starts the service, and runs the smoke test.
+6. **The result:**
+   - it ends with `deploy: <commit> is in place, and healthy`, after the smoke test's lines, each `PASS`;
+   - or it ends with a `deploy:` line that says why not. Nothing broken is left running.
+   Copy everything it printed, and send it to PO.
+
+### 4. Later, for the game test
+
+To play the game against this machine from your own PC (PO gives the game's side of the steps), it's opened to **your own IP only**, in both firewalls:
+- **DigitalOcean's firewall:** add inbound **TCP 443** and **UDP 27500-27564**, each from your IP only.
+- **On the machine:** `ufw allow from YOUR.IP to any port 443 proto tcp && ufw allow from YOUR.IP to any port 27500:27564 proto udp`.
+
+Nothing is open to anyone else. **To be done with it:** destroy the droplet in DigitalOcean; its pass key and certificate go with it.
+
 ## Later: the public machine
 
 When SERVER-BLOCKERS.md says `Nothing.`, GitHub's **Deploy** workflow (`.github/workflows/deploy.yml`) puts each version on the public machine, after you approve its `production` environment. It needs:

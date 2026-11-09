@@ -46,11 +46,14 @@ jobs:
       - name: What to type into AWS
         run: |
           jars=$( (cd java/build && sha256sum avpx-server.jar avpx-smoke.jar) | sha256sum | cut -d ' ' -f 1)
+          script=$(sha256sum deploy/remote-deploy.sh | cut -d ' ' -f 1)
           {
-            echo '### For the SSM document avpx-deploy'
+            echo '### For the deploy by hand (deploy/README.md)'
             echo ''
             echo "- commit: \`$COMMIT\`"
             echo "- jarsSha256: \`$jars\`"
+            echo "- remote-deploy.sh's SHA-256 (for a machine with no AWS): \`$script\`"
           } >> "$GITHUB_STEP_SUMMARY"
-          echo "commit:     $COMMIT"
-          echo "jarsSha256: $jars"
+          echo "commit:            $COMMIT"
+          echo "jarsSha256:        $jars"
+          echo "remote-deploy.sh:  $script"

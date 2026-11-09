@@ -1,6 +1,6 @@
 # How AVPx keeps games secret, sealed and fair (protocol version 2, a design)
 
-Written 2026-11-08 by Melanikus. **This is a design, not code.** Nothing here is built yet. The game (Fifth), the Node server (Third), the Java server (Primary) and the list page (Fourth) build from it, after a fresh reviewer has read it. PROTOCOL.md stays the plain version 1 that the first test runs use. Version 2 is a new deployment: there's no mixing of the two and no negotiation.
+Written 2026-11-08 by Melanikus. **This is a design, not code.** Nothing here is built yet. The game (Fifth), the Java server (Primary) and the list page (Fourth) build from it, after a fresh reviewer has read it. PROTOCOL.md stays the plain version 1 that the first test runs use. Version 2 is a new deployment: there's no mixing of the two and no negotiation.
 
 **How to read the marks:** **[CHECK]** means a fact from memory, not yet checked against the document named beside it. Every [CHECK] is confirmed, and the mark taken out, before any code is written on it. **[DECIDE]** marks a choice that belongs to the user (section 19).
 
@@ -61,7 +61,6 @@ No third-party crypto on the servers (AVP Tao 1). Each platform's own:
 | Platform | P-384, ECDSA, AES-GCM, SHA-384, HKDF | ML-KEM-1024, ML-DSA-87 |
 |---|---|---|
 | Java 25 (LTS) | `KeyAgreement "ECDH"`, `Signature "SHA384withECDSA"`, `Cipher "AES/GCM/NoPadding"`; HKDF through the KDF API, JEP 510, final in JDK 25. **[CHECK: the JEP's example is HKDF-SHA256. Confirm HKDF-SHA384 is among JDK 25's KDF algorithm names; if not, write HKDF by hand over HMAC-SHA384, `javax.crypto.Mac`, in java.base]** | ML-KEM, JEP 496, and ML-DSA, JEP 497, both in JDK 24, through `javax.crypto.KEM` (JEP 452) and `Signature` |
-| Node.js 24 (LTS) | `node:crypto`: `diffieHellman` on P-384 keys, `sign`/`verify`, `createCipheriv('aes-256-gcm')`, `hkdfSync('sha384')` | ML-DSA keys from v24.6.0, ML-KEM from v24.7.0, both on OpenSSL 3.5 (the KeyObject history in nodejs.org/api/crypto.html). **[CHECK: `crypto.encapsulate`'s own "Added in" line, once.]** The server's `engines` is already `>=24.22.1` (f03cc0e), which is past both |
 | The game, Windows CNG (bcrypt.dll) | `BCRYPT_ECDH_P384_ALGORITHM`, `BCRYPT_ECDSA_P384_ALGORITHM`, `BCRYPT_AES_ALGORITHM` with `BCRYPT_CHAIN_MODE_GCM`, `BCRYPT_SHA384_ALGORITHM` with the HMAC flag. These have been in Windows since Windows 7 | ML-KEM and ML-DSA have been **generally available since the November 2025 update, on Windows 11 24H2 and 25H2** (at least the 2025-10 update KB5067036, per Microsoft's AD CS document), **and Windows Server 2025. Not on Windows 10.** Handles: `BCRYPT_MLKEM_ALG_HANDLE` (0x481) and `BCRYPT_MLDSA_ALG_HANDLE` (0x471), with the parameter set chosen through `BCryptSetProperty(BCRYPT_PARAMETER_SET_NAME, BCRYPT_MLKEM_PARAMETER_SET_1024 ...)`. Sources: Microsoft's Tech Community post "Post-Quantum Cryptography APIs Now Generally Available on Microsoft Platforms", and the AD CS document for the update number. Microsoft's sample page still says "prerelease"; that's out of date |
 
 The platform facts in this table were read in the official documents by PO on 2026-11-08. The two marks left are each to be confirmed once, in code, before the code relies on them.
@@ -205,7 +204,7 @@ The ECDH results and the ML-KEM secrets go into the same chain one after another
 **The start:**
 - `h = SHA-384(the protocol name)` and `ck = h`.
 - The names are `AVPX_pqNK_P384+MLKEM1024_AESGCM_SHA384_v2` (handshake A) and `AVPX_pqXX_P384+MLKEM1024_AESGCM_SHA384_v2` (handshake B).
-- Then MixHash(the prologue): the region and the relay's static keys for A, and the relay port and the host's fingerprint for B.
+- Then MixHash(the prologue), and the pattern's pre-messages, exactly as section 5.1 writes them.
 
 **Big messages over UDP.** Handshake messages are 1.6 to 3.4 KB, more than a datagram should carry. Each is cut into fragments, and **every handshake datagram, either way, is exactly 1,200 bytes**: the smallest size the internet carries whole, as QUIC also uses.
 
@@ -221,6 +220,31 @@ The ECDH results and the ML-KEM secrets go into the same chain one after another
 | 32-33 | the whole message's length |
 | 34-35 | where this fragment starts in it |
 | 36-1199 | up to 1,164 bytes of the message, then 0 |
+
+### 5.1 The byte-exact choices (settled 2026-11-09 with Primary, the Java server, and Fifth, the game)
+
+Every implementation must make the same bytes. Where Noise leaves a choice, or where this differs from Noise, it's written here.
+1. **MixKey's HKDF:** HKDF-SHA-384 (RFC 5869) with salt `ck`, input the secret, and **empty info**, giving 80 bytes: the new `ck` (48), then `k` (32). That's exactly Noise's two-output HKDF.
+2. **The handshake's nonce,** before Split: the IV is 12 zero bytes, so the nonce is 4 zero bytes, then `n` as 8 bytes **little-endian**. **Noise itself writes `n` big-endian for AES-GCM; this differs on purpose, the same as section 9's sealed datagrams. Don't "fix" it.**
+3. **Split's 88 bytes,** from HKDF-SHA-384(salt `ck`, input empty, info "AVPX split v2"), in this order: the key initiator-to-responder (32), the key responder-to-initiator (32), the IV initiator-to-responder (12), the IV responder-to-initiator (12).
+4. **Handshake A's prologue:** the region's name in ASCII, then one 0 byte (one MixHash).
+5. **Handshake A's pre-message `<- s`,** as Noise NK has it: after the prologue, MixHash(the relay's static P-384 key, 97 bytes), then MixHash(its static ML-KEM-1024 encapsulation key, 1,568 bytes). The prologue holds no keys, so nothing is hashed twice.
+6. **The `e` token:** the initiator does MixHash(its ephemeral P-384 key, 97), then MixHash(its ephemeral ML-KEM encapsulation key, 1,568), two calls. A responder does the first only. A1's bytes, in order: e's P-384 key, e's encapsulation key, the ciphertext to the relay's static key, the tag (3,249).
+7. **ECDH's output** is the shared point's x coordinate, 48 bytes, as Java's and CNG's ECDH give it. **Every P-384 key received is checked to be on the curve, and not the point at infinity, before it's used.**
+8. **Epochs** (section 9) **apply to the sealed control channel too.** Epoch 0's key is Split's key itself. Epoch e, from 1, is HKDF-Expand(Split's key for that direction, "AVPX epoch v2" || e as 4 bytes little-endian, 32). The IV stays Split's. The counters start at 0 in each direction.
+9. **A0 (COOKIE_ASK) and A3 headers:**
+   - A0 is fragment 0 of 1, length 0, offset 0, cookie 0.
+   - A3 is fragment 0 of 1, length 16, offset 0, and carries the cookie again, checked with no memory as for A1, so a forged A3 costs nothing. The relay finds A3's handshake by its id, and checks it came from A1's address and port.
+10. **Fragments are read only one way:**
+    - every fragment but the last is exactly 1,164 bytes of the message;
+    - fragment k starts at k x 1,164;
+    - the count is ceil(length / 1,164), 1 to 4, and every fragment carries the same length and count;
+    - every byte after the part is 0.
+    - Anything else is refusal 6.
+11. **Inside the sealed channel, version 1's inner cookie round goes:** the handshake's cookie already proved the address, so HOST_OPEN and JOIN are taken without one. **ECHO goes too:** the A0/A0' round trip is the timing echo (1,200 bytes asked, 64 answered, nothing kept), so the host times each relay without a handshake.
+12. **The limits on handshakes are kept by address and port,** not by address alone. Behind carrier-grade NAT, many homes share one address, and those are the players the relay exists for. One handshake being put together, and 2 a second (4 at once), per address and port; a ceiling of 16 at once per address; 1,000 at once in all (section 17).
+13. **The replay window is 1,024 messages, one per direction:** behind the highest counter taken from the other side. Counters count messages, never fragments. The relay's sealed answers stay exactly 104 bytes.
+14. **The test vectors** (section 15) are made by a Java tool, and fix whole handshakes: A1, A2 and A3 as bytes, and every `h` and `ck`, with seeded randomness given to ML-KEM's key generation and encapsulation. A Java test makes the file again and fails if it differs.
 
 ## 6. Handshake A: a game and its relay (pattern pqNK, hybrid)
 
@@ -242,7 +266,7 @@ The game knows the relay's static keys from the signed directory (section 12) be
 **No amplification:**
 - **A0':** 64 bytes, answering a 1,200-byte ask.
 - **The cookie:** HMAC-SHA-384 of the address, the port, a 10-second slot and the handshake id, cut to 16 bytes, as PROTOCOL.md section 3 describes. Every A1 datagram carries it, and **the relay checks it, with no memory, before it keeps a single byte**.
-- **What the relay keeps:** one handshake being put together per address, at most 4 KB, for at most 2 s; at most 1,000 at once in all.
+- **What the relay keeps:** one handshake being put together per address and port, at most 4 KB, for at most 2 s; at most 16 at once from one address, and 1,000 at once in all (section 5.1, point 12).
 - **When the expensive work starts:** ML-KEM and ECDH work happens only when the whole of A1 is in.
 - **The datagram rule:** for any handshake, the relay never sends more datagrams than it was sent, and all of them are the same size: 3 in, 2 out.
 
@@ -320,9 +344,8 @@ After the handshake (B4 checked on the joiner's side, B5 on the host's), every d
 - **Padding game packets to fixed sizes: no, for now.** Packet sizes would show roughly what's going on (a firefight, a chat line's length). That's worth little to anyone, and padding to buckets would nearly double the relay's traffic. The handshake already uses only one size. This can be revisited.
 - **Wiping keys at the end:**
   - the game: `BCryptDestroyKey`, then `SecureZeroMemory` on every buffer that held a key or a secret;
-  - Node: `fill(0)` on every Buffer of ours;
   - Java: `Arrays.fill` on every array of ours, and `destroy()` where a key class has it.
-  - **A known limit:** Node's garbage collector and some Java key classes may leave copies we can't reach, so a memory dump of a running server can still hold keys. That's true of every managed-language server.
+  - **A known limit:** Java's garbage collector and some Java key classes may leave copies we can't reach, so a memory dump of a running server can still hold keys. That's true of every managed-language server.
 
 ## 10. Proving the host: a PAKE, or a signed identity
 
@@ -365,7 +388,6 @@ This is already in the handshakes: A2 and A3, and B3, B4 and B5. Each is a **cha
 - **ML-DSA-87:** *pure* ML-DSA (FIPS 204's ML-DSA.Sign and ML-DSA.Verify, not HashML-DSA), with the 48 bytes of `D` as its message, and the context string `AVPX <what> v2` as ASCII. The signature is 4,627 bytes. The game checks that length before calling.
 - **ECDSA P-384:** ECDSA with SHA-384, with the 48 bytes of `D` as its message, so the curve signs `SHA-384(D)`. The signature is r then s, 48 bytes each, big-endian (96 bytes, IEEE P1363).
   - Java's `SHA384withECDSA` takes `D` and gives DER, so it's converted.
-  - Node's `crypto.verify('sha384', D, {key, dsaEncoding: 'ieee-p1363'}, sig)` takes `D` and the 96 bytes.
   - CNG's `BCryptVerifySignature` takes the hash itself, so the game passes `SHA-384(D)` and the 96 bytes.
   - The test vectors (section 15) hold one signature of each kind, so all three can be checked against the same bytes.
 
@@ -423,7 +445,7 @@ So a hijacked DNS name or certificate can't feed the game false relays.
 
 ## 15. Test vectors: `test-vectors/crypto-v2.json`
 
-These come from tools/make-vectors.js, with fixed keys, and are read by the Node, Java and game tests:
+These are made by a Java tool, with fixed keys and seeded randomness (section 5.1, point 14), and are read by the Java and game tests:
 - HKDF chains from fixed inputs;
 - AES-GCM seals;
 - each handshake's every `h` and `ck`, from fixed ephemeral and static keys;
@@ -464,8 +486,8 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 | A handshake datagram | exactly 1,200 bytes; at most 4 fragments a message |
 | COOKIE answer | 64 bytes |
 | Cookie life | 10 to 20 s (as now) |
-| A handshake being put together | 4 KB, 2 s, one per address, 1,000 in all |
-| Handshakes started, one address | 2 a second, 4 at once |
+| A handshake being put together | 4 KB, 2 s; one per address and port, 16 at once per address, 1,000 in all |
+| Handshakes started, one address and port | 2 a second, 4 at once |
 | Handshakes started, everyone | 200 a second, 400 at once |
 | Retries | after 0.5, 1, 2 and 4 s, then give up |
 | A finished answer kept, to send again | 10 s |

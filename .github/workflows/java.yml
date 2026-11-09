@@ -181,8 +181,10 @@ jobs:
       # one, end to end (PO's ruling, 2026-11-09):
       #   1. Smoke makes two fresh players, here, gone with the runner: only their fingerprints are printed, never their keys;
       #   2. it sends their two access requests to the list, as the game's page does;
-      #   3. this step approves them as the owner's own tools do: a decisions file in the access folder, this user's own, 0600, written
-      #      under another name and renamed, which the server reads as hostile input like any other;
+      #   3. this step approves them as the owner's own tools do: a decisions file in the access folder, this user's own, 0600, its
+      #      lines then "end 2" (AccessStore.java), written under another name and linked into place with ln, which never replaces a file
+      #      there, then the draft removed. The server reads it as hostile input like any other. Then requests.json must show both
+      #      approved: a file the server refused is deleted too, so "it's gone" alone would pass whatever happened to it;
       #   4. Smoke then checks a player nobody approved gets nothing, SmokeV2's pin to crypto-v2.json, and plays a whole game, sealed.
       # Nothing here approves anyone on any real server: no tool for that is in this repository (the owner's rule).
       - name: A version 2 Java relay and list; access asked, approved by a decisions file, then Smoke --installed (the pin first)
@@ -210,8 +212,8 @@ jobs:
           server=$!
           status=0
           smoke --installed --request-access "$dir/identities" > request.out 2>&1 || status=$?
-          (umask 077 && printf '%s approved\n%s approved\n' "$host" "$joiner" > "$access/.decisions.ci")
-          mv "$access/.decisions.ci" "$access/decisions.$(date +%s%N)"
+          (umask 077 && printf '%s approved\n%s approved\nend 2\n' "$host" "$joiner" > "$access/.decisions.ci")
+          ln "$access/.decisions.ci" "$access/decisions.$(date +%s%N)" && rm "$access/.decisions.ci"
           sleep 3
           smoke --installed --identities "$dir/identities" > smoke.out 2>&1 || status=$?
           kill "$server"
@@ -223,6 +225,9 @@ jobs:
           grep -q "^PASS  the host's access request" request.out || { echo "the host's access request wasn't taken"; exit 1; }
           grep -q "^PASS  the joiner's access request" request.out || { echo "the joiner's access request wasn't taken"; exit 1; }
           if ls "$access"/decisions.* > /dev/null 2>&1; then echo "the decisions file wasn't taken in"; exit 1; fi
+          for fp in "$host" "$joiner"; do
+            grep -q "\"fp\":\"$fp\",[^}]*\"state\":\"approved\"" "$access/requests.json" || { echo "the decisions file was refused, not taken"; exit 1; }
+          done
           grep -q '^PASS  the pin' smoke.out || { echo "the version 2 run didn't pass its pin to crypto-v2.json"; exit 1; }
           grep -q '^PASS  handshake A for a player nobody approved' smoke.out || { echo "an unapproved player wasn't refused"; exit 1; }
           grep -q '^PASS  handshake A for the joiner' smoke.out || { echo "the approved players' handshakes didn't pass"; exit 1; }

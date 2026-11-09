@@ -253,7 +253,7 @@ Every implementation must make the same bytes. Where Noise leaves a choice, or w
     - every byte after the part is 0.
     - Anything else is refusal 6.
 11. **Inside the sealed channel, version 1's inner cookie round goes:** the handshake's cookie already proved the address, so HOST_OPEN and JOIN are taken without one. **ECHO goes too:** the A0/A0' round trip is the timing echo (1,200 bytes asked, 64 answered, nothing kept), so the host times each relay without a handshake.
-12. **The limits on handshakes are kept by address and port,** not by address alone. Behind carrier-grade NAT, many homes share one address, and those are the players the relay exists for. One handshake being put together, and 2 a second (4 at once), per address and port; a ceiling of 16 at once per address; 1,000 at once in all (section 17).
+12. **The limits on handshakes are kept by address and port,** not by address alone. Behind carrier-grade NAT, many homes share one address, and those are the players the relay exists for. One handshake being put together, and 2 a second (4 at once), per address and port; a ceiling of 16 at once per address; 1,000 at once in all (section 17). **Sessions are capped per address, at 64,** more than handshakes, because a session lasts far longer than a handshake, and many homes behind one carrier's NAT share an address. Handshakes waiting for A3 count as sessions.
 13. **The replay window is 1,024 messages, one per direction:** behind the highest counter taken from the other side. Counters count messages, never fragments. The relay's sealed answers stay exactly 104 bytes.
 14. **The test vectors** (section 15) are made by a Java tool, and fix whole handshakes: A1, A2 and A3 as bytes, and every `h` and `ck`, with seeded randomness given to ML-KEM's key generation and encapsulation. A Java test makes the file again and fails if it differs.
 15. **"The transcript" is `h` after the last handshake message:** after A3 for handshake A, after B5 for handshake B. That's Noise's own handshake hash. It's what a handshake gives back with its two keys, what the test vectors hold as each handshake's transcript, and what the check code (section 8) is made from. The Java server already does this (HandshakeA's Keys.transcript); settled 2026-11-09 from Primary's read of the model.
@@ -288,6 +288,11 @@ The game knows the relay's static keys from the signed directory (section 12) be
 - The relay keeps its A2 bytes for 10 s, keyed by the handshake id and the hash of A1. An A1 that comes again gets **the same A2, byte for byte**: never a fresh one, which would make a second set of keys.
 - If A3 is lost, the game's first sealed message (section 7) counts as its confirmation.
 
+**How the relay takes A3** (settled 2026-11-09 from Primary's relay side):
+- A3 is an empty EncryptAndHash, so its 16 bytes are fixed by everything before it. The relay works them out when it makes A2, and compares A3 with them in constant time.
+- It takes the keys on that comparison or, if A3 was lost, on the first sealed message that opens under them. **Either one must come from A1's own address and port.** The cookie alone doesn't tie A3 to A1's sender: anyone on the path can ask for a cookie for their own port with the game's handshake id, which travels in the clear, and then copy the game's A3. Anything else is refusal 18.
+- Until then, the handshake waits for at most 10 s (as long as its A2 is kept), and counts as a session in section 17's limits.
+
 ## 7. The sealed control channel (game and relay)
 
 Every control message of PROTOCOL.md (the 64-byte HOST_OPEN, JOIN, hellos and the rest, types 1 to 15) now travels sealed:
@@ -308,6 +313,8 @@ Every control message of PROTOCOL.md (the 64-byte HOST_OPEN, JOIN, hellos and th
 - **Tokens, tickets, passes and codes are never seen on the path again.** That closes PROTOCOL.md's first two known limits.
 - **The hellos on a joiner's port are sealed too,** under the sender's session. A sealed hello from a new address that passes its tag moves that end there, which is how NAT rebinding keeps working.
 - **The relay still never answers anything that fails its tag,** and counts it.
+- **On a joiner's port, a version 2 relay passes on only two things:** sealed game datagrams (`AVPG`, at least 28 bytes, which is section 9's overhead, and at most the relay's 1,500) and sealed hellos. Anything else is dropped, counted and never answered (refusal 19): no plaintext, ever (section 9).
+- **How long a session lasts** (section 17): while something holds it (a host's session while its game is open; a joiner's session while either end of its port is in use), or otherwise 60 s after the last message that opened under it. A joiner's session goes quiet after READY, but it's still needed for a sealed hello if its NAT moves it, so being held counts. A session nothing holds must end, or a busy relay would fill its table in a day. And never past 24 hours, 2^32 messages, or 65,536 failed tags.
 
 ## 8. Handshake B: a joiner and its host, end to end (pattern pqXX, hybrid)
 
@@ -491,6 +498,9 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 15. The coin cheated (P).
 16. Too many bad packets (P: "the connection was attacked, and closed").
 17. No post-quantum support, under section 3's choice (a) (P: names the Windows version needed).
+18. A handshake's A3, or the first sealed message standing in for it, from an address and port other than its A1's (section 6).
+19. On a joiner's port, anything but a sealed game datagram or a sealed hello (section 7).
+20. Too many sessions: 10,000 in all, or 64 from one address (section 17). A new handshake is refused at A1; no session already open is ended for it.
 
 ## 17. Every timer and limit
 
@@ -507,6 +517,10 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 | A sealed control message | exactly 104 bytes |
 | Sealed game overhead | 28 bytes a datagram |
 | An epoch (one key) | 2^20 datagrams each way |
+| A handshake waiting for A3 | 10 s (as long as its A2 is kept); counts as a session in the two rows below |
+| Sessions, in all | 10,000 |
+| Sessions, one address | 64 |
+| A session nothing holds | 60 s after the last message that opened under it (section 7 says what holds one) |
 | A session | 2^32 datagrams each way, or 24 hours |
 | Replay window | 1,024 datagrams |
 | Failed tags before a session ends | 65,536 |

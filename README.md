@@ -19,16 +19,17 @@ A small server for playing **AVPx** (the Aliens versus Predator port) over the i
 
 Everything here stays on your machine: the server listens on 127.0.0.1 only, and the certificate is a throwaway one for `localhost`.
 
-1. **The JDK.** The server is built and run with one JDK only, which this fetches and checks (its signature by Adoptium's key, its sha256 and its version) before anything runs it. It needs `curl`, `gpg`, `sha256sum` and `tar`.
+1. **The JDK.** The server is built and run with one JDK only, the x64 Linux one, which this fetches and checks (its signature by Adoptium's key, its sha256 and its version) before anything runs it. It needs `curl`, `gpg`, `sha256sum` and `tar`, no root, and nothing from your home folder.
    ```
    sh java/tools/get-jdk.sh "$HOME/avpx-jdk"
    export JAVA_HOME="$HOME/avpx-jdk"
    ```
+   It only fills a folder that isn't there yet, so to fetch it again, `rm -rf "$HOME/avpx-jdk"` first. On another kind of machine (ARM, say), it stops at the version check, without running anything.
 2. **Build it, and run every test.** It's plain javac and jar, with every warning an error:
    ```
    sh java/build.sh
    ```
-   Add `AVPX_LIVE=1` in front to include the tests that open real sockets, on 127.0.0.1 only. It makes `java/build/avpx-server.jar` and `java/build/avpx-smoke.jar`, the same bytes every time for the same code.
+   Add `AVPX_LIVE=1` in front to include the tests that open real sockets, on 127.0.0.1 only (UDP 37500 to 37502, and a free TCP port for the list: none of the ports in step 4). It makes `java/build/avpx-server.jar` and `java/build/avpx-smoke.jar`, the same bytes every time for the same code.
 3. **A throwaway certificate,** in a folder of its own, never committed:
    ```
    mkdir -p "$HOME/avpx-try" && cd "$HOME/avpx-try"
@@ -52,13 +53,18 @@ Everything here stays on your machine: the server listens on 127.0.0.1 only, and
      }
    }
    ```
-   `deploy/settings.example.json` has every setting.
-5. **Run it:** `"$JAVA_HOME/bin/java" -jar java/build/avpx-server.jar`. It says what it listens on. Ctrl+C stops it.
+   Write it as `settings.json` in your folder, then put it where the server reads it, readable by you, who'll run the server:
+   ```
+   sudo mkdir -p /etc/avpx && sudo install -m 0644 settings.json /etc/avpx/settings.json
+   ```
+   A pass key anyone on the machine can read is fine here only because this one is a throwaway, for a try on your own machine. On a real server, the file is readable by root and the server's own user only (deploy/README.md). `deploy/settings.example.json` has every setting.
+   The key file must be PKCS#8 (its first line `-----BEGIN PRIVATE KEY-----`), which OpenSSL 3 writes. An older openssl may write `EC PRIVATE KEY` instead: `openssl pkcs8 -topk8 -nocrypt -in list-test-key.pem -out key8.pem`, then use `key8.pem`.
+5. **Run it:** `"$JAVA_HOME/bin/java" -jar java/build/avpx-server.jar`. It says which ports it listens on (never an address: its log holds none). Ctrl+C stops it cleanly: it writes its last counts, and closes its log.
 6. **Check it works,** from another terminal, in the certificate's folder (the smoke test finds `list-test.pem` and `server.log` there):
    ```
    cd "$HOME/avpx-try" && "$JAVA_HOME/bin/java" -jar /path/to/repo/java/build/avpx-smoke.jar
    ```
-   It plays a whole game through the server from outside it: the list, a room, a joiner, 100 packets each way, hostile packets refused, and the log holding no address. Then it prints its 38 checks, each `PASS` or `FAIL`, and exits 0 only if all pass. The settings above are the ones it expects.
+   It plays a whole game through the server from outside it: the list, a room, a joiner, 100 packets each way, hostile packets refused, and the log holding no address. Then it prints its 38 checks, each `PASS` or `FAIL`, and exits 0 only if all pass. The settings above are exactly the ones it expects. It trusts only `list-test.pem`, for the name `localhost`. `--without-log` leaves out its six checks of the log.
 
 ## The rules this is built to
 

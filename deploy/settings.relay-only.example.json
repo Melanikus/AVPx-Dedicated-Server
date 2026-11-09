@@ -1,0 +1,8 @@
+{
+  "region": "CHANGE-ME, such as saopaulo",
+  "passKey": "make it with: openssl rand -hex 32",
+  "relayAddress": "0.0.0.0",
+  "controlPort": 27500,
+  "relayPorts": "27501-27564",
+  "logFile": ""
+}

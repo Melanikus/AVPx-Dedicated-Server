@@ -204,6 +204,20 @@ public final class SettingsTest {
       same(parse(filled).list().relays().size(), 1, "with its one relay");
     });
 
+    test("deploy/settings.relay-only.example.json is refused as it is, until a real region and pass key are put in; then it has no list", () -> {
+      byte[] example = Files.readAllBytes(Path.of("..", "deploy", "settings.relay-only.example.json"));
+      throwsWith(() -> Settings.parse(example), "settings: ", "the example's made-up region and key");
+
+      Map<String, Object> filled = Json.readObject(example, 2);
+      filled.put("region", "saopaulo");
+      throwsWith(() -> parse(filled), "passKey must be 64 hex digits", "nor with a region, and the example's words for the key");
+
+      filled.put("passKey", KEY);
+      Settings s = parse(filled);
+      same(s.region(), "saopaulo", "with both, it is the relay for its region");
+      ok(s.list() == null, "and it has no list: a relay-only machine, which Smoke --installed checks as one");
+    });
+
     test("the log writes a line with its time, keeps the file to its size, and turns a line break into a space", () -> {
       Path dir = Files.createTempDirectory("avpx-log-");
       Path file = dir.resolve("server.log");

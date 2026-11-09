@@ -43,6 +43,30 @@ jobs:
           echo "first build $first, second build $second"
           test "$first" = "$second"
 
+      # CODING-STANDARD.md's rules, the Java side (tools/check-standard.js keeps the Node side): run from the repository's top folder
+      - name: The Java standard
+        run: '"$JAVA_HOME/bin/java" -cp java/build/tools avpx.tools.CheckStandard'
+
+  takeouts:
+    name: Java take-outs
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: The pinned JDK, checked as above
+        run: |
+          sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
+          echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
+
+      # Each row of java/tools/takeouts.txt breaks one thing in a copy, and its check must fail: proof the checks can fail
+      - name: Every take-out row is noticed
+        run: |
+          sh java/build.sh
+          "$JAVA_HOME/bin/java" -cp java/build/tools avpx.tools.Takeouts
+
   codeql:
     name: CodeQL (Java)
     runs-on: ubuntu-24.04

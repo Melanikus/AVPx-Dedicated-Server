@@ -32,6 +32,10 @@ find src -name '*.java' | LC_ALL=C sort > build/server-sources.txt
 find src test -name '*.java' ! -name module-info.java | LC_ALL=C sort > build/test-sources.txt
 "$JAVA_HOME/bin/javac" $flags -d build/test @build/test-sources.txt
 
+# The tools (CheckStandard, Takeouts): held to the same warnings, and compiled here so CodeQL reads them too
+find tools -name '*.java' | LC_ALL=C sort > build/tools-sources.txt
+"$JAVA_HOME/bin/javac" $flags -d build/tools @build/tools-sources.txt
+
 # For the live tests (AVPX_LIVE=1), a certificate of their own, for 127.0.0.1 only, made fresh now by the JDK's own keytool and thrown away
 # with build/. Its key store's password is random, made now, and kept in a file beside it, so no password is written in any code.
 if [ "${AVPX_LIVE:-}" = "1" ]; then

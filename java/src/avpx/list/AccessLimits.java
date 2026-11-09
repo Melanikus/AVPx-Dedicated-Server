@@ -42,6 +42,7 @@ final class AccessLimits {
   static final double NEW_PER_NETWORK_BURST = 10;
   static final int IPV4_NETWORK_BYTES = 3;
   static final int IPV6_NETWORK_BYTES = 6;
+  static final int IPV6_SENDER_BYTES = 8;
 
   private final PerSender perMinute;
   private final PerSender perHour;
@@ -57,13 +58,21 @@ final class AccessLimits {
 
   // A try from this address, at now: both limits are asked (and spent from) only while the one before allows it
   boolean allowsTry(InetAddress from, long now) {
-    String address = from.getHostAddress();
+    String address = senderOf(from);
     return perMinute.allows(address, now) && perHour.allows(address, now);
   }
 
   // A new request from this address, at now: its address's day first, then its network's
   boolean allowsNew(InetAddress from, long now) {
-    return newPerDay.allows(from.getHostAddress(), now) && newPerNetwork.allows(networkOf(from), now);
+    return newPerDay.allows(senderOf(from), now) && newPerNetwork.allows(networkOf(from), now);
+  }
+
+  // Who a sender is, for its own limits: an IPv4 address itself, or an IPv6 address's first 64 bits (Secondary's re-check, N-1). A
+  // machine on IPv6 is usually given a whole /64, so keyed by the full address, one host could hold every one of a limit's buckets short
+  // of full, with one try from each of many of its addresses, and keepingDrained would then refuse every new sender. The list listens on
+  // IPv4 only for now: this is for the day it doesn't. Never written anywhere: it's only hashed.
+  static String senderOf(InetAddress from) {
+    return from instanceof Inet4Address ? from.getHostAddress() : "v6 " + HexFormat.of().formatHex(from.getAddress(), 0, IPV6_SENDER_BYTES);
   }
 
   // The network an address is in, as text: "v4 " and the first 3 bytes in hex, or "v6 " and the first 6. Never written anywhere: it's only

@@ -434,6 +434,45 @@ public final class Smoke {
     }
   }
 
+  // What this machine's own list gives games for its own relay, GET /v1/relay-keys?region= (PROTOCOL.md section 4): it must be exactly
+  // the public halves of the static keys the relay's settings hold. Then their id, worked out here by hand from CRYPTO.md section 12.1
+  // (SHA-384 of "AVPX relay keys v2", then the P-384 key, then the ML-KEM key), not with the server's own code, is printed: the owner
+  // holds it to MakeRelayKeys' ID line and to the RelayKey line in the game's AliensVsPredator.cfg. The game checks that id itself, and
+  // refuses keys that don't hash to it, so this is for finding a mistake on deploy day, not what keeps a player safe. Added 2026-11-09
+  // by Melanikus for AVPx Dedicated Server, for Secondary's dry run of the self-test.
+  private static void relayKeys(Settings settings) throws Exception {
+    if (c.certificate() == null) {
+      System.out.println("NOT RUN  GET /v1/relay-keys: this machine runs no list (the list's machine has these keys in list.relays)");
+      return;
+    }
+
+    SSLContext tls = trustingOnly(c.certificate());
+
+    // The list may still be starting: asked until it answers, up to 15 s
+    long until = System.nanoTime() + 15_000_000_000L;
+    Reply r = api(tls, "GET", "/v1/relay-keys?region=" + c.region(), (String) null);
+
+    while (r.status() != 200 && System.nanoTime() < until) {
+      pause(250);
+      r = api(tls, "GET", "/v1/relay-keys?region=" + c.region(), (String) null);
+    }
+
+    HexFormat hex = HexFormat.of();
+    byte[] p384 = settings.staticKeys().p384Public();
+    byte[] kem = settings.staticKeys().kemPublic();
+    String expected = "{\"region\":\"" + c.region() + "\",\"p384\":\"" + hex.formatHex(p384) + "\",\"mlkem\":\"" + hex.formatHex(kem) + "\"}";
+    check(r.status() == 200 && r.body().equals(expected), "GET /v1/relay-keys for " + c.region() + ": 200, and exactly the public keys this "
+        + "relay's settings hold", r.status() == 200 ? "another answer" : r.status() + " " + r.body());
+
+    MessageDigest sha = MessageDigest.getInstance("SHA-384");
+    sha.update("AVPX relay keys v2".getBytes(StandardCharsets.US_ASCII));
+    sha.update(p384);
+    sha.update(kem);
+    String id = hex.formatHex(sha.digest());
+    System.out.println("relay " + c.region() + " ID " + id);
+    System.out.println("  the game's AliensVsPredator.cfg, [Network], must have: RelayKey=" + c.region() + ":" + id);
+  }
+
   public static void main(String[] args) throws Exception {
     List<String> words = Arrays.asList(args);
 
@@ -456,8 +495,10 @@ public final class Smoke {
         return;
       }
 
-      // A version 2 relay speaks only version 2, so its checks are SmokeV2's (see the top)
+      // A version 2 relay speaks only version 2, so its checks are SmokeV2's (see the top), after the list's answer for its keys
       if (settings.protocol() == 2) {
+        c = installed(settings, words);
+        relayKeys(settings);
         String identities = after(words, "--identities");
         SmokeV2.run(settings, identities == null ? null : Path.of(identities));
         finish();

@@ -62,6 +62,15 @@ public final class AccessLimitsTest {
       ok(l.allowsNew(at("198.51.100.1"), NOW + 24L * 60 * 60 * 1000), "and a day on, the hasher's new secret starts every bucket again");
     });
 
+    test("an IPv6 sender, for its own limits, is its first 64 bits: one host's /64 is one sender (Secondary's re-check, N-1)", () -> {
+      AccessLimits l = limits(100);
+      ok(l.allowsTry(at("2001:db8:1:2::1"), NOW), "the first try from a /64");
+      ok(!l.allowsTry(at("2001:db8:1:2::ffff"), NOW + 1000), "another address in the same /64, a second later: the same sender, refused");
+      ok(l.allowsTry(at("2001:db8:1:3::1"), NOW + 1000), "the next /64 along: another sender");
+      same(AccessLimits.senderOf(at("198.51.100.7")), "198.51.100.7", "an IPv4 address is itself");
+      same(AccessLimits.senderOf(at("2001:db8:1:2:aaaa::1")), "v6 20010db800010002", "an IPv6 one is its first 8 bytes");
+    });
+
     test("a network is the first 24 bits of an IPv4 address, or the first 48 of an IPv6 one", () -> {
       same(AccessLimits.networkOf(at("198.51.100.250")), "v4 c63364", "198.51.100.x");
       same(AccessLimits.networkOf(at("198.51.100.1")), AccessLimits.networkOf(at("198.51.100.250")), "one /24, one network");

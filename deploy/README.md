@@ -154,6 +154,12 @@ The same test machine, on any host with Ubuntu 24.04 and a browser console, with
 
 Then in the console, as root (`sudo -i` if you aren't), do **section C above, steps 2 to 8**: the updates and tools, ufw (SSH only), the users `avpx` and `avpx-build`, the folders, the throwaway certificate, the settings, and the service. Step 9 holds too: the first deploy fetches the JDK.
 
+**SSH from your address only, on the machine too** (two layers, not one; added 2026-11-09 from Third's nyc3 steps). Section C step 3 lets SSH in from anywhere, because Lightsail's browser terminal comes from AWS's own addresses. Here nothing needs that, so right after step 3, with `YOUR.IP` your own public address (the one in DigitalOcean's firewall):
+```
+ufw allow from YOUR.IP to any port 22 proto tcp && ufw delete allow 22/tcp && ufw status
+```
+The status must show port 22 from `YOUR.IP` only. If your address changes, both firewalls keep you out: come in by the **Recovery Console** (step 1.3, which doesn't go through the network), and put the new address in both.
+
 **One change: name the region after where the machine really is.** Section C is written for AWS's us-east-1, in Virginia, so it says `virginia`. A droplet in DigitalOcean's nyc3 data centre (New York) is `nyc3`, DigitalOcean's own name for it, so players see where it is. In steps 6 and 7, then:
 - **the certificate** is for `nyc3.relay.avpx.test`:
   ```
@@ -199,9 +205,9 @@ Nothing is open to anyone else. **To be done with it:** destroy the droplet in D
 ### 5. The access folder (version 2)
 
 `/var/lib/avpx` holds who asked to play and what the owner decided (`java/src/avpx/access/AccessStore.java`). systemd makes it, the `avpx` user's, `0700` (the service's `StateDirectory`).
-- **The server checks it at start and again about once a second:** it must still be `avpx`'s, with rights for nobody else. If it isn't, the server says why in its log (`journalctl -u avpx-java`) and stops. systemd starts it again, and it refuses to start until the folder is put right, as root: `chown avpx:avpx /var/lib/avpx && chmod 0700 /var/lib/avpx`.
+- **The server checks it at start and again about once a second:** it must still be `avpx`'s, with rights for nobody else. If it isn't, the server says why in its log (`journalctl -u avpx-java`) and stops. systemd starts it again every 5 s, and it refuses to start until the folder is put right, as root: `chown avpx:avpx /var/lib/avpx && chmod 0700 /var/lib/avpx`. Don't count on systemd to put it right by itself at the restart: it may give the folder back to `avpx`, but it may leave a changed mode as it is (that depends on its version, and only warns in its own log), so the `chmod` is what does it.
 - **The owner's decisions** go in as files, made by the owner's own tools as the `avpx` user. The server takes them about once a second, on a thread of its own, and deletes each one once it's taken.
-- **If taking them ever hangs for 60 s** (a decisions file swapped for a named pipe, or a disk that has stopped), the server says so and stops, and systemd starts it again. At that start, anything under a decisions name that isn't a plain file is refused before it's opened.
+- **If taking them ever hangs for 60 s, or opening the store at start does** (a file swapped for a named pipe, or a disk that has stopped), the server says so and stops, and systemd starts it again. Before the relay listens at all, the server takes one turn of decisions, so one the owner left while it was down is in force from its first A1. At that start, anything under a decisions name that isn't a plain file is refused before it's opened.
 - **Never edit `requests.json` by hand.** To clear a request, the owner's tools write a `forgotten` decision.
 
 ## Later: the public machine

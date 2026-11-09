@@ -2185,7 +2185,7 @@ file: java/src/avpx/access/AccessStore.java
 check: tests
 file: java/src/avpx/list/AccessLimits.java
 <<< from
-    return newPerDay.allows(from.getHostAddress(), now) && newPerNetwork.allows(networkOf(from), now);
+    return newPerDay.allows(senderOf(from), now) && newPerNetwork.allows(networkOf(from), now);
 <<< to
     return newPerNetwork.allows(networkOf(from), now);
 >>>
@@ -2194,9 +2194,9 @@ file: java/src/avpx/list/AccessLimits.java
 check: tests
 file: java/src/avpx/list/AccessLimits.java
 <<< from
-    return newPerDay.allows(from.getHostAddress(), now) && newPerNetwork.allows(networkOf(from), now);
+    return newPerDay.allows(senderOf(from), now) && newPerNetwork.allows(networkOf(from), now);
 <<< to
-    return newPerDay.allows(from.getHostAddress(), now);
+    return newPerDay.allows(senderOf(from), now);
 >>>
 
 === 1.1: a network is the whole address
@@ -2395,4 +2395,13 @@ file: java/src/avpx/v2/SealedRelay.java
         return refusedFor(why);
 <<< to
         return refusedFor(why);
+>>>
+
+=== N-1: an IPv6 sender is its whole address, not its /64
+check: tests
+file: java/src/avpx/list/AccessLimits.java
+<<< from
+    return from instanceof Inet4Address ? from.getHostAddress() : "v6 " + HexFormat.of().formatHex(from.getAddress(), 0, IPV6_SENDER_BYTES);
+<<< to
+    return from.getHostAddress();
 >>>

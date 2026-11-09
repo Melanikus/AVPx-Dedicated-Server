@@ -74,12 +74,40 @@ public final class Main {
     AccessStore access = null;
 
     if (!settings.accessFolder().isEmpty()) {
+      // Watched (Fourth's re-check of the access store, N3): opening reads requests.json, and the first turn below reads the decisions
+      // files, before the store's own watch exists (AccessStore.start). A file swapped for a named pipe at just that moment would make
+      // either wait for ever, and systemd never times out a server that has started. So if both haven't finished in 60 s, the server
+      // stops here, for systemd to start it again: then a pipe is refused before it's opened, as anything but a plain file is.
+      Thread startWatch = Thread.ofPlatform().daemon().name("access-start-watch").start(() -> {
+        try {
+          Thread.sleep(AccessStore.STUCK_MILLISECONDS);
+        } catch (InterruptedException e) {
+          // The start finished in time
+          return;
+        }
+
+        log.line("access: opening the store, or its first turn, hasn't finished in 60 s; the server stops, for systemd to start it again");
+        Runtime.getRuntime().halt(1);
+      });
+
       try {
         access = AccessStore.open(Path.of(settings.accessFolder()));
+
+        // One turn before anything listens (Fourth's re-check, N2): a decision the owner left in the folder while the server was down,
+        // a revoke among them, is taken before the relay hears its first A1, not a second after
+        String problem = access.turn(System.currentTimeMillis());
+
+        if (problem != null) {
+          log.line("access store: " + problem + ", so the server did not start");
+          log.close();
+          return 1;
+        }
       } catch (AccessStore.Refused e) {
         log.line(e.getMessage() + ", so the server did not start");
         log.close();
         return 1;
+      } finally {
+        startWatch.interrupt();
       }
     }
 

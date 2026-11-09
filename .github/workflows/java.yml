@@ -228,6 +228,8 @@ jobs:
           for fp in "$host" "$joiner"; do
             grep -q "\"fp\":\"$fp\",[^}]*\"state\":\"approved\"" "$access/requests.json" || { echo "the decisions file was refused, not taken"; exit 1; }
           done
+          grep -q '^PASS  GET /v1/relay-keys for ' smoke.out || { echo "the list's relay keys weren't this relay's own"; exit 1; }
+          grep -q '^relay [a-z0-9-]* ID [0-9a-f]\{96\}$' smoke.out || { echo "the run didn't print the relay's id"; exit 1; }
           grep -q '^PASS  the pin' smoke.out || { echo "the version 2 run didn't pass its pin to crypto-v2.json"; exit 1; }
           grep -q '^PASS  handshake A for a player nobody approved' smoke.out || { echo "an unapproved player wasn't refused"; exit 1; }
           grep -q '^PASS  handshake A for the joiner' smoke.out || { echo "the approved players' handshakes didn't pass"; exit 1; }

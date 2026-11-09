@@ -28,9 +28,20 @@ mkdir -p build
 find src -name '*.java' | LC_ALL=C sort > build/server-sources.txt
 "$JAVA_HOME/bin/javac" $flags -d build/server @build/server-sources.txt
 
-# The tests, compiled with the server's code (without its module file, so a test can reach what its package keeps to itself), and run
+# The tests, compiled with the server's code (without its module file, so a test can reach what its package keeps to itself)
 find src test -name '*.java' ! -name module-info.java | LC_ALL=C sort > build/test-sources.txt
 "$JAVA_HOME/bin/javac" $flags -d build/test @build/test-sources.txt
+
+# For the live tests (AVPX_LIVE=1), a certificate of their own, for 127.0.0.1 only, made fresh now by the JDK's own keytool and thrown away
+# with build/. Its key store's password is random, made now, and kept in a file beside it, so no password is written in any code.
+if [ "${AVPX_LIVE:-}" = "1" ]; then
+  od -An -N16 -tx1 /dev/urandom | tr -d ' \n' > build/test-tls.password
+  "$JAVA_HOME/bin/keytool" -genkeypair -alias avpx-test -keyalg EC -groupname secp256r1 -sigalg SHA256withECDSA \
+    -dname "CN=avpx test, O=AVPx Dedicated Server tests" -ext "SAN=ip:127.0.0.1" -validity 2 \
+    -storetype PKCS12 -keystore build/test-tls.p12 -storepass:file build/test-tls.password -keypass:file build/test-tls.password \
+    > /dev/null 2>&1
+fi
+
 "$JAVA_HOME/bin/java" -cp build/test avpx.AllTests
 
 # Only then the jar, with every file's time set to one fixed date, so the same code always makes the same bytes

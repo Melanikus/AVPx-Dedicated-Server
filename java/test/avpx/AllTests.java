@@ -27,6 +27,12 @@ public final class AllTests {
     avpx.list.StrictJsonTest.register();
     Tests.file("ListTest");
     avpx.list.ListTest.register();
+    Tests.file("HttpTest");
+    avpx.list.HttpTest.register();
+    Tests.file("SettingsTest");
+    avpx.SettingsTest.register();
+    Tests.file("LiveTest");
+    avpx.LiveTest.register();
     System.exit(Tests.runAll());
   }
 }

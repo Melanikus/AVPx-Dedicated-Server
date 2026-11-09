@@ -1,0 +1,118 @@
+package avpx;
+
+import avpx.list.ListServer;
+import avpx.list.Listings;
+import avpx.relay.RandomBytes;
+import avpx.relay.RelayCore;
+import avpx.relay.RelaySockets;
+import java.io.IOException;
+import java.nio.file.Path;
+import java.time.Instant;
+
+// AVPx Dedicated Server: a relay, and the list if the settings say so, started together. Written 2026-11-08 by Melanikus for AVPx
+// Dedicated Server, from main.js.
+//
+//   java -jar avpx-server.jar
+//
+// It reads its settings from SETTINGS, always that one file (Settings.java says what it holds), so nothing given to it when it starts
+// can point it at any other file. Every machine runs the same code: a relay for its region, and, on the one machine whose settings have
+// a "list", the list too. The list never asks the relay anything, even on the same machine: it checks each room's pass with the relay's
+// key (Pass.java), just as it would for a relay in another country. The server stops when the machine asks it to (systemd's stop, or
+// Ctrl+C): Java runs the stop below, which closes every port.
+public final class Main {
+  private Main() {
+  }
+
+  // Where the settings are, as deploy/README.md puts them: readable only by root and the server's own user
+  static final Path SETTINGS = Path.of("/etc/avpx/settings.json");
+
+  public static void main(String[] args) {
+    int code = run(args);
+
+    // 0 is the server stopped as asked; anything else, it didn't start, and systemd's log has the reason
+    if (code != 0) {
+      System.exit(code);
+    }
+  }
+
+  static int run(String[] args) {
+    // Java's TLS reads these once, the first time it's used, so they're set before anything else. The list's clients never renegotiate
+    // a connection, so one asking to is refused; and a TLS session isn't resumed from a ticket, so each connection starts afresh.
+    System.setProperty("jdk.tls.rejectClientInitiatedRenegotiation", "true");
+    System.setProperty("jdk.tls.server.enableSessionTicketExtension", "false");
+
+    Log screen = Log.screenOnly();
+
+    if (args.length != 0) {
+      screen.line("use: java -jar avpx-server.jar (it takes nothing more: its settings are always " + SETTINGS + ")");
+      return 2;
+    }
+
+    Settings settings;
+
+    try {
+      settings = Settings.read(SETTINGS);
+    } catch (Settings.Refused e) {
+      screen.line(e.getMessage());
+      return 2;
+    } catch (IOException e) {
+      screen.line("settings: " + SETTINGS + " could not be read (" + e.getClass().getSimpleName() + ")");
+      return 2;
+    }
+
+    Log log = new Log(settings.logFile().isEmpty() ? null : Path.of(settings.logFile()), Instant::now, Log.SCREEN);
+    RelayCore core = new RelayCore(settings.controlPort(), settings.relayPorts(), settings.region(), settings.passKey(),
+        RandomBytes.secure(), new RelayCore.Limits(), System.currentTimeMillis());
+    Settings.ListSettings listSettings = settings.list();
+    log.line("server: starting the " + settings.region() + " relay, version 1 of the relay's messages, " + settings.relayPorts().length
+        + " relay ports" + (listSettings != null ? ", and the list for " + listSettings.relays().size() + " relays" : ", and no list"));
+
+    ListServer list = null;
+
+    if (listSettings != null) {
+      try {
+        Listings listings = new Listings(listSettings.relays(), RandomBytes.secure(), System.currentTimeMillis());
+        list = ListServer.start(listSettings, listings, log::line, System::currentTimeMillis);
+      } catch (ListServer.CertificateProblem e) {
+        log.line("list: the certificate files could not be used (" + e.getMessage() + "), so the server did not start");
+        log.close();
+        return 1;
+      } catch (IOException e) {
+        log.line("list: the HTTPS port could not be used (" + e.getClass().getSimpleName() + "), so the server did not start");
+        log.close();
+        return 1;
+      }
+    }
+
+    RelaySockets relay;
+
+    try {
+      relay = RelaySockets.start(settings.relayAddress(), core, log::line, System::currentTimeMillis);
+    } catch (IOException e) {
+      log.line(e.getMessage());
+
+      if (list != null) {
+        list.stop();
+      }
+
+      log.close();
+      return 1;
+    }
+
+    ListServer started = list;
+    Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+      log.line("server: stopping");
+      relay.stop();
+
+      if (started != null) {
+        started.stop();
+      }
+
+      log.close();
+    }, "stop"));
+
+    // The relay runs until the stop above ends it
+    relay.join();
+    return 0;
+  }
+}

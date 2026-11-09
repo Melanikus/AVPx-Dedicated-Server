@@ -232,6 +232,11 @@ public final class RelayCore {
     return List.copyOf(slots.keySet());
   }
 
+  // The biggest packet the relay takes: the sockets read one byte more, so they can tell a packet that was bigger
+  public int mostDatagramBytes() {
+    return limits.mostDatagramBytes;
+  }
+
   // ----- A packet in
 
   // A packet came to localPort from address:port at now (milliseconds). Gives back what to send, each from one of the relay's own ports.

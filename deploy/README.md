@@ -14,7 +14,7 @@ Written 2026-11-08 by Melanikus; for the Java server only from 2026-11-09. It's 
 | `check-blockers.sh` | Refuses every deploy while SERVER-BLOCKERS.md lists anything |
 | `check-ubuntu-tools.sh` | For GitHub's deploy workflow: checks the curl, jq, gpg, unzip and sha256sum it uses are Ubuntu's own, unchanged |
 | `get-aws-cli.sh` | For GitHub's deploy workflow: fetches the pinned AWS command line tool, checked by AWS's signature, its sha256 and its version. It refuses until its pins and `aws-cli-key.asc` are filled in (card #17) |
-| `firewall.sh` | The firewall of a public machine, later: `list` for the list's machine (SSH, TCP 443, TCP 80 for the certificate, and the relay), `relay` for a relay-only one (SSH and the relay's UDP ports |
+| `firewall.sh` | The firewall of a public machine, later: `list OWNER.IP` for the list's machine (SSH from the owner's address only, TCP 443, TCP 80 for the certificate, and the relay), `relay OWNER.IP` for a relay-only one (SSH from the owner only, and the relay's UDP ports |
 | `certificate-hook.sh` | For the public machine, later: certbot runs it after each renewal |
 | `settings.example.json` | The settings, as `/etc/avpx/settings.json` holds them |
 | `settings.relay-only.example.json` | The settings of a relay-only machine, a later region's: no list |
@@ -215,7 +215,7 @@ Nothing is open to anyone else. **To be done with it:** destroy the droplet in D
 When SERVER-BLOCKERS.md says `Nothing.`, GitHub's **Deploy** workflow (`.github/workflows/deploy.yml`) puts each version on the public machine, after you approve its `production` environment. It needs:
 - **the domain,** with DNS names for the list and for `<region>.relay.<the domain>`, the region named after where the machine really is (`virginia` on AWS us-east-1, `nyc3` on DigitalOcean's nyc3);
 - **a Let's Encrypt certificate covering both names,** so the smoke test's check against the relay's name passes: `certbot certonly --standalone -d <the list's name> -d <region>.relay.<the domain>`, with `certificate-hook.sh` as its deploy hook;
-- **the firewall opened** to the game's ports (`sh deploy/firewall.sh list`, and the same in Lightsail's);
+- **the firewall opened** to the game's ports, and SSH narrowed to your own address (`sh deploy/firewall.sh list YOUR.IP`), and the same in the provider's firewall: SSH from your address only, TCP 443 and 80 and UDP 27500-27564 from anyone, nothing else. After that, the provider's own console is the way in if your address changes (DigitalOcean's Recovery Console, or AWS Systems Manager's Session Manager), since Lightsail's browser SSH comes from AWS's addresses and no longer gets through;
 - **an IAM role** that trusts only this repository's `production` environment through GitHub's OIDC, and may only run `avpx-deploy` on the one machine (`ssm:SendCommand`, `ssm:GetCommandInvocation`). No Lightsail rights;
 - **the repository variables** `AVPX_DEPLOY_ROLE_ARN`, `AVPX_DEPLOY_MACHINE` (the `mi-` id) and `AVPX_DEPLOY_REGION` (`us-east-1`). Until they're set, the workflow refuses.
 
@@ -234,7 +234,7 @@ The first version runs on one machine, with the relay and the list. Each machine
    - There's no `list` in it, and there mustn't be.
 5. **The service and the deploy:** section C step 8, then `sh deploy/remote-deploy.sh COMMIT JARS_SHA256` (or Systems Manager, as in sections D and E).
    - **The health check,** `Smoke --installed`, sees the settings have no list and runs the relay's checks only: a whole game through the relay, and the pass for this region worked out again from the machine's own key. It ends with a `NOT RUN` line saying the list's checks weren't run. On a relay-only machine that's expected; on the list's machine it never shows.
-6. **Its firewall, once the deploy is healthy:** `sh deploy/firewall.sh relay`. That's SSH and the relay's UDP ports (27500, and 27501-27564), and nothing else: no 443, no 80. Open UDP 27500-27564 in the provider's firewall too, and no other port.
+6. **Its firewall, once the deploy is healthy:** `sh deploy/firewall.sh relay YOUR.IP`. That's SSH from your address only and the relay's UDP ports (27500, and 27501-27564), and nothing else: no 443, no 80. Open UDP 27500-27564 in the provider's firewall too, and no other port.
 7. **Its DNS name,** such as `saopaulo.relay.<the domain>`, points at the new machine.
 8. **The list's machine** gets one more entry in the `list.relays` of its `/etc/avpx/settings.json`:
    ```

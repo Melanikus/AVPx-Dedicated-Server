@@ -4,6 +4,28 @@ Written 2026-11-08 by Melanikus. **This is the design the code is built from.** 
 
 **How to read the marks:** **[CHECK]** means a fact from memory, not yet checked against the document named beside it. Every [CHECK] is confirmed, and the mark taken out, before any code is written on it. **[DECIDE]** marks a choice that belongs to the user (section 19).
 
+## What this hides, what it doesn't, and what it's not for
+
+Said once, plainly, for anyone who wonders whether version 2 is a safe way to send something that matters (the owner asked, 2026-11-09). **It isn't, and it isn't meant to be.**
+
+**What it hides, from anyone on the path and from our own relay:**
+- what's said: the control messages, the game itself, and chat lines;
+- any change to them on the way;
+- passing for the relay, or for an approved player, to the other side;
+- from the relay itself: handshake B and the sealed game, which it passes on and can't read.
+
+**What it doesn't hide:**
+- **That it's AVPx.** Every datagram starts with a plain 4-byte marker (`AVPR`, `AVPE` or `AVPG`, sections 5, 7 and 9). The ports are fixed. The handshakes have fixed sizes and counts, the game sends at its own tick rate, and its packets aren't padded (section 9), so the sizes show roughly what's going on.
+- **When, and how much.** Anyone on the path sees when a player plays, for how long, and how much goes each way.
+- **Who plays with whom, from the relay.** It sees both players' addresses while a game runs (section 1). And anyone who can watch the relay's provider can match the two sides of a game by their timing.
+- **Who each approved player is, from the list.** It keeps the name each player gave beside their fingerprint (section 6).
+
+**The two ends:** anything on either player's PC (another program running as that user, or malware) reads it all in the clear. Sealing protects only what's between the two PCs.
+
+**How sure it is:** it's young, first written 2026-11-08. It has had reads by this project's own sessions, a fresh one included, but no outside cryptographer has audited it. And its formal proofs don't pass yet (section 14).
+
+**What it's not for:** anonymity; hiding that you play, or with whom; or protecting sensitive information of any kind. It's a game's protocol, recognisable on purpose. Making it hard to detect isn't a goal, and nothing here should be read as if it were.
+
 ## 1. What this protects, and what nothing can
 
 **Who we defend against:**

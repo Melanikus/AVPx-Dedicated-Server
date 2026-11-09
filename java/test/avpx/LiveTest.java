@@ -27,7 +27,6 @@ import java.net.DatagramSocket;
 import java.net.Inet4Address;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
-import java.net.Socket;
 import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -42,6 +41,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Stream;
+import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLParameters;
 import javax.net.ssl.SSLSocket;
@@ -173,6 +173,43 @@ public final class LiveTest {
     SSLContext client = SSLContext.getInstance("TLS");
     client.init(null, trust.getTrustManagers(), null);
     return new Running(server, folder, client);
+  }
+
+  // A connection to the list that never says a word. It's a TLS connection, not a plain one, so nothing here reads a plain socket. It's
+  // put on TLS's server side (setUseClientMode(false)): a server side waits for the other end to speak first, and so does the list's
+  // server, so neither speaks, nothing is sent either way, and the handshake never begins. To the list it looks exactly like a client
+  // that connects and then stays silent. Its credentials are the test certificate and key, as TLS's server side must have some, though
+  // it never gets as far as using them.
+  private static SSLSocket silent(Running list) throws Exception {
+    char[] password = password();
+    KeyManagerFactory keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm());
+    keys.init(keyStore(password), password);
+    SSLContext waiting = SSLContext.getInstance("TLS");
+    waiting.init(keys.getKeyManagers(), null, null);
+    SSLSocket s = (SSLSocket) waiting.getSocketFactory().createSocket(LOOPBACK, list.server().port());
+    s.setUseClientMode(false);
+    return s;
+  }
+
+  // How long the list's server takes to close a silent connection, in milliseconds; the test fails if it's still open after "most". As
+  // nothing is ever sent, its read can end only with the server's close: the end of the stream, or TLS saying the other end went away
+  // before the handshake began.
+  private static long closedAfter(SSLSocket s, int most) throws IOException {
+    s.setSoTimeout(most);
+    long started = System.nanoTime();
+    boolean closed;
+
+    try {
+      closed = s.getInputStream().read() < 0;
+    } catch (SocketTimeoutException e) {
+      closed = false;
+    } catch (IOException e) {
+      closed = true;
+    }
+
+    long waited = (System.nanoTime() - started) / 1000000;
+    ok(closed, "closed by the server, not still open after " + most + " ms (" + waited + " ms)");
+    return waited;
   }
 
   // One request, over its own TLS connection, as the game sends one: the answer read to its end (the server closes after it)
@@ -353,31 +390,20 @@ public final class LiveTest {
 
     liveTest("an address has at most 10 connections at once: the 11th is closed before any of it is read", () -> {
       Running list = listServer();
-      List<Socket> ten = new ArrayList<>();
+      List<SSLSocket> ten = new ArrayList<>();
 
       try {
         for (int i = 0; i < 10; i++) {
-          Socket s = new Socket(loopback(), list.server().port());
-          ten.add(s);
+          ten.add(silent(list));
         }
 
-        // Each of the ten is held open (they send nothing, so the server waits for their TLS); the 11th is closed at once
-        try (Socket eleventh = new Socket(loopback(), list.server().port())) {
-          eleventh.setSoTimeout(3000);
-          long started = System.nanoTime();
-          int got;
-
-          try {
-            got = eleventh.getInputStream().read();
-          } catch (IOException e) {
-            got = -1;
-          }
-
-          ok(got < 0, "the 11th is closed");
-          ok((System.nanoTime() - started) / 1000000 < 2000, "at once, not at a deadline");
+        // Each of the ten is held open (they say nothing, so the server waits for their TLS); the 11th is closed at once
+        try (SSLSocket eleventh = silent(list)) {
+          long waited = closedAfter(eleventh, 3000);
+          ok(waited < 2000, "the 11th is closed at once, not at a deadline (" + waited + " ms)");
         }
       } finally {
-        for (Socket s : ten) {
+        for (SSLSocket s : ten) {
           s.close();
         }
 
@@ -388,19 +414,8 @@ public final class LiveTest {
     liveTest("a connection that sends nothing is closed at its 5 s deadline, TLS handshake and all", () -> {
       Running list = listServer();
 
-      try (Socket idle = new Socket(loopback(), list.server().port())) {
-        idle.setSoTimeout(10000);
-        long started = System.nanoTime();
-        int got;
-
-        try {
-          got = idle.getInputStream().read();
-        } catch (IOException e) {
-          got = -1;
-        }
-
-        long waited = (System.nanoTime() - started) / 1000000;
-        ok(got < 0, "it's closed");
+      try (SSLSocket idle = silent(list)) {
+        long waited = closedAfter(idle, 10000);
         ok(waited >= 4000 && waited < 8000, "at its deadline (" + waited + " ms)");
       } finally {
         list.stop();

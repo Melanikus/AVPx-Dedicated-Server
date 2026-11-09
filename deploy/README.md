@@ -12,7 +12,7 @@ Written 2026-11-08 by Melanikus; for the Java server only from 2026-11-09. It's 
 | `remote-deploy.sh` | What the machine runs to take one commit: it fetches it, builds it as a user with no rights, checks the jars are the tested ones, switches, health-checks, and rolls back on failure |
 | `avpx-deploy.ssm.json` | The same script as an AWS Systems Manager document, `avpx-deploy`, made from `remote-deploy.sh` by `make-ssm-document.sh` |
 | `check-blockers.sh` | Refuses every deploy while SERVER-BLOCKERS.md lists anything |
-| `firewall.sh` | The firewall for the public machine, later: SSH, TCP 443, TCP 80 for the certificate, and the relay's UDP ports |
+| `firewall.sh` | The firewall of a public machine, later: `list` for the list's machine (SSH, TCP 443, TCP 80 for the certificate, and the relay), `relay` for a relay-only one (SSH and the relay's UDP ports |
 | `certificate-hook.sh` | For the public machine, later: certbot runs it after each renewal |
 | `settings.example.json` | The settings, as `/etc/avpx/settings.json` holds them |
 | `test-*.sh` | The tests of the above, run by the "Deploy scripts" check |
@@ -188,16 +188,30 @@ Nothing is open to anyone else. **To be done with it:** destroy the droplet in D
 When SERVER-BLOCKERS.md says `Nothing.`, GitHub's **Deploy** workflow (`.github/workflows/deploy.yml`) puts each version on the public machine, after you approve its `production` environment. It needs:
 - **the domain,** with DNS names for the list and for `virginia.relay.<the domain>`;
 - **a Let's Encrypt certificate covering both names,** so the smoke test's check against the relay's name passes: `certbot certonly --standalone -d <the list's name> -d virginia.relay.<the domain>`, with `certificate-hook.sh` as its deploy hook;
-- **the firewall opened** to the game's ports (`firewall.sh`, and the same in Lightsail's);
+- **the firewall opened** to the game's ports (`sh deploy/firewall.sh list`, and the same in Lightsail's);
 - **an IAM role** that trusts only this repository's `production` environment through GitHub's OIDC, and may only run `avpx-deploy` on the one machine (`ssm:SendCommand`, `ssm:GetCommandInvocation`). No Lightsail rights;
 - **the repository variables** `AVPX_DEPLOY_ROLE_ARN`, `AVPX_DEPLOY_MACHINE` (the `mi-` id) and `AVPX_DEPLOY_REGION` (`us-east-1`). Until they're set, the workflow refuses.
 
 **A new JDK every quarter:** Oracle's security updates come in January, April, July and October. When one lands, the check "The JDK is the newest Temurin 25" fails until get-jdk.sh's pinned lines move. The next deploy sees the machine's JDK isn't the pinned one, fetches the new one into a folder of its own, and moves the `/opt/avpx-jdk` link with the release.
 
-## Adding a region later (not done yet)
+## Adding a region: a relay-only machine
 
-The first version runs on one machine, `virginia` (us-east-1), with the relay and the list. The code is ready for more relays; these steps aren't written as files yet:
-- **The new machine** runs the same server with its own `region` and its own `passKey`, and no `list` in its settings.
-- **Its firewall** opens only the relay's UDP ports. `firewall.sh` has no relay-only version yet: that's owed.
-- **The list's machine** gets one more entry in `list.relays`: the new region, its DNS name, its control port and its `passKey`, copied over by hand, never through the repository.
-- No game needs changing: games read the relays from `GET /v1/relays`.
+The first version runs on one machine, `virginia`, with the relay and the list. Each later region (Sao Paulo or Paris, say) is a machine that runs **a relay only**: the same server, with its own region and its own pass key, and no list. No game needs changing: games read the relays from `GET /v1/relays`. The list can know 16 relays at most.
+
+1. **The machine:** Ubuntu 24.04 LTS, near its players. In the provider's own firewall, let in only SSH (TCP 22) from your own IP, for now.
+2. **Set it up,** as root: section C's steps 2 to 5 exactly as written (the updates and tools, ufw with SSH only, the users `avpx` and `avpx-build`, the folders). **No certificate** (step 6): a relay-only machine has no list, so no HTTPS.
+3. **Fetch the commit you'll deploy,** as in the DigitalOcean path's section 3, step 2, and check `remote-deploy.sh` against the Test build's value (step 3 there). The files below are in that folder, `/root/avpx-src`.
+4. **Its settings:** `install -o root -g avpx -m 0640 deploy/settings.relay-only.example.json /etc/avpx/settings.json`, then change its two made-up values. The server refuses to start until both are real:
+   - `region`: the new region's name, 1 to 16 small letters, digits and -, such as `saopaulo`;
+   - `passKey`: 64 hex digits, made on this machine with `openssl rand -hex 32`. It's a secret: it never goes in a message, a log or the repository.
+   - There's no `list` in it, and there mustn't be.
+5. **The service and the deploy:** section C step 8, then `sh deploy/remote-deploy.sh COMMIT JARS_SHA256` (or Systems Manager, as in sections D and E).
+   - **Not yet possible:** the health check, `Smoke --installed`, needs the list on the machine, and stops with "this machine's settings have no list". Primary is adding a relay-only mode. **Until it's in, a deploy to a relay-only machine fails its health check and rolls back,** so nothing unchecked is left running.
+6. **Its firewall, once the deploy is healthy:** `sh deploy/firewall.sh relay`. That's SSH and the relay's UDP ports (27500, and 27501-27564), and nothing else: no 443, no 80. Open UDP 27500-27564 in the provider's firewall too, and no other port.
+7. **Its DNS name,** such as `saopaulo.relay.<the domain>`, points at the new machine.
+8. **The list's machine** gets one more entry in the `list.relays` of its `/etc/avpx/settings.json`:
+   ```
+   { "region": "saopaulo", "host": "saopaulo.relay.<the domain>", "port": 27500, "passKey": "<the new machine's 64 digits>" }
+   ```
+   - The pass key is typed or pasted from one root terminal to the other by hand. Never through the repository, a message, a file left anywhere, or a log.
+   - Then `systemctl restart avpx-java` there, and check `GET /v1/relays` lists the new region. Games can use it from then on.

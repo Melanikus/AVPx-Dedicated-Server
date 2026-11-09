@@ -95,7 +95,7 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    if (!perSender.allows(address, now) || !everyone.take(now)) {
+    if (!perSender.allows(from.address(), now) || !everyone.take(now)) {
 <<< to
     if (!everyone.take(now)) {
 >>>
@@ -104,16 +104,16 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    if (!perSender.allows(address, now) || !everyone.take(now)) {
+    if (!perSender.allows(from.address(), now) || !everyone.take(now)) {
 <<< to
-    if (!perSender.allows(address, now)) {
+    if (!perSender.allows(from.address(), now)) {
 >>>
 
 === refusals not limited
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    if (!refusals.allows(address, now)) {
+    if (!refusals.allows(from.address(), now)) {
       return List.of();
     }
 <<< to
@@ -176,9 +176,9 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    return List.of(control(address, port, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(game.joiners.size()), game, now)));
+    return List.of(control(from, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(game.joiners.size()), game, now)));
 <<< to
-    return List.of(control(address, port, Message.of(Type.HOST_KEPT).secret(game.token).number(game.joiners.size())));
+    return List.of(control(from, Message.of(Type.HOST_KEPT).secret(game.token).number(game.joiners.size())));
 >>>
 
 === a pass made for another region
@@ -203,18 +203,18 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-        return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
+        return List.of(control(from, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
 <<< to
-        return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number() + 1)));
+        return List.of(control(from, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number() + 1)));
 >>>
 
 === an echo answered with an echo, so two relays could answer each other
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-        return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
+        return List.of(control(from, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
 <<< to
-        return List.of(control(address, port, Message.of(Type.ECHO).secret(m.secret()).number(m.number())));
+        return List.of(control(from, Message.of(Type.ECHO).secret(m.secret()).number(m.number())));
 >>>
 
 === an ECHO_BACK answered
@@ -231,16 +231,18 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    // The sender's own limit first, so one sender going too fast doesn't use up everyone's
+  private List<Out> onControl(End from, byte[] data, long now) {
+    if (!allowed(from, now)) {
 <<< to
+  private List<Out> onControl(End from, byte[] data, long now) {
     Message early = Protocol.decode(data);
 
     if (early != null && early.type() == Type.ECHO) {
       counts.echoes++;
-      return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(early.secret()).number(early.number())));
+      return List.of(control(from, Message.of(Type.ECHO_BACK).secret(early.secret()).number(early.number())));
     }
 
-    // The sender's own limit first, so one sender going too fast doesn't use up everyone's
+    if (!allowed(from, now)) {
 >>>
 
 === a relay with no region or pass key

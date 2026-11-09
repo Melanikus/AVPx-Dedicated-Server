@@ -246,6 +246,7 @@ Every implementation must make the same bytes. Where Noise leaves a choice, or w
 13. **The replay window is 1,024 messages, one per direction:** behind the highest counter taken from the other side. Counters count messages, never fragments. The relay's sealed answers stay exactly 104 bytes.
 14. **The test vectors** (section 15) are made by a Java tool, and fix whole handshakes: A1, A2 and A3 as bytes, and every `h` and `ck`, with seeded randomness given to ML-KEM's key generation and encapsulation. A Java test makes the file again and fails if it differs.
 15. **"The transcript" is `h` after the last handshake message:** after A3 for handshake A, after B5 for handshake B. That's Noise's own handshake hash. It's what a handshake gives back with its two keys, what the test vectors hold as each handshake's transcript, and what the check code (section 8) is made from. The Java server already does this (HandshakeA's Keys.transcript); settled 2026-11-09 from Primary's read of the model.
+16. **ML-DSA signs and checks with the empty context.** JDK 25's ML-DSA has no way to give a context: it signs and verifies with the empty one only, and exposes no lower-level call to build FIPS 204's message any other way (measured by Primary on the pinned JDK, 2026-11-09). The separation a context would give is already in the signed message: `D = SHA-384("AVPX <what> v2" || the bytes)` starts with the words, so a signature over one kind of thing can't be taken for another. This is FIPS 204's own pure ML-DSA with an empty context, which the game can do too. NIST's and Wycheproof's test cases with a non-empty context can't be checked by Java 25's ML-DSA; the Java tests name them as such, never skip them silently.
 
 ## 6. Handshake A: a game and its relay (pattern pqNK, hybrid)
 
@@ -386,7 +387,7 @@ This is already in the handshakes: A2 and A3, and B3, B4 and B5. Each is a **cha
 ## 12. Signed files: the release manifest, the relays directory, the list's answers
 
 **The rule for every signature:** an ECDSA P-384 signature and an ML-DSA-87 signature, both over the same 48-byte digest `D = SHA-384("AVPX <what> v2" || the bytes)`. **Both must check.** Exactly, so the three implementations agree byte for byte:
-- **ML-DSA-87:** *pure* ML-DSA (FIPS 204's ML-DSA.Sign and ML-DSA.Verify, not HashML-DSA), with the 48 bytes of `D` as its message, and the context string `AVPX <what> v2` as ASCII. The signature is 4,627 bytes. The game checks that length before calling.
+- **ML-DSA-87:** *pure* ML-DSA (FIPS 204's ML-DSA.Sign and ML-DSA.Verify, not HashML-DSA), with the 48 bytes of `D` as its message, and **the empty context** (5.1, point 16). The words `AVPX <what> v2` are already the first bytes hashed into `D`, so each kind of signature still means one thing only. The signature is 4,627 bytes. The game checks that length before calling.
 - **ECDSA P-384:** ECDSA with SHA-384, with the 48 bytes of `D` as its message, so the curve signs `SHA-384(D)`. The signature is r then s, 48 bytes each, big-endian (96 bytes, IEEE P1363).
   - Java's `SHA384withECDSA` takes `D` and gives DER, so it's converted.
   - CNG's `BCryptVerifySignature` takes the hash itself, so the game passes `SHA-384(D)` and the 96 bytes.

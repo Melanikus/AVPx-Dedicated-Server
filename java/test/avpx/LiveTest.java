@@ -278,6 +278,11 @@ public final class LiveTest {
 
       synchronized (lines) {
         ok(lines.stream().anyMatch(l -> l.startsWith("relay: listening")), "it said it was listening");
+        // As it stopped, it gave its counts: the echo, the game, the join, and one packet each way
+        String last = lines.get(lines.size() - 1);
+        matches(last, "^relay: in the last ", "its last line is its counts, given as it stopped");
+        matches(last, "1 games opened, 0 closed, 0 ended unkept; 1 joins, 1 joiners ready, 0 refusals, 1 echoes;", "the game, its joiner and the echo");
+        matches(last, "forwarded 2 packets \\(1 joiners to hosts, 1 hosts to joiners\\)", "and a packet each way");
       }
     });
 

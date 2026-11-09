@@ -234,12 +234,18 @@ public final class Listings {
       return List.of();
     }
 
+    return List.of(countsLine(now));
+  }
+
+  // The line of counts since the last one, made now, whatever the time: tick gives one a minute, and the list's server gives one more as
+  // it stops, so the last part of a minute isn't lost. Counts only.
+  public String countsLine(long now) {
     Counts c = counts;
     String line = "list: in the last " + Math.round((now - statsAt) / 1000.0) + " s: " + c.listed + " games listed, " + c.renewed
         + " renewals, " + c.ended + " taken down, " + c.expired + " ended unrenewed; " + c.passesRefused + " passes refused, " + c.full
         + " refused as the list was full. Now " + byGame.size() + " listed";
     statsAt = now;
     counts = new Counts();
-    return List.of(line);
+    return line;
   }
 }

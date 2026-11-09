@@ -552,6 +552,16 @@ public final class ListTest {
 
       same(l.tick(at(60001)).size(), 0, "and the next only a minute later");
     });
+
+    test("as the list stops, its counts so far are a line at once, and the next minute counts from there", () -> {
+      Listings l = listings();
+      call(l, "POST", game());
+      String line = l.countsLine(at(2000));
+      matches(line, "^list: in the last 2 s: 1 games listed,", "two seconds' counts, made now");
+      ok(!line.contains("ABCD2345") && !line.contains("Ripley"), "with no code or name");
+      same(l.tick(at(61000)).size(), 0, "and the next line comes a minute after this one");
+      matches(l.tick(at(62000)).get(0), "^list: in the last 60 s: 0 games listed,", "counting only what came after");
+    });
   }
 
   // A good listing's body with spaces after it, to size bytes in all

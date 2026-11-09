@@ -584,6 +584,12 @@ public final class RelayCore {
       return List.of();
     }
 
+    return List.of(countsLine(now));
+  }
+
+  // The line of counts since the last one, made now, whatever the time: tick gives one a minute, and the relay's sockets give one more
+  // as the relay stops, so the last part of a minute isn't lost. Counts and times only, never an address or a code.
+  public String countsLine(long now) {
     Counts c = counts;
     int pending = 0;
 
@@ -602,7 +608,7 @@ public final class RelayCore {
         + " ports in use (" + pending + " waiting for both ends)";
     statsAt = now;
     counts = new Counts();
-    return List.of(line);
+    return line;
   }
 
   // A game's code: 5 random bytes (40 bits) as 8 code letters, 5 bits each. Only the bits not yet used are kept between bytes, so the

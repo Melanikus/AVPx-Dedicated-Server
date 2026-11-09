@@ -1026,6 +1026,14 @@ file: java/src/avpx/list/ListServer.java
       long declaredLength = Json.digitsValue(declared, Long.MAX_VALUE);
 >>>
 
+=== the relay's counts not given as it stops, so its last part of a minute is lost
+check: live
+file: java/src/avpx/relay/RelaySockets.java
+<<< from
+    log.accept(core.countsLine(now.getAsLong()));
+<<< to
+>>>
+
 === a key used with a certificate it doesn't belong to
 check: live
 file: java/src/avpx/list/Certificates.java

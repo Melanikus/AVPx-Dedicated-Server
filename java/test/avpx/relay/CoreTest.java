@@ -555,6 +555,17 @@ public final class CoreTest {
       same(r.tick(60001).size(), 0, "and the next line only a minute later");
     });
 
+    test("as the relay stops, its counts so far are a line at once, and the next minute counts from there", () -> {
+      RelayCore r = relay();
+      Opened game = openGame(r);
+      send(r, CONTROL, HOST, Message.of(Type.HOST_CLOSE).secret(game.token()), 1000);
+      String line = r.countsLine(1000);
+      matches(line, "^relay: in the last 1 s: 1 games opened, 1 closed,", "a second's counts, made now");
+      ok(!line.contains(HOST.address()) && !line.contains(text(game.code())), "with no address or code");
+      same(r.tick(60000).size(), 0, "and the next line comes a minute after this one, not after the start");
+      matches(r.tick(61000).get(0), "^relay: in the last 60 s: 0 games opened, 0 closed,", "counting only what came after");
+    });
+
     test("a game's code is 8 code letters made from 40 random bits", () -> {
       Set<String> seen = new HashSet<>();
       SeededRandom random = SeededRandom.of(11);

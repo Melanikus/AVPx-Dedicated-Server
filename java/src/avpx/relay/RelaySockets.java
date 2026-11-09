@@ -135,6 +135,9 @@ public final class RelaySockets {
       }
     }
 
+    // Stopping: the counts since the last line, so the last part of a minute isn't lost, and then every port closes
+    log.accept(core.countsLine(now.getAsLong()));
+
     for (DatagramChannel channel : channels.values()) {
       closeQuietly(channel);
     }

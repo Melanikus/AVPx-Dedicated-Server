@@ -1,10 +1,11 @@
 # FOR MEASURING ONLY: runs on a push to the proofs-measure branch, which is never merged. Written 2026-11-09 by Melanikus for AVPx
 # Dedicated Server.
 #
-# The Proofs check had never finished (32 of its last 36 runs stopped by the 30-minute limit, inside pqnk's both-broken variant). This
-# runs each model's each variant as a job of its own, with a long limit, and prints ProVerif's output (proofs/measure.sh), so the log's
-# times show which variants end, how long each takes, and where the time goes. Three more jobs a model try both-broken with a setting
-# that may let it end, to see what it does to the answers. The real check is decided from these numbers, in proofs.yml.
+# Round 2. Round 1 found pqik and pqxx, even as written, running until the runner was shut down, with ProVerif's clause count still
+# climbing. This round says whether that's memory (measure.sh now prints ProVerif's and the machine's every 30 seconds, and holds
+# ProVerif to 14 GiB so it says "out of memory" itself), and tries the two levers that change ProVerif's work but never an answer:
+# one query per run (with the phase-1 line out for authentication), and another selection function. It also runs again the two jobs
+# whose OCaml install hit the 5-minute limit on a slow mirror.
 #
 # ProVerif is fetched, checked and built exactly as proofs.yml does it, and the comments there say why each step is so.
 name: Proofs, measured
@@ -24,26 +25,37 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        model: [pqnk, pqik, pqxx]
-        variant: [as-written, dh-broken, kem-broken, both-broken]
-        setting: ['']
         include:
-          - { model: pqnk, variant: both-broken, setting: notrace }
-          - { model: pqik, variant: both-broken, setting: notrace }
-          - { model: pqxx, variant: both-broken, setting: notrace }
-          - { model: pqnk, variant: both-broken, setting: depth8 }
-          - { model: pqik, variant: both-broken, setting: depth8 }
-          - { model: pqxx, variant: both-broken, setting: depth8 }
+          - { model: pqxx, variant: as-written, setting: '' }
+          - { model: pqxx, variant: as-written, setting: selterm }
+          - { model: pqxx, variant: as-written, setting: seltermmax }
+          - { model: pqxx, variant: as-written, setting: q1 }
+          - { model: pqxx, variant: as-written, setting: q2 }
+          - { model: pqxx, variant: as-written, setting: q3 }
+          - { model: pqxx, variant: as-written, setting: q4 }
+          - { model: pqik, variant: as-written, setting: '' }
+          - { model: pqik, variant: as-written, setting: selterm }
+          - { model: pqik, variant: as-written, setting: q1 }
+          - { model: pqik, variant: as-written, setting: q2 }
+          - { model: pqik, variant: as-written, setting: q3 }
+          - { model: pqik, variant: dh-broken, setting: q1 }
+          - { model: pqik, variant: dh-broken, setting: q2 }
+          - { model: pqik, variant: dh-broken, setting: q3 }
+          - { model: pqnk, variant: kem-broken, setting: '' }
+          - { model: pqxx, variant: both-broken, setting: '' }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Usually seconds. One run's mirror took 19 minutes for this, so a slow one stops here and says so, instead of eating the job.
-      - name: OCaml, from Ubuntu's signed archive (5 minutes at most)
-        timeout-minutes: 5
+      # Usually seconds. A slow mirror took 19 minutes once, and 5 minutes twice: so two tries of 5 minutes each, then it says so
+      - name: OCaml, from Ubuntu's signed archive (two tries, 5 minutes each)
+        timeout-minutes: 12
         run: |
-          sudo apt-get update -q
-          sudo apt-get install -y -q --no-install-recommends ocaml-nox
+          for try in 1 2; do
+            if timeout 300 sh -c 'sudo apt-get update -q && sudo apt-get install -y -q --no-install-recommends ocaml-nox'; then break; fi
+            echo "OCaml's install, try $try, didn't finish in 5 minutes"
+            [ "$try" -lt 2 ] || { echo 'the mirror is too slow: this says nothing about the proofs'; exit 1; }
+          done
           ocamlopt -version
       - name: ProVerif 2.05 from INRIA's source, checked by its pinned SHA-256, then built (10 minutes at most)
         timeout-minutes: 10
@@ -61,7 +73,7 @@ jobs:
           (cd "$RUNNER_TEMP/proverif2.05" && sh ./build -nointeract)
           [ -x "$RUNNER_TEMP/proverif2.05/proverif" ] || { echo 'the build made no proverif'; exit 1; }
           echo "$RUNNER_TEMP/proverif2.05" >> "$GITHUB_PATH"
-      - name: The one variant, with ProVerif's output
+      - name: The one variant, with ProVerif's output and memory
         env:
           MODEL: ${{ matrix.model }}
           VARIANT: ${{ matrix.variant }}

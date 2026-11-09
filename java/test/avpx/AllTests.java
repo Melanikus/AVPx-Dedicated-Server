@@ -51,6 +51,8 @@ public final class AllTests {
     avpx.v2.ChannelTest.register();
     Tests.file("HandshakeATest");
     avpx.v2.HandshakeATest.register();
+    Tests.file("HandshakeBTest");
+    avpx.v2.HandshakeBTest.register();
     Tests.file("CryptoV2VectorsTest");
     avpx.v2.CryptoV2VectorsTest.register();
     Tests.file("SealedRelayTest");

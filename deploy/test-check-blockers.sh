@@ -26,10 +26,7 @@ case_with() {
   mkdir -p "$dir/deploy"
   cp "$1" "$dir/deploy/check-blockers.sh"
   if [ "$2" != '<none>' ]; then printf '%s' "$2" > "$dir/SERVER-BLOCKERS.md"; fi
-  set +e
-  said=$(sh "$dir/deploy/check-blockers.sh" 2>&1)
-  got=$?
-  set -e
+  if said=$(sh "$dir/deploy/check-blockers.sh" 2>&1); then got=0; else got=$?; fi
   if [ "$got" -ne "$3" ]; then return 1; fi
   if [ -n "${4:-}" ]; then printf '%s' "$said" | grep -qF -- "$4" || return 1; fi
   return 0
@@ -61,10 +58,8 @@ all_cases() {
 }
 
 quiet=no
-set +e
-all_cases "$checker"
-bad=$?
-set -e
+# (-e is never switched off and on inside a function: every exit here is caught with if/else)
+if all_cases "$checker"; then bad=0; else bad=$?; fi
 
 if [ "$bad" -ne 0 ]; then
   echo "$bad cases of check-blockers.sh don't hold"
@@ -81,10 +76,7 @@ s/if (found != 1)/if (found == 0)/'
 echo "$breaks" | while IFS= read -r edit; do
   sed "$edit" "$checker" > "$work/broken.sh"
   if cmp -s "$work/broken.sh" "$checker"; then echo "TAKE-OUT CAN'T RUN, its text isn't in the checker: $edit"; exit 1; fi
-  set +e
-  all_cases "$work/broken.sh"
-  noticed=$?
-  set -e
+  if all_cases "$work/broken.sh"; then noticed=0; else noticed=$?; fi
   if [ "$noticed" -eq 0 ]; then echo "TAKE-OUT NOT NOTICED: $edit"; exit 1; fi
   echo "take-out noticed ($noticed cases): $edit"
 done || failed=1

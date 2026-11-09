@@ -617,9 +617,9 @@ These are made by a Java tool, with fixed keys and seeded randomness (section 5.
 
 ML-KEM's encapsulation is random inside every platform's own API, so vectors fix the decapsulation side only, and each implementation's tests check that its own encapsulations decapsulate.
 
-They also include:
-- signatures from fixed keys. ML-DSA as each platform does it may be randomised, so vectors check verification, not the signature bytes;
-- every refusal of section 16, as bytes.
+They also include every refusal of section 16, as bytes.
+
+**No signatures yet.** Nothing in the server signs or checks a signature until the signed relays directory (section 12), so the vectors have no signatures section, and the server no signing code (Primary, 2b8dcd6, from Secondary's read, finding 7.2). They come back with the directory: signatures from fixed keys, checked for verification, not for the signature bytes, as ML-DSA as each platform does it may be randomised. The ECDSA and ML-DSA known-answer files stay, as published data.
 
 ## 16. Every refusal (version 2)
 

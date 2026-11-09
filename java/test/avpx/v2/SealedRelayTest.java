@@ -178,6 +178,7 @@ public final class SealedRelayTest {
       same(relay.receive(slot, "10.0.0.2", 6001, changed(gamePacket(3), 3, 'X'), NOW).size(), 0,
           "a packet that isn't sealed game traffic is never passed on: no plaintext, ever");
       same(relay.receive(slot, "10.0.0.9", 7000, gamePacket(4), NOW).size(), 0, "nor one from a stranger");
+      same(relay.counts.refused[19], 1L, "refusal 19, for the one that wasn't version 2's on a joiner's port");
       same(relay.counts.dropped, 0L, "and nothing threw");
     });
 
@@ -286,6 +287,7 @@ public final class SealedRelayTest {
       byte[] copied = Fragments.cut(Fragments.toRelay(), SealedRelay.A3, wrong.id(), theirCookie, second.a3()).get(0);
       same(relay.receive(CONTROL, "10.0.0.2", 6001, copied, NOW).size(), 0, "the game's A3, copied, with a good cookie for another port");
       same(relay.sessions.size(), 1, "none of them made a session");
+      same(relay.counts.refused[18], 2L, "refusal 18, twice: the copied first sealed message, and the copied A3");
       relay.receive(CONTROL, "10.0.0.2", 6000, wrong.a3(second.a3()), NOW);
       same(relay.sessions.size(), 2, "the right A3, from A1's own address and port: the session");
     });
@@ -343,6 +345,25 @@ public final class SealedRelayTest {
       SealedRelay full = relay(few, new RelayCore.Limits());
       player(full, "10.0.0.1", 5000, 52);
       same(sendAll(full, "10.0.0.2", 6000, begin(full, "10.0.0.2", 6000, 53, NOW).a1(), NOW).size(), 0, "past the most sessions: refused");
+      same(full.counts.refused[20], 1L, "refusal 20, too many sessions, at A1");
+      same(full.sessions.size(), 1, "and the session already there wasn't ended to make room");
+    });
+
+    // CRYPTO.md section 17's per-address cap, which handshakes waiting for A3 count toward: without that, one address with cookies for
+    // its own ports could fill the table with A1s it never finishes
+    test("handshakes waiting for A3 count toward an address's most sessions; given up on after 10 s, they free their places", () -> {
+      SealedRelay.Limits two = new SealedRelay.Limits();
+      two.mostSessionsPerAddress = 2;
+      SealedRelay relay = relay(two, new RelayCore.Limits());
+      same(sendAll(relay, "10.0.0.5", 1, begin(relay, "10.0.0.5", 1, 60, NOW).a1(), NOW).size(), 2, "one A1, never finished: A2");
+      same(sendAll(relay, "10.0.0.5", 2, begin(relay, "10.0.0.5", 2, 61, NOW).a1(), NOW).size(), 2, "a second: A2");
+      same(sendAll(relay, "10.0.0.5", 3, begin(relay, "10.0.0.5", 3, 62, NOW).a1(), NOW).size(), 0,
+          "a third from the same address, with two waiting for A3 and no session yet: refused");
+      same(relay.counts.refused[20], 1L, "refusal 20");
+      same(sendAll(relay, "10.0.0.6", 1, begin(relay, "10.0.0.6", 1, 63, NOW).a1(), NOW).size(), 2, "another address: its own count");
+      relay.tick(NOW + 10000);
+      same(sendAll(relay, "10.0.0.5", 4, begin(relay, "10.0.0.5", 4, 64, NOW + 10000).a1(), NOW + 10000).size(), 2,
+          "10 s on, the two never finished are given up on, and their places are free");
     });
 
     test("time: A1 has 2 s to come whole; A2 is kept 10 s; a session nothing holds ends after 60 s quiet, and one a game holds stays", () -> {

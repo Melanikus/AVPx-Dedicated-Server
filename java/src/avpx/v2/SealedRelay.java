@@ -35,12 +35,12 @@ import java.util.Set;
 //     datagrams. A2 is kept 10 s: the same A1 again gets the same A2, byte for byte, never a new one, which would make a second set of
 //     keys (section 6, "Losses").
 //   - A3 (kind 5): its cookie checked the same way; then it must be exactly the 16 bytes the game's keys make (HandshakeA.expect), from
-//     A1's own address and port. Then the session is the game's.
+//     A1's own address and port (refusal 18). Then the session is the game's.
 //   On the control port, a 104-byte sealed control message (Channel.java): opened under its session, and the 64-byte message in it
 //   handed to RelayCore, whose answers are each sealed under the session they're for. If A3 was lost, the game's first sealed message
 //   that opens under the handshake's keys confirms them instead.
 //   On a joiner's port: a 104-byte sealed hello, opened under its sender's session and handed to RelayCore the same way; or the games'
-//   own sealed packets (AVPG, section 9), passed on unread. Nothing else goes through: no plaintext, ever.
+//   own sealed packets (AVPG, section 9), passed on unread. Nothing else goes through (refusal 19): no plaintext, ever.
 //   Anything else: the wrong size (1; every version 1 message is one), another magic (2), another version (3), an unknown kind (4).
 //
 // WHY THIS ORDER: the cheap checks first, and nothing kept before the cookie shows the sender gets packets at its address. The
@@ -49,8 +49,9 @@ import java.util.Set;
 // 2 for A1's 3.
 //
 // HOW LONG A SESSION LASTS: while a game or a joiner's port holds it (its host's, or the two ends of a joiner's port, whose hellos may
-// come again from a new address), or for SESSION_IDLE after the last message that opened; and never past 24 hours or its other limits
-// (Channel.java). CRYPTO.md section 17 has no number for the idle time or the most sessions yet: these are ours, given to Third.
+// come again from a new address), or for 60 s (sessionIdleMilliseconds) after the last message that opened; and never past 24 hours or
+// its other limits (Channel.java). At most 10,000 sessions in all, and 64 for one address, handshakes waiting for A3 among them; more is
+// refused at A1 (refusal 20), and no session is ended to make room (CRYPTO.md section 17, settled with Third).
 //
 // It isn't safe to use from two threads at once, and doesn't need to be: the relay runs on one thread (RelaySockets.java).
 public final class SealedRelay implements Relay {
@@ -87,7 +88,7 @@ public final class SealedRelay implements Relay {
   private static final int GAME_OVERHEAD = 28;
   private static final long COOKIE_KEY_LIFE_MILLISECONDS = 24L * 60 * 60 * 1000;
   private static final int COOKIE_KEY_BYTES = 32;
-  private static final int REFUSALS = 17;
+  private static final int REFUSALS = 20;
 
   // A1 being put together, from one address and port
   private record Assembling(byte[] id, String address, Fragments.Assembly assembly, long startedAt) {
@@ -169,7 +170,7 @@ public final class SealedRelay implements Relay {
   private final Map<String, Answered> answered = new LinkedHashMap<>();        // by handshake id
   private final Map<String, Answered> waiting = new HashMap<>();               // by session id, until the keys are taken
   final Map<String, Session> sessions = new LinkedHashMap<>();                 // by session id
-  private final Map<String, Integer> sessionsPerAddress = new HashMap<>();
+  private final Map<String, Integer> heldPerAddress = new HashMap<>();             // sessions, and handshakes waiting for A3
   Counts counts = new Counts();
 
   // controlPort, ports, region, passKey and coreLimits are RelayCore's (its games). keys: this relay's static keys, whose public halves
@@ -244,7 +245,7 @@ public final class SealedRelay implements Relay {
         return onSealed(localPort, address, port, data, now);
       }
 
-      return data.length >= GAME_OVERHEAD && startsWith(data, GAME_MAGIC) ? core.forward(localPort, address, port, data, now) : refused(2);
+      return data.length >= GAME_OVERHEAD && startsWith(data, GAME_MAGIC) ? core.forward(localPort, address, port, data, now) : refused(19);
     } catch (RuntimeException e) {
       // Nothing a packet holds should get here; if something does, the packet is dropped and the relay goes on
       counts.dropped++;
@@ -394,8 +395,14 @@ public final class SealedRelay implements Relay {
       return List.of();
     }
 
-    if (sessions.size() + waiting.size() >= limits.mostSessions || sessionsPerAddress.getOrDefault(address, 0) >= limits.mostSessionsPerAddress
-        || !starts.allows(address + "|" + port, now) || !everyoneStarts.take(now)) {
+    // Too many sessions (refusal 20): refused here, at A1, and no session is ever ended to make room, so a flood can't push out games
+    // already playing. A handshake waiting for A3 counts as one of its address's, so one address can't fill the table with A1s it never
+    // finishes (CRYPTO.md section 17).
+    if (sessions.size() + waiting.size() >= limits.mostSessions || heldPerAddress.getOrDefault(address, 0) >= limits.mostSessionsPerAddress) {
+      return refused(20);
+    }
+
+    if (!starts.allows(address + "|" + port, now) || !everyoneStarts.take(now)) {
       counts.overLimit++;
       return List.of();
     }
@@ -421,6 +428,7 @@ public final class SealedRelay implements Relay {
     Answered answer = new Answered(id.clone(), address, port, a1Hash, datagrams, now, expected);
     answered.put(hex(id), answer);
     waiting.put(sessionKey, answer);
+    heldPerAddress.merge(address, 1, Integer::sum);
     counts.started++;
     return send(datagrams, address, port);
   }
@@ -442,11 +450,18 @@ public final class SealedRelay implements Relay {
 
     Answered answer = answered.get(hex(f.id()));
 
-    if (answer == null || answer.expected == null || !answer.address.equals(address) || answer.port != port) {
+    if (answer == null || answer.expected == null) {
       counts.noSession++;
       return List.of();
     }
 
+    // From another address and port than A1's (refusal 18): the cookie alone doesn't stop that, as anyone on the path can ask for a cookie
+    // of its own with the game's id and copy the game's A3
+    if (!answer.address.equals(address) || answer.port != port) {
+      return refused(18);
+    }
+
+    // A tag, so compared in a time that says nothing about where it differs
     if (!MessageDigest.isEqual(f.part(), answer.expected.a3())) {
       if (++answer.badA3 >= MOST_BAD_A3) {
         giveUp(answer);
@@ -459,11 +474,11 @@ public final class SealedRelay implements Relay {
     return List.of();
   }
 
-  // The keys are the game's: a session from them. The channel holds its own copies, so the handshake's are wiped.
+  // The keys are the game's: a session from them. The channel holds its own copies, so the handshake's are wiped. It keeps the place its
+  // handshake held among its address's (A3 comes from A1's own address), so the count isn't changed.
   private Session take(Answered answer, Channel channel, String address, int port, long now) {
     Session s = new Session(channel, answer.sessionKey, address, port, now);
     sessions.put(s.key, s);
-    sessionsPerAddress.merge(address, 1, Integer::sum);
     waiting.remove(answer.sessionKey);
     answer.expected.keys().split().wipe();
     answer.expected = null;
@@ -476,6 +491,7 @@ public final class SealedRelay implements Relay {
       waiting.remove(answer.sessionKey);
       answer.expected.keys().split().wipe();
       answer.expected = null;
+      letGo(answer.address);
     }
   }
 
@@ -504,9 +520,14 @@ public final class SealedRelay implements Relay {
       // A3 lost: the game's first sealed message, if it opens under the handshake's keys, is its confirmation (CRYPTO.md section 6)
       Answered answer = waiting.get(key);
 
-      if (answer == null || localPort != core.controlPort() || !answer.address.equals(address) || answer.port != port) {
+      if (answer == null || localPort != core.controlPort()) {
         counts.noSession++;
         return List.of();
+      }
+
+      // As for A3 itself: only from A1's own address and port (refusal 18)
+      if (!answer.address.equals(address) || answer.port != port) {
+        return refused(18);
       }
 
       Channel candidate = Channel.relaySide(answer.expected.keys(), now);
@@ -581,16 +602,20 @@ public final class SealedRelay implements Relay {
 
   private void end(Session s) {
     if (sessions.remove(s.key) != null) {
-      int left = sessionsPerAddress.getOrDefault(s.firstAddress, 1) - 1;
-
-      if (left > 0) {
-        sessionsPerAddress.put(s.firstAddress, left);
-      } else {
-        sessionsPerAddress.remove(s.firstAddress);
-      }
-
+      letGo(s.firstAddress);
       s.channel.wipe();
       counts.ended++;
+    }
+  }
+
+  // One fewer session, or handshake waiting for A3, held by an address
+  private void letGo(String address) {
+    int left = heldPerAddress.getOrDefault(address, 1) - 1;
+
+    if (left > 0) {
+      heldPerAddress.put(address, left);
+    } else {
+      heldPerAddress.remove(address);
     }
   }
 

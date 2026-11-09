@@ -1180,9 +1180,10 @@ file: java/src/avpx/v2/SealedRelay.java
 check: tests
 file: java/src/avpx/v2/SealedRelay.java
 <<< from
-    if (answer == null || answer.expected == null || !answer.address.equals(address) || answer.port != port) {
+    if (!answer.address.equals(address) || answer.port != port) {
+      return refused(18);
+    }
 <<< to
-    if (answer == null || answer.expected == null) {
 >>>
 
 === no limit on A1s being put together from one address
@@ -1198,16 +1199,16 @@ file: java/src/avpx/v2/SealedRelay.java
 check: tests
 file: java/src/avpx/v2/SealedRelay.java
 <<< from
-        || !starts.allows(address + "|" + port, now) || !everyoneStarts.take(now)) {
+    if (!starts.allows(address + "|" + port, now) || !everyoneStarts.take(now)) {
 <<< to
-        || !everyoneStarts.take(now)) {
+    if (!everyoneStarts.take(now)) {
 >>>
 
 === anything passed on through a joiner's port, not only sealed game traffic
 check: tests
 file: java/src/avpx/v2/SealedRelay.java
 <<< from
-      return data.length >= GAME_OVERHEAD && startsWith(data, GAME_MAGIC) ? core.forward(localPort, address, port, data, now) : refused(2);
+      return data.length >= GAME_OVERHEAD && startsWith(data, GAME_MAGIC) ? core.forward(localPort, address, port, data, now) : refused(19);
 <<< to
       return core.forward(localPort, address, port, data, now);
 >>>
@@ -1278,9 +1279,10 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/v2/SealedRelay.java
 <<< from
-      if (answer == null || localPort != core.controlPort() || !answer.address.equals(address) || answer.port != port) {
+      if (!answer.address.equals(address) || answer.port != port) {
+        return refused(18);
+      }
 <<< to
-      if (answer == null || localPort != core.controlPort()) {
 >>>
 
 # A version 2 relay's settings: its static keys
@@ -1318,4 +1320,30 @@ file: java/src/avpx/Settings.java
     if (protocol == 1 && given.containsKey("staticKeys")) {
 <<< to
     if (false) {
+>>>
+
+# CRYPTO.md section 17 (ed51759): handshakes waiting for A3 count toward an address's most sessions
+=== a handshake waiting for A3 not counted toward its address's sessions
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    heldPerAddress.merge(address, 1, Integer::sum);
+<<< to
+>>>
+
+=== a handshake given up on still counted toward its address
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      letGo(answer.address);
+<<< to
+>>>
+
+=== no most sessions for one address
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (sessions.size() + waiting.size() >= limits.mostSessions || heldPerAddress.getOrDefault(address, 0) >= limits.mostSessionsPerAddress) {
+<<< to
+    if (sessions.size() + waiting.size() >= limits.mostSessions) {
 >>>

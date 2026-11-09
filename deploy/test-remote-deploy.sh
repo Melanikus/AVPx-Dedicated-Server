@@ -34,7 +34,7 @@ cat > "$fake/git" <<'STANDIN'
 # git's stand-in: init makes the folder, fetch copies the case's tree in and notes what was asked, rev-parse says the tree's commit
 case "$1" in
   init) mkdir -p "$3" ;;
-  fetch) echo "git fetch $*" >> "$FAKE_LOG"; cp -R "$FAKE_TREE/." . ;;
+  fetch) echo "git $*" >> "$FAKE_LOG"; cp -R "$FAKE_TREE/." . ;;
   checkout) ;;
   rev-parse) echo "$FAKE_HEAD" ;;
 esac
@@ -123,7 +123,17 @@ cur() { linked "$m/root/opt/avpx/current"; }
 # Every case, with the script given as $1. Says FAIL for each that doesn't hold (unless quiet), and gives back how many didn't.
 all_cases() {
   bad=0
-  no() { [ "$quiet" = yes ] || echo "FAIL  $1"; bad=$((bad + 1)); }
+  # A case that doesn't hold says so, and (unless quiet) shows what it found: what the script said, and what the stand-ins were asked,
+  # with where the release link points, so a failure on GitHub can be read from its log alone
+  no() {
+    bad=$((bad + 1))
+    [ "$quiet" = yes ] && return 0
+    echo "FAIL  $1"
+    echo "  --- what remote-deploy.sh said:"; sed 's/^/    /' "$m/out" 2>/dev/null || true
+    echo "  --- what the stand-ins were asked:"; sed 's/^/    /' "$m/log" 2>/dev/null || true
+    echo "  --- /opt/avpx/current is: $(cur || echo 'not a link')"
+    return 0
+  }
   s=$1
 
   # A good deploy, with the JDK the commit pins already there

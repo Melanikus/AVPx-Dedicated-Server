@@ -72,21 +72,29 @@ This server isn't released to players as a program: it runs on your machine. Wha
 
 GATES.md lists the checks every change must pass, with branch protection holding them for everyone. A gate's tool may be gone by the time you read this. **The rule for that, which you keep:** a gate whose tool can't be reached **fails**, and says so, with "<tool> is unreachable: replace it with an equivalent, see TAKING-OVER.md". It never passes silently. [BETA.2: the server's gates say that; until then, a gate whose tool is gone simply fails.]
 
-| Gate | What it proves | If its tool is gone |
+| Gate | What it proves, and what it doesn't | If its tool is gone |
 |---|---|---|
-| **Java tests** (java.yml) | the code does what its tests say, built with every warning an error, to the coding standard, the same bytes twice | Needs only the JDK. Runs on any machine: `sh java/build.sh` |
-| **Java take-outs** | the tests notice every check in `takeouts.txt` being taken out | Ours, in this repository. Needs only the JDK |
-| **Smoke test** | a running server answers every call as PROTOCOL.md says, from outside its process | Ours: `java/tools/Smoke.java`. Needs only the JDK |
-| **The JDK is the newest Temurin 25** | the pinned JDK has no newer security release | Adoptium's API. If Adoptium is gone, pin another JDK by its sha256 and its maker's signing key, from a maker you trust, and keep this check's rule: a JDK with a newer security release fails |
-| **CodeQL (Java)** | GitHub's static analysis finds nothing, and reads every .java file | Any open-source static analysis for Java that fails on a finding and on a file it can't read: SpotBugs with Find Security Bugs, or Semgrep's open rules |
-| **Snyk** | Snyk Code finds nothing in the repository | Needs a Snyk token, which will have expired. Replace it with a second open-source static analysis, as for CodeQL. Two different tools see different things |
-| **Server blockers** | `check-blockers.sh` refuses every deploy while SERVER-BLOCKERS.md lists anything | Ours. Plain sh and awk |
-| **Deploy scripts** | the deploy scripts do what they say, tested with stand-ins | Ours. Plain sh |
-| **Proofs (ProVerif)** | the handshakes' patterns keep their secrets and authenticate, by a formal proof (CRYPTO.md section 14, `proofs/`) | ProVerif, fetched from INRIA and checked by its sha256 (proofs.yml). If the address is gone, any copy of the same file, with that same sha256, is the same program. Archive it [BETA.2] |
+| **Java tests** (java.yml) | javac with every warning an error; every unit test, and every live test on 127.0.0.1; CheckStandard's rules over the whole repository (ASCII only, no compiled code, no build file that fetches packages, actions pinned by hash, every test registered); and the jars built twice, on two file systems, byte for byte the same. **Proves** the code does what its tests say, and that a build is reproducible, which is what lets a machine check the jars it's sent against its own. **Doesn't prove** the tests would notice a fault: that's the take-outs | Needs only the JDK. Runs on any machine: `sh java/build.sh` |
+| **Java take-outs** | each row of `takeouts.txt` breaks one thing (a check, a limit, a refusal) in a copy, and the check it names must fail; one "not noticed" fails the gate. **Proves** the tests aren't decoration: every guarded rule has a test that notices it gone. A row on a check that only Linux has (owners, modes, links) proves itself only on a Linux machine | Ours, in this repository. Needs only the JDK |
+| **Smoke test** | the real server, started from its jar, talked to from outside its process: version 1's whole game, and version 2's relay and list, with access asked and approved through the real store and a decisions file. **Proves** the jar runs as deployed: the whole sealed game, a player nobody approved refused, and the relay's keys as the list gives them equal to its settings' | Ours: `java/tools/Smoke.java`. Needs only the JDK |
+| **The JDK is the newest Temurin 25** | the newest release of the JDK's maker, against get-jdk.sh's pin. **Proves** nobody is left on a JDK with a known hole. It fails every quarter, by design, until the pin moves | Adoptium's API. If Adoptium is gone, pin another JDK by its sha256 and its maker's signing key, from a maker you trust, and keep this check's rule: a JDK with a newer security release fails |
+| **CodeQL (Java)** | GitHub's static analysis, its security-and-quality queries, failing on any result, and on any .java file it didn't read. **Proves** no known pattern of bug is in the code | Any open-source static analysis for Java that fails on a finding and on a file it can't read: SpotBugs with Find Security Bugs, or Semgrep's open rules |
+| **Snyk** | Snyk Code over the whole repository, at any severity. **Proves** a second analyser agrees. It's the one gate that needs a paid account: without its token, it fails, never passes | Needs a Snyk token, which will have expired. Replace it with a second open-source static analysis, as for CodeQL. Two different tools see different things |
+| **Server blockers** | `test-check-blockers.sh`. **Proves** the refusal works; a deploy itself refuses while SERVER-BLOCKERS.md lists anything | Ours. Plain sh and awk |
+| **Deploy scripts** | the machine's side of a deploy, the firewall scripts and deploy.yml's shape, each tested with stand-ins: no machine, no network, no GitHub. **Proves** they refuse what they should | Ours. Plain sh |
+| **Proofs (ProVerif)** | every model in `proofs/`, as written and with each half of the hybrid broken in turn, against an attacker who owns the network (CRYPTO.md section 14). **Proves** the handshakes' patterns keep their secrets and authenticate their parties with either half broken; with both broken they must fail, so the model isn't true for nothing. **Doesn't prove** our code: the test vectors and tests hold it to the pattern. **Hasn't passed yet:** the larger models need more memory than the standard runner has (GATES.md) | ProVerif, fetched from INRIA and checked by its sha256 (proofs.yml). If the address is gone, any copy of the same file, with that same sha256, is the same program. Archive it [BETA.2] |
 | **Secret scanning** (GitHub's) | no key or token is pushed | gitleaks or TruffleHog, run before every push and as a check |
 | **Branch protection** (GitHub's) | nothing reaches main without every gate, for everyone, admins too | On any other host: a protected main branch, with every gate required. On none at all: a rule you keep, that main moves only to a commit whose gates you ran and saw pass |
 
 **Why there's no dependency scan:** the server has no package manager file and fetches no package, by design. CheckStandard's rule 2 proves it. The JDK is the only thing from outside, held by its pins.
+
+**Where the trust sits, for you to replace** (Primary, 2026-11-09):
+- **GitHub:** the hosting, Actions, the deployment records, and the owner's approval of each deploy.
+- **Adoptium's signing key,** pinned by its fingerprint in get-jdk.sh.
+- **Snyk's account:** a gate only, never anything the running server needs.
+- **The owner's GitHub account,** named by its login and by its numeric id, in the pull route's script [BETA.2: pull-deploy.sh].
+
+**The running server depends on none of these.** With the pull route's timer off, it runs, and it's deployed by hand (deploy/README.md, "A test machine anywhere"). So losing all four stops new deploys being checked by them, never the server itself.
 
 ## 7. When a key is lost or stolen
 

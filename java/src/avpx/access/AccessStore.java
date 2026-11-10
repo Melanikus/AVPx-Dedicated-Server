@@ -560,7 +560,7 @@ public final class AccessStore implements Approvals {
   // The ids revoked by the turns since the relay last asked, each once. The store's own thread takes the decisions (start); this only
   // hands over what it found.
   @Override
-  public List<String> takeRevoked(long now) {
+  public List<String> takeRevoked() {
     List<String> out = new ArrayList<>();
 
     for (String id = revoked.poll(); id != null; id = revoked.poll()) {
@@ -744,7 +744,10 @@ public final class AccessStore implements Approvals {
     String[] lines = text.substring(0, text.length() - 1).split("\n", -1);
     Matcher end = END_LINE.matcher(lines[lines.length - 1]);
 
-    if (!end.matches() || Integer.parseInt(end.group(1)) != lines.length - 1) {
+    // The count compared as text, the way it's written: no number is parsed from the file, so nothing in it can make a parse throw (a
+    // throw here, on the store's own input, would be a crash: CodeQL's java/uncaught-number-format-exception, 2026-11-09). END_LINE
+    // already refuses a 0 in front, so one count has one way to be written.
+    if (!end.matches() || !end.group(1).equals(Integer.toString(lines.length - 1))) {
       return null;
     }
 

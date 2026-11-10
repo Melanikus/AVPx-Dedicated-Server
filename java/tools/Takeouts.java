@@ -295,9 +295,21 @@ public final class Takeouts {
     }
 
     String[] parts = args[1].split("/");
-    int k = Integer.parseInt(parts[0]);
-    int n = Integer.parseInt(parts[1]);
+    int k = digits(parts[0]);
+    int n = digits(parts[1]);
     return n >= 1 && n <= MOST_SHARES && k < n ? new int[] {k, n} : null;
+  }
+
+  // A number written in decimal digits only, worked out digit by digit, with no parse that could throw (SHARE has already held it to one
+  // or two digits)
+  private static int digits(String text) {
+    int value = 0;
+
+    for (int i = 0; i < text.length(); i++) {
+      value = value * 10 + (text.charAt(i) - '0');
+    }
+
+    return value;
   }
 
   public static void main(String[] args) throws Exception {

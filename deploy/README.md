@@ -191,12 +191,15 @@ When SERVER-BLOCKERS.md says `Nothing.`, GitHub's **Deploy** workflow (`.github/
 
 **What it is** (the owner's ruling, 2026-11-09: "nyc3 pulls its deploys"): a timer on the machine, every 5 minutes, runs `pull-deploy.sh` as root. It asks GitHub's public API, with no token, whether there's a new deploy for this machine, and takes one only if all of these hold:
 - GitHub's own Actions recorded it (the Deploy workflow's last job), for this machine;
-- its run was the Deploy workflow, started by hand from `main`, and finished with success;
+- no deployment before it named the same run: one approval, one deploy;
+- its run was the Deploy workflow, started by hand from `main`, finished with success in its first attempt (a run done again with GitHub's "Re-run" never counts), and named `Deploy <this commit> to <this machine>`, so it wasn't a dry run, and was for this very commit and machine;
 - you approved that run's `production` environment, by your login and your number;
 - the commit is on `main`;
 - `main`'s own SERVER-BLOCKERS.md lists nothing (checked before anything is built or installed).
 
-Then it runs `remote-deploy.sh`, which builds the commit with no rights and no network, takes the jars only if they're GitHub's, switches, health-checks, and rolls back if anything fails. Each deployment is taken once at most, and what became of it is in `/var/lib/avpx-pull/taken`. Nothing fetched from GitHub ever runs as root: the questions, the reading of the answers, the git fetch and `main`'s blockers check all run as `avpx-build`.
+Then it runs `remote-deploy.sh`, which builds the commit with no rights and no network, takes the jars only if they're GitHub's, switches, health-checks, and rolls back if anything fails. Each deployment, and each run, is taken once at most: `/var/lib/avpx-pull/taken` has a line for each, `<deployment> run <run>: <what became of it>`, and "taking" is written there before `remote-deploy.sh` starts. Nothing fetched from GitHub ever runs as root: the questions, the reading of the answers, the git fetch and `main`'s blockers check all run as `avpx-build`. Only the newest deployment is looked at: two Deploys within 5 minutes, and only the second is taken. To deploy again a commit that was refused, or an older one on purpose, start a new Deploy and approve it.
+
+**One at a time:** the script holds `/var/lib/avpx-pull/lock` (flock) while it runs, so running it by hand while the timer's run is going stops at once, saying so. `remote-deploy.sh` holds a lock of its own, `/var/lib/avpx-deploy.lock`, so a deploy by hand while another is being put in place (the timer's, or a second by hand) stops at once too, and changes nothing.
 
 **Installing it, once, as root** (from the commit a Test build named, with the two scripts' SHA-256 checked against its summary first, as in the by-hand deploy):
 ```

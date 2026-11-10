@@ -13,11 +13,17 @@
 #      its own run's id. That's all it does: GitHub never reaches this machine, and no key or token is kept anywhere.
 #   2. Here, every 5 minutes, this asks GitHub's public API, with no token, for the newest deployment for avpx-<machine>. Nothing new
 #      since the last one taken: it stops (one call to GitHub; the run's and the approval's are asked only for a new deployment, which
-#      keeps it well under GitHub's 60 calls an hour for an address with no token).
+#      keeps it well under GitHub's 60 calls an hour for an address with no token). Only the newest is ever looked at: two Deploys
+#      recorded within 5 minutes, and only the second is taken; the first never is.
 #   3. A new one is held to every one of these, or refused:
 #      - GitHub's own Actions made it (its creator is github-actions[bot]): only a workflow can, and only deploy.yml has the right;
+#      - no deployment before it named the same run: one approval puts one deploy on the machine, never a second;
 #      - its run is .github/workflows/deploy.yml, started by hand (workflow_dispatch), from main, and finished with success. A run not
 #        finished yet is asked again next time;
+#      - that run is in its first attempt: a run done again (GitHub's "Re-run") never counts, however it ends;
+#      - that run's name is exactly "Deploy <the deployment's commit> to <machine>" (deploy.yml's run-name, made from what the owner
+#        typed when starting it). So the run the owner approved was for this very commit and this very machine, and not a dry run,
+#        whoever wrote the deployment: the record can't point an old approval at another commit;
 #      - the owner approved that run's "production" environment: GitHub's record of the approval names the owner by login AND by number
 #        (OWNER_LOGIN and OWNER_ID below), since a login can be renamed and taken by someone else, and a number can't;
 #      - the commit is on main, fetched with git;
@@ -26,8 +32,12 @@
 #   4. Only then: remote-deploy.sh, root's installed copy, with the commit and the jars' SHA-256. It fetches the commit again, builds it
 #      with no rights and no network, takes the jars only if they're byte for byte the ones GitHub built, switches, checks the server is
 #      healthy, and goes back to the old release if not (remote-deploy.sh says each step).
-#   5. The deployment's number is written in /var/lib/avpx-pull/taken, with what became of it, so no deployment is ever taken twice. One
-#      that was refused stays refused: the owner starts a new Deploy.
+#   5. Every deployment looked at is written in /var/lib/avpx-pull/taken, with its run and what became of it, so no deployment, and no
+#      run, is ever taken twice. "taking" is written before remote-deploy.sh starts, so a deploy begun is never begun again, whatever
+#      happens after. One that was refused stays refused: the owner starts a new Deploy.
+#
+# ONE AT A TIME: the whole script holds a lock (/var/lib/avpx-pull/lock, through flock), so a run by hand while the timer's is going
+# stops at once, saying so, rather than two deploying together. (The timer never overlaps itself: its unit is a oneshot.)
 #
 # WHAT RUNS AS ROOT is only what the owner installed by hand (deploy/README.md, "The machine fetches its own deploys"): this script and
 # remote-deploy.sh, copied once from a commit and checked by their SHA-256. NOTHING FETCHED EVER RUNS AS ROOT, and no answer from GitHub
@@ -52,12 +62,15 @@ root=${AVPX_DEPLOY_ROOT:-}
 OWNER_LOGIN='Melanikus'
 OWNER_ID='78985790'
 REPOSITORY='Melanikus/AVPx-Dedicated-Server'
+# The most any one answer from GitHub may be. curl's --max-filesize stops a transfer part way through only from curl 8.4 on (before, it
+# went by the size the server announced); Ubuntu 24.04's curl is 8.5.
 MOST_ANSWER_BYTES=1048576
 builder=avpx-build
 
 curl="$root/usr/bin/curl"
 jq="$root/usr/bin/jq"
 git="$root/usr/bin/git"
+flock="$root/usr/bin/flock"
 systemd_run="$root/usr/bin/systemd-run"
 installed="$root/usr/local/lib/avpx-pull"
 state="$root/var/lib/avpx-pull"
@@ -76,6 +89,11 @@ environment="avpx-$machine"
 
 mkdir -p "$state"
 chmod 0700 "$state"
+
+# One at a time: the lock is held on file descriptor 9 until the script ends, however it ends
+exec 9> "$state/lock"
+"$flock" -n 9 || refuse 'another pull is running (it holds /var/lib/avpx-pull/lock): this one stops, and changes nothing'
+
 taken="$state/taken"
 [ -f "$taken" ] || : > "$taken"
 
@@ -117,9 +135,9 @@ one_line_like() {
   [ "$(printf '%s\n' "$1" | wc -l)" -eq 1 ] && printf '%s\n' "$1" | grep -Eqx "$2"
 }
 
-# What became of a deployment, written down so it's never taken again
+# What became of the deployment $id, from the run $run, written down so neither is ever taken again: "<id> run <run>: <what>"
 note() {
-  printf '%s %s\n' "$1" "$2" >> "$taken"
+  printf '%s run %s: %s\n' "$id" "$run" "$1" >> "$taken"
 }
 
 # 1. The newest deployment for this machine
@@ -150,10 +168,19 @@ fi
 
 say "deployment $id: $commit, from run $run"
 
-# 2. Its run: deploy.yml, started by hand, from main, finished with success
+# One approval, one deploy: a deployment naming a run that an earlier deployment named is refused, whatever became of the earlier one
+earlier=$(grep -E "^[0-9]+ run $run: " "$taken" | head -n 1 | cut -d ' ' -f 1)
+if [ -n "$earlier" ]; then
+  note "refused: its run was named by deployment $earlier already"
+  refuse "deployment $id: run $run was named by deployment $earlier already, and one approval puts one deploy on the machine"
+fi
+
+# 2. Its run: deploy.yml, started by hand, from main, finished with success, in its first attempt, and named for this commit and machine
 ask "actions/runs/$run" run.json || refuse 'GitHub could not be asked about the run (it is asked again next time)'
 how=$(read_answer run.json '[.path, .event, .head_branch, .status, (.conclusion // "none")] | join(" ")') \
-  || refuse "GitHub's answer for the run could not be read"
+  || refuse "GitHub's answer for the run could not be read (it is asked again next time)"
+attempt=$(read_answer run.json '.run_attempt | tostring') || refuse "GitHub's answer for the run could not be read (it is asked again next time)"
+title=$(read_answer run.json '.display_title | tostring') || refuse "GitHub's answer for the run could not be read (it is asked again next time)"
 
 if one_line_like "$how" '\.github/workflows/deploy\.yml workflow_dispatch main (queued|in_progress|waiting|requested|pending) none'; then
   say "run $run hasn't finished yet: asked again next time"
@@ -161,18 +188,30 @@ if one_line_like "$how" '\.github/workflows/deploy\.yml workflow_dispatch main (
 fi
 
 if ! one_line_like "$how" '\.github/workflows/deploy\.yml workflow_dispatch main completed success'; then
-  note "$id" "refused: its run isn't deploy.yml, started by hand from main, finished with success"
+  note "refused: its run isn't deploy.yml, started by hand from main, finished with success"
   refuse "deployment $id: its run isn't deploy.yml, started by hand from main, finished with success"
 fi
 
-# 3. The owner's own approval of that run's production environment, by login and by number
+if [ "$attempt" != 1 ]; then
+  note "refused: its run was run again, and only a run's first attempt counts"
+  refuse "deployment $id: run $run was run again, and only a run's first attempt counts (the owner starts a new Deploy)"
+fi
+
+# Compared as text, whole: a line break, or anything before or after, makes it another text
+if [ "$title" != "Deploy $commit to $machine" ]; then
+  note "refused: its run was for another commit or machine, or a dry run (its name isn't \"Deploy $commit to $machine\")"
+  refuse "deployment $id: run $run was for another commit or machine, or a dry run: its name isn't \"Deploy $commit to $machine\""
+fi
+
+# 3. The owner's own approval of that run's production environment, by login and by number. An answer jq can't read is asked again
+# next time, as an answer that couldn't be had is.
 ask "actions/runs/$run/approvals" approvals.json || refuse 'GitHub could not be asked about the approval (it is asked again next time)'
 approved=$(read_answer approvals.json --arg login "$OWNER_LOGIN" --argjson number "$OWNER_ID" 'if type != "array" then "not a list" else
   [.[] | select(.state == "approved" and .user.login == $login and .user.id == $number and any(.environments[]; .name == "production"))]
-  | length | tostring end' 2>/dev/null) || approved=''
+  | length | tostring end' 2>/dev/null) || refuse "GitHub's answer for the approval could not be read (it is asked again next time)"
 
 if ! one_line_like "$approved" '[1-9][0-9]{0,3}'; then
-  note "$id" "refused: the owner didn't approve its run's production environment"
+  note "refused: the owner didn't approve its run's production environment"
   refuse "deployment $id: the owner ($OWNER_LOGIN, $OWNER_ID) didn't approve run $run's production environment"
 fi
 
@@ -181,22 +220,24 @@ as_builder network sh -c '"$1" init -q main && cd main && "$1" fetch -q "$2" "+r
   && "$1" checkout -q --detach refs/remotes/origin/main' fetch "$git" "$repo" || refuse 'main could not be fetched (it is asked again next time)'
 
 if ! as_builder no-network sh -c 'cd main && "$1" merge-base --is-ancestor "$2" HEAD' onmain "$git" "$commit"; then
-  note "$id" "refused: the commit isn't on main"
+  note "refused: the commit isn't on main"
   refuse "deployment $id: $commit isn't on main"
 fi
 
 if ! as_builder no-network sh main/deploy/check-blockers.sh; then
-  note "$id" "refused: main's SERVER-BLOCKERS.md lists something"
+  note "refused: main's SERVER-BLOCKERS.md lists something"
   refuse "deployment $id: main's SERVER-BLOCKERS.md lists something, so nothing is deployed"
 fi
 
-# 5. Only now, root's own copy of remote-deploy.sh
+# 5. Only now, root's own copy of remote-deploy.sh. "taking" is written first: if it can't be, nothing starts, and once it is, this
+# deployment is never begun again, even if what becomes of it can't be written down after.
 say "deployment $id: every check holds; putting $commit in place"
+note "taking $commit"
 
 if sh "$installed/remote-deploy.sh" "$commit" "$jars"; then
-  note "$id" "deployed $commit"
+  note "deployed $commit"
   say "deployment $id: $commit is in place"
 else
-  note "$id" "remote-deploy.sh refused or rolled back"
+  note "remote-deploy.sh refused or rolled back"
   refuse "deployment $id: remote-deploy.sh refused it, or put the old release back (its lines above say why)"
 fi

@@ -14,7 +14,16 @@
 #   6. every other workflow is in REQUIRED, by its file, so a commit must have passed it, and a workflow added later can't be forgotten;
 #      and the deploy's own jobs are named "Deploy: ...", so none can stand in for a required one;
 #   7. the tools: gh and aws never; curl and jq only by their full path in /usr/bin, in a job that first checks they're Ubuntu's own
-#      (deploy/check-ubuntu-tools.sh).
+#      (deploy/check-ubuntu-tools.sh);
+#   8. the run's name is "Deploy <commit> to <machine>", with " (dry run)" after it for a dry run: the machine requires that name for
+#      the deployment's own commit and machine (deploy/pull-deploy.sh), so an approval counts only for what it was given for;
+#   9. it runs from main only: the blockers job's first step refuses a run started from any other branch, so the list it reads is main's;
+#  10. no other workflow can write deployments: each workflow sets its own permissions at the top, none asks for write-all, and only
+#      deploy.yml has deployments: write. So only its record job can make a deployment, whatever the repository's default token allows
+#      (Secondary's review of the pull route, P-1);
+#  11. no workflow names a test's own hook: AVPX_DEPLOY_ROOT, AVPX_UFW and AVPX_CODEQL_FILES each swap a real tool or list for a test's
+#      stand-in, and AVPX_IN_TAKEOUT makes this test skip its take-outs. Each is for a test's own use only (Secondary's review of the
+#      gates failing closed, G-3).
 set -eu
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -80,6 +89,31 @@ for job in blockers gates build record; do
   if [ -n "$use" ] && { [ -z "$check" ] || [ "$check" -gt "$use" ]; }; then no "the $job job checks curl and jq are Ubuntu's own before it uses them"; fi
 done
 
+# 8. The run's name, exactly
+grep -qxF "run-name: Deploy \${{ inputs.commit }} to \${{ inputs.machine }}\${{ inputs.dry_run && ' (dry run)' || '' }}" "$file" \
+  || no 'the run is named "Deploy <commit> to <machine>", with " (dry run)" after it for a dry run'
+
+# 9. From main only: the blockers job's first step is the one that refuses any other branch
+job_of blockers | grep -m 1 -- '^      - ' | grep -qx '      - name: Started from main' || no 'the blockers job starts by checking it was started from main'
+job_of blockers | grep -qxF '          [ "$GITHUB_REF" = refs/heads/main ] || { echo "deploy.yml runs from main only, and this run was started from $GITHUB_REF"; exit 1; }' \
+  || no 'and that step refuses a run started from any branch but main'
+
+# 10. Only deploy.yml can write deployments
+for f in "$flows"/*.yml; do
+  name=$(basename "$f")
+  grep -q '^permissions:' "$f" || no "$name sets its own permissions at the top"
+  if grep -v '^[[:space:]]*#' "$f" | grep -q 'write-all'; then no "$name never asks for write-all"; fi
+  [ "$f" = "$file" ] && continue
+  if grep -v '^[[:space:]]*#' "$f" | grep -q 'deployments: write'; then no "$name can't write deployments: only deploy.yml's record job can"; fi
+done
+
+# 11. No test's hook in any workflow, comments aside
+for f in "$flows"/*.yml; do
+  if grep -v '^[[:space:]]*#' "$f" | grep -Eq 'AVPX_(DEPLOY_ROOT|UFW|CODEQL_FILES|IN_TAKEOUT)'; then
+    no "$(basename "$f") names none of the tests' own hooks (AVPX_DEPLOY_ROOT, AVPX_UFW, AVPX_CODEQL_FILES, AVPX_IN_TAKEOUT)"
+  fi
+done
+
 if [ "$bad" -ne 0 ]; then
   echo "$bad rules of deploy.yml don't hold"
   exit 1
@@ -103,9 +137,26 @@ for edit in \
   's|^    environment: production$|    environment: staging|' \
   's|^    timeout-minutes: 20$|    timeout-minutes: 20\n    permissions:\n      deployments: write|' \
   's|^      deployments: write$|      deployments: write\n      id-token: write|' \
-  's|^    needs: build$|    needs: gates|'; do
+  's|^    needs: build$|    needs: gates|' \
+  's|^run-name: .*$|run-name: Deploy|' \
+  's#^          \[ "\$GITHUB_REF" = refs/heads/main \] || #          true || #' \
+  's|^permissions:$|# permissions:|'; do
   sed "$edit" "$file" > "$t/.github/workflows/deploy.yml"
   if cmp -s "$t/.github/workflows/deploy.yml" "$file"; then echo "TAKE-OUT CAN'T RUN, its text isn't in deploy.yml: $edit"; failed=1; continue; fi
   if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo "TAKE-OUT NOT NOTICED: $edit"; failed=1; else echo "take-out noticed: $edit"; fi
+done
+
+# And another workflow broken the same way: test-build.yml given the right to write deployments, left with no permissions of its own,
+# or setting a test's hook
+cp "$file" "$t/.github/workflows/deploy.yml"
+other="$flows/test-build.yml"
+for edit in \
+  's|^  contents: read$|  contents: read\n  deployments: write|' \
+  's|^permissions:$|# permissions:|' \
+  's|^  contents: read$|  contents: write-all|' \
+  's|^permissions:$|env:\n  AVPX_CODEQL_FILES: /dev/null\npermissions:|'; do
+  sed "$edit" "$other" > "$t/.github/workflows/test-build.yml"
+  if cmp -s "$t/.github/workflows/test-build.yml" "$other"; then echo "TAKE-OUT CAN'T RUN, its text isn't in test-build.yml: $edit"; failed=1; continue; fi
+  if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo "TAKE-OUT NOT NOTICED (test-build.yml): $edit"; failed=1; else echo "take-out noticed (test-build.yml): $edit"; fi
 done
 exit "$failed"

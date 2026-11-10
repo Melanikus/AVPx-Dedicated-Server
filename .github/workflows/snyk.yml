@@ -43,14 +43,24 @@ jobs:
           echo "$KEY  $RUNNER_TEMP/snyk" | sha256sum --check --strict \
             || { echo "the CLI fetched isn't the pinned one (its SHA-256 differs), so it never runs: this fails"; exit 1; }
           chmod +x "$RUNNER_TEMP/snyk"
-      # With everything sent to a proxy that isn't there, and a made-up token in place of the real one (the secret is never given to this
-      # step), the scan must fail: a scan that couldn't reach Snyk is a failed scan, never a passed one. timeout stops a CLI that hangs
-      # instead; that counts as failing too.
+      # Snyk out of reach, for certain: the CLI runs in a network namespace of its own, with its loopback and nothing else, so whatever
+      # it does with proxies, nothing it sends can leave (Secondary's review of this check, G-2: a dead proxy proved nothing if the CLI
+      # ever ignored it). First, curl in the same kind of namespace must fail to reach Snyk, which shows the namespace really has no way
+      # out. Each runs as this runner's own user (setpriv), never as root; only making the namespace takes sudo. The CLI gets a made-up
+      # token (the secret is never given to this step), and its scan must fail. timeout stops a CLI that hangs instead; that counts as
+      # failing too.
       - name: With Snyk out of reach, the scan fails, never passing unread
         run: |
-          dead=http://127.0.0.1:9
-          if https_proxy=$dead HTTPS_PROXY=$dead http_proxy=$dead HTTP_PROXY=$dead SNYK_TOKEN=00000000-0000-0000-0000-000000000000 \
-            timeout 300 "$RUNNER_TEMP/snyk" code test --severity-threshold=low; then
+          cut_off() {
+            sudo unshare --net -- sh -c 'ip link set lo up && u=$1 g=$2 h=$3 p=$4 && shift 4 &&
+              exec setpriv --reuid="$u" --regid="$g" --init-groups -- env HOME="$h" PATH="$p" "$@"' cut-off "$(id -u)" "$(id -g)" "$HOME" "$PATH" "$@"
+          }
+          if cut_off curl -q --silent --max-time 20 --output /dev/null https://static.snyk.io/; then
+            echo 'curl reached Snyk from a namespace with no network, so this test would prove nothing'
+            exit 1
+          fi
+          echo 'curl could not reach Snyk from the namespace, as it must not'
+          if cut_off SNYK_TOKEN=00000000-0000-0000-0000-000000000000 timeout 300 "$RUNNER_TEMP/snyk" code test --severity-threshold=low; then
             echo 'the Snyk CLI passed with Snyk out of reach'
             exit 1
           fi

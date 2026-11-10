@@ -12,9 +12,10 @@
 #   git           "fetches" main: a tree the case made (its deploy/check-blockers.sh is the real one, and its SERVER-BLOCKERS.md the
 #                 case's own), and says a commit is on main only if the case lists it;
 #   jq            the real one, from /usr/bin (so run this where jq is: GitHub's runner, the "Deploy scripts" check);
+#   flock         notes what it was asked, and says the lock is held only if the case says another pull holds it;
 # and chown, first on PATH, which only notes what it's asked. root's installed remote-deploy.sh is a stand-in that notes what it was
-# given and ends as the case asks. Nothing runs as root, and nothing outside the case's folder changes. Then broken copies of
-# pull-deploy.sh, each with one check taken out, must each make some case fail.
+# given, and whether "taking" was written down before it started, and ends as the case asks. Nothing runs as root, and nothing outside
+# the case's folder changes. Then broken copies of pull-deploy.sh, each with one check taken out, must each make some case fail.
 set -eu
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -82,8 +83,14 @@ case "$1" in
 esac
 STANDIN
   printf '#!/bin/sh\nexec "%s" "$@"\n' "$jq_real" > "$m/usr/bin/jq"
-  printf '#!/bin/sh\necho "remote-deploy.sh $*" >> "$FAKE_LOG"\nexit "$FAKE_DEPLOY_EXIT"\n' > "$m/usr/local/lib/avpx-pull/remote-deploy.sh"
-  chmod +x "$m/usr/bin/curl" "$m/usr/bin/systemd-run" "$m/usr/bin/git" "$m/usr/bin/jq"
+  printf '#!/bin/sh\necho "flock $*" >> "$FAKE_LOG"\n[ "$FAKE_LOCK_HELD" = no ]\n' > "$m/usr/bin/flock"
+  cat > "$m/usr/local/lib/avpx-pull/remote-deploy.sh" <<'STANDIN'
+#!/bin/sh
+echo "remote-deploy.sh $*" >> "$FAKE_LOG"
+if grep -q ': taking ' "$FAKE_TAKEN"; then echo 'remote-deploy.sh found "taking" written down' >> "$FAKE_LOG"; fi
+exit "$FAKE_DEPLOY_EXIT"
+STANDIN
+  chmod +x "$m/usr/bin/curl" "$m/usr/bin/systemd-run" "$m/usr/bin/git" "$m/usr/bin/jq" "$m/usr/bin/flock"
   # main, as git would fetch it: the real check-blockers.sh, and a list saying Nothing unless the case says otherwise
   mkdir -p "$m/main/deploy"
   cp "$here/check-blockers.sh" "$m/main/deploy/check-blockers.sh"
@@ -96,7 +103,7 @@ run_answer() { printf '%s' "$2" > "$1/api/actions_runs_${3:-4242}"; }
 approvals() { printf '%s' "$2" > "$1/api/actions_runs_${3:-4242}_approvals"; }
 
 GOOD_DEPLOYMENT="[{\"id\":7001,\"sha\":\"$C1\",\"environment\":\"avpx-nyc3\",\"creator\":{\"login\":\"github-actions[bot]\",\"id\":41898282},\"payload\":{\"jarsSha256\":\"$JARS\",\"runId\":4242}}]"
-GOOD_RUN='{"path":".github/workflows/deploy.yml","event":"workflow_dispatch","head_branch":"main","status":"completed","conclusion":"success"}'
+GOOD_RUN="{\"path\":\".github/workflows/deploy.yml\",\"event\":\"workflow_dispatch\",\"head_branch\":\"main\",\"status\":\"completed\",\"conclusion\":\"success\",\"run_attempt\":1,\"display_title\":\"Deploy $C1 to nyc3\"}"
 GOOD_APPROVAL='[{"state":"approved","user":{"login":"Melanikus","id":78985790},"environments":[{"name":"production"}]}]'
 
 # A case that would be taken, every answer good: $1 its folder
@@ -114,14 +121,15 @@ pull() {
   [ "$#" -gt 0 ] || set -- nyc3
   : > "$m/log"
   if PATH="$work/path:$PATH" AVPX_DEPLOY_ROOT="$m" FAKE_LOG="$m/log" FAKE_API="$m/api" FAKE_BASE="$API" FAKE_MAIN="$m/main" \
-    FAKE_ON_MAIN="${ON_MAIN-$C1}" FAKE_DEPLOY_EXIT="${DEPLOY_EXIT:-0}" sh "${SCRIPT:-$script}" "$@" > "$m/out" 2>&1; then
+    FAKE_ON_MAIN="${ON_MAIN-$C1}" FAKE_DEPLOY_EXIT="${DEPLOY_EXIT:-0}" FAKE_LOCK_HELD="${LOCK_HELD:-no}" \
+    FAKE_TAKEN="$m/var/lib/avpx-pull/taken" sh "${SCRIPT:-$script}" "$@" > "$m/out" 2>&1; then
     return 0
   fi
   return 1
 }
 
 deployed() { grep -q "^remote-deploy.sh $C1 $JARS$" "$1/log"; }
-noted() { grep -q "^7001 $2" "$1/var/lib/avpx-pull/taken"; }
+noted() { grep -q "^7001 run 4242: $2" "$1/var/lib/avpx-pull/taken"; }
 
 all_cases() {
   bad=0
@@ -136,6 +144,9 @@ all_cases() {
   grep -q "^as avpx-build, private network yes: $c/usr/bin/jq" "$c/log" || no 'its answers are read as avpx-build, with no network'
   grep -q -- "--proto =https --tlsv1.2 --max-time 30 --max-filesize 1048576" "$c/log" || no 'every question is HTTPS only, with a time limit and a size cap'
   if grep -qi 'authorization' "$c/log"; then no 'no token is ever sent'; fi
+  grep -q '^flock -n 9$' "$c/log" || no 'the run holds the lock, and never waits for it'
+  if grep -q '^remote-deploy.sh found "taking" written down$' "$c/log" && noted "$c" "taking $C1"; then :; else
+    no '"taking" is written down before remote-deploy.sh starts'; fi
   # The same again: taken already, and nothing but the one question
   if pull "$c" && ! deployed "$c" && grep -q 'taken already' "$c/out" && [ "$(grep -c '^curl ' "$c/log")" -eq 1 ]; then :; else
     no 'a deployment taken already is never taken again, and costs one question'; fi
@@ -166,7 +177,14 @@ all_cases() {
     'started by a push|s/workflow_dispatch/push/' \
     'from another branch|s/"head_branch":"main"/"head_branch":"v2"/' \
     'failed|s/"conclusion":"success"/"conclusion":"failure"/' \
-    'cancelled|s/"conclusion":"success"/"conclusion":"cancelled"/'; do
+    'cancelled|s/"conclusion":"success"/"conclusion":"cancelled"/' \
+    'run again|s/"run_attempt":1/"run_attempt":2/' \
+    'no attempt|s/,"run_attempt":1//' \
+    'for another commit|s/"Deploy 1/"Deploy 9/' \
+    'for another machine|s/ to nyc3"/ to paris"/' \
+    'a dry run|s/ to nyc3"/ to nyc3 (dry run)"/' \
+    'a line break in its name|s/ to nyc3"/ to nyc3\\nDeploy x"/' \
+    'no name|s/,"display_title":"[^"]*"//'; do
     next run; good_case "$c"
     run_answer "$c" "$(printf '%s' "$GOOD_RUN" | sed "${wrong#*|}")"
     if pull "$c" || deployed "$c" || ! noted "$c" 'refused'; then no "a run refused and noted: ${wrong%%|*}"; fi
@@ -189,6 +207,23 @@ all_cases() {
     approvals "$c" "${wrong#*|}"
     if pull "$c" || deployed "$c" || ! noted "$c" 'refused'; then no "an approval refused and noted: ${wrong%%|*}"; fi
   done
+
+  # An approval jq can't read (no environments to look through): refused, nothing noted, so it's asked again next time
+  next approvalunread; good_case "$c"
+  approvals "$c" '[{"state":"approved","user":{"login":"Melanikus","id":78985790}}]'
+  if pull "$c" || deployed "$c" || grep -q '^7001 ' "$c/var/lib/avpx-pull/taken"; then no 'an approval jq cannot read is asked again next time, nothing noted'; fi
+
+  # A run an earlier deployment named already: refused and noted, whatever became of the earlier one, before its run is asked about
+  next runused; good_case "$c"
+  mkdir -p "$c/var/lib/avpx-pull"
+  printf '6999 run 4242: deployed %s\n' "$C9" > "$c/var/lib/avpx-pull/taken"
+  if pull "$c" || deployed "$c" || ! noted "$c" 'refused: its run was named by deployment 6999 already' || [ "$(grep -c '^curl ' "$c/log")" -ne 1 ]; then
+    no 'one approved run, one deploy: a second deployment naming it is refused'; fi
+
+  # Another pull holds the lock: this one stops before asking anything, and notes nothing
+  next locked; good_case "$c"
+  if LOCK_HELD=yes pull "$c" || grep -q '^curl ' "$c/log" || [ -s "$c/var/lib/avpx-pull/taken" ] || ! grep -q 'another pull is running' "$c/out"; then
+    no 'with another pull running, this one stops, saying so, and changes nothing'; fi
 
   # The commit not on main
   next offmain; good_case "$c"
@@ -233,7 +268,13 @@ for edit in \
   's/^if ! one_line_like "\$approved" .*$/if false; then/' \
   's/^if ! as_builder no-network sh -c .cd main .*merge-base.*$/if false; then/' \
   's/^if ! as_builder no-network sh main\/deploy\/check-blockers.sh; then$/if false; then/' \
-  's/ --proto .=https. --tlsv1.2 / /'; do
+  's/ --proto .=https. --tlsv1.2 / /' \
+  's/^if \[ -n "\$earlier" \]; then$/if false; then/' \
+  's/^if \[ "\$attempt" != 1 \]; then$/if false; then/' \
+  's/^if \[ "\$title" != "Deploy \$commit to \$machine" \]; then$/if false; then/' \
+  's/^"\$flock" -n 9 || /true || /' \
+  's/^note "taking \$commit"$/:/' \
+  's/\(| length | tostring end.\) 2>\/dev\/null) || refuse .*$/\1 2>\/dev\/null) || approved=""/'; do
   sed "$edit" "$script" > "$work/broken.sh"
   if cmp -s "$work/broken.sh" "$script"; then echo "TAKE-OUT CAN'T RUN, its text isn't in pull-deploy.sh: $edit"; failed=1; continue; fi
   if SCRIPT="$work/broken.sh" all_cases; then echo "TAKE-OUT NOT NOTICED: $edit"; failed=1; else echo "take-out noticed ($? cases): $edit"; fi

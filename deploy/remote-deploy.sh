@@ -57,6 +57,12 @@ case "$want" in *[!0-9a-f]*) refuse "the jars' sha256 must be 64 hex digits, sma
 [ "${#commit}" -eq 40 ] || refuse 'the commit must be 40 hex digits, small letters'
 [ "${#want}" -eq 64 ] || refuse "the jars' sha256 must be 64 hex digits, small letters"
 
+# One deploy at a time, whoever starts it (the machine's timer, through pull-deploy.sh, or a person by hand): the lock is held on file
+# descriptor 8 until this script ends, however it ends, so a second deploy stops at once, saying so, and changes nothing. pull-deploy.sh
+# holds a lock of its own (/var/lib/avpx-pull/lock), so the two never wait on each other.
+exec 8> "$root/var/lib/avpx-deploy.lock"
+flock -n 8 || refuse 'another deploy is running (it holds /var/lib/avpx-deploy.lock): this one stops, and changes nothing'
+
 # The work folder is in /var/lib, which only root can write to, and not in /tmp: avpx-build's steps run with a /tmp of their own
 # (PrivateTmp), so they'd never see a folder in the machine's /tmp. It's removed at the end, whatever happens.
 work=$(mktemp -d "$root/var/lib/avpx-deploy.XXXXXXXXXX")

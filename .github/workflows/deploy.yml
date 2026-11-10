@@ -4,7 +4,8 @@
 #
 # It's started by hand only (Actions, "Deploy", Run workflow), with the commit to deploy and the machine it's for. Each job needs the one
 # before, and the first that fails stops it all:
-#   1. Server blockers: refuses while SERVER-BLOCKERS.md lists anything (sh deploy/check-blockers.sh). So today it always refuses.
+#   1. Server blockers: refuses unless it was started from main, so the list it reads is main's as it is then; and refuses while that
+#      SERVER-BLOCKERS.md lists anything (sh deploy/check-blockers.sh). So today it always refuses.
 #   2. Gates: the commit is on main, and the latest run of every workflow named in REQUIRED, for a push of that very commit to main,
 #      ended in success. Runs are matched by their workflow's file, never by a check's name, so nothing else (another app's check, or
 #      this workflow's own jobs, all named "Deploy: ...") can stand in for one.
@@ -13,10 +14,14 @@
 #      (deploy/remote-deploy.sh).
 #   4. Record: waits for the owner to approve the "production" environment. Then, with the one right to write deployments, it records a
 #      GitHub deployment for environment avpx-<machine>: the commit, the jars' SHA-256, and this run's number. The machine's own timer
-#      (deploy/pull-deploy.sh, every 5 minutes) finds it, checks this run was deploy.yml, by hand, from main, finished with success, and
-#      approved by the owner, checks main's SERVER-BLOCKERS.md itself, and only then deploys. So the run must end with success for the
-#      machine to take it: this job is the last.
+#      (deploy/pull-deploy.sh, every 5 minutes) finds it, checks this run was deploy.yml, by hand, from main, finished with success in
+#      its first attempt, named for this commit and machine, and approved by the owner, checks main's SERVER-BLOCKERS.md itself, and only
+#      then deploys. So the run must end with success for the machine to take it: this job is the last.
 #   A dry run (the default) does all of that but the recording, and says what it would have recorded.
+#
+# THE RUN'S NAME (run-name, below) is "Deploy <commit> to <machine>", with " (dry run)" after it for a dry run. The machine requires it
+# to be exactly "Deploy <the deployment's commit> to <itself>", so an approval only ever counts for the commit and machine the owner
+# started that run for, and a dry run's never does, whoever wrote the deployment.
 #
 # No action but checkout is used, and no secret. This job's own token (GitHub's GITHUB_TOKEN, which ends with the run) is the one thing
 # that writes, and only deployments.
@@ -25,6 +30,7 @@
 # in for one; each job that uses them first runs deploy/check-ubuntu-tools.sh, which checks they're Ubuntu's and unchanged. GitHub's own
 # gh tool isn't used: its questions to GitHub are asked with curl.
 name: Deploy
+run-name: Deploy ${{ inputs.commit }} to ${{ inputs.machine }}${{ inputs.dry_run && ' (dry run)' || '' }}
 
 on:
   workflow_dispatch:
@@ -63,6 +69,10 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # Started from main only, so the checkout below is main as it is now, and the list it reads is main's
+      - name: Started from main
+        run: |
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "deploy.yml runs from main only, and this run was started from $GITHUB_REF"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false

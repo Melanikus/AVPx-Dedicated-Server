@@ -190,6 +190,12 @@ all_cases() {
   if ! deploy "$s" "$C1" "$(sha_of one)" && [ ! -e "$m/root/opt/avpx/current" ] && [ ! -e "$m/root/opt/avpx/releases/$C1" ] \
     && grep -q "didn't make both jars as plain files" "$m/out"; then :; else no 'a build folder that is a link is refused, and nothing is copied'; fi
 
+  # Another deploy running (here, a subshell holding the lock with the real flock): this one stops at once, saying so, and nothing changes
+  machine "$C1" "$PIN" one
+  if ( flock 8 && ! deploy "$s" "$C1" "$(sha_of one)" ) 8> "$m/root/var/lib/avpx-deploy.lock" && grep -q 'another deploy is running' "$m/out" \
+    && [ ! -e "$m/root/opt/avpx/current" ] && ! grep -q 'git fetch' "$m/log"; then :; else
+    no 'with another deploy running, a second stops at once, and changes nothing'; fi
+
   # The jars aren't the tested ones
   machine "$C1" "$PIN" one
   if ! deploy "$s" "$C1" "$(sha_of other)" && [ ! -e "$m/root/opt/avpx/current" ] && [ ! -e "$m/root/opt/avpx/releases/$C1" ] \
@@ -272,7 +278,8 @@ s/^  as_builder network sh "\$tree\/java\/tools\/get-jdk.sh"/  true "$tree\/java
 s/^work=\$(mktemp -d "\$root\/var\/lib\/avpx-deploy\.XXXXXXXXXX")$/work=$(mktemp -d)/
 s/ --setenv=HOME="\$work"//
 s/^  \[ -f "\$1" \] && \[ ! -L "\$1" \] && .*$/  [ -f "$1" ] \&\& [ ! -L "$1" ]/
-s/^  \[ -f "\$1" \] && \[ ! -L "\$1" \] && .*$/  true/'
+s/^  \[ -f "\$1" \] && \[ ! -L "\$1" \] && .*$/  true/
+s/^flock -n 8 || refuse/true || refuse/'
 echo "$breaks" | while IFS= read -r edit; do
   sed "$edit" "$script" > "$work/broken.sh"
   if cmp -s "$work/broken.sh" "$script"; then echo "TAKE-OUT CAN'T RUN, its text isn't in the script: $edit"; exit 1; fi

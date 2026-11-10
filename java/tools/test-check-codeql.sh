@@ -17,13 +17,29 @@ trap 'rm -rf "$work"' EXIT
 printf 'java/src/A.java\njava/test/B.java\n' > "$work/files"
 : > "$work/no-files"
 
-READ_BOTH='"artifacts":[{"location":{"uri":"java/src/A.java"}},{"location":{"uri":"java/test/B.java"}}]'
-READ_A='"artifacts":[{"location":{"uri":"java/src/A.java"}}]'
-B_IN_A_NOTE='"invocations":[{"toolExecutionNotifications":[{"locations":[{"physicalLocation":{"artifactLocation":{"uri":"java/test/B.java"}}}]}]}]'
+# CodeQL's notifications as it writes them: the one listing the files it extracted, and others, such as one of level "error" for a file
+# it couldn't. A file counts as read only in the first (check-codeql.sh, "WHAT COUNTS AS READ").
+AT_A='{"physicalLocation":{"artifactLocation":{"uri":"java/src/A.java"}}}'
+AT_B='{"physicalLocation":{"artifactLocation":{"uri":"java/test/B.java"}}}'
+AT_C='{"physicalLocation":{"artifactLocation":{"uri":"java/gen/C.java"}}}'
+EXTRACTED='"descriptor":{"id":"java/diagnostics/successfully-extracted-files"},"level":"none"'
+OTHER='"descriptor":{"id":"java/diagnostics/extraction-errors"}'
+EXTRACTED_BOTH="{$EXTRACTED,\"locations\":[$AT_A,$AT_B]}"
+EXTRACTED_A="{$EXTRACTED,\"locations\":[$AT_A]}"
+WARNING_B="{$OTHER,\"level\":\"warning\",\"locations\":[$AT_B]}"
+ERROR_B="{$OTHER,\"level\":\"error\",\"locations\":[$AT_B]}"
+ERROR_C="{$OTHER,\"level\":\"error\",\"locations\":[$AT_C]}"
+notes() { printf '"invocations":[{"toolExecutionNotifications":[%s]}]' "$1"; }
+READ_BOTH=$(notes "$EXTRACTED_BOTH")
+READ_A=$(notes "$EXTRACTED_A")
 FINDING='{"ruleId":"java/made-up-rule","message":{"text":"a made-up finding"},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"java/src/A.java"},"region":{"startLine":3}}}]}'
 
 GOOD="{\"runs\":[{\"results\":[],$READ_BOTH}]}"
-VIA_NOTE="{\"runs\":[{\"results\":[],$READ_A,$B_IN_A_NOTE}]}"
+B_ONLY_AMONG_ARTIFACTS="{\"runs\":[{\"results\":[],$READ_A,\"artifacts\":[{\"location\":{\"uri\":\"java/test/B.java\"}}]}]}"
+B_ONLY_IN_A_WARNING="{\"runs\":[{\"results\":[],$(notes "$EXTRACTED_A,$WARNING_B")}]}"
+B_EXTRACTED_AND_IN_AN_ERROR="{\"runs\":[{\"results\":[],$(notes "$EXTRACTED_BOTH,$ERROR_B")}]}"
+B_ONLY_IN_AN_ERROR="{\"runs\":[{\"results\":[],$(notes "$EXTRACTED_A,$ERROR_B")}]}"
+AN_UNTRACKED_FILE_IN_AN_ERROR="{\"runs\":[{\"results\":[],$(notes "$EXTRACTED_BOTH,$ERROR_C")}]}"
 FOUND="{\"runs\":[{\"results\":[$FINDING],$READ_BOTH}]}"
 FOUND_AND_UNREAD="{\"runs\":[{\"results\":[$FINDING],$READ_A}]}"
 UNREAD="{\"runs\":[{\"results\":[],$READ_A}]}"
@@ -56,8 +72,20 @@ all_cases() {
 
   folder "$GOOD"
   if run "$s" && grep -qx 'CodeQL found 0' "$work/said"; then :; else no 'nothing found, and both files read: it passes'; fi
-  folder "$VIA_NOTE"
-  if run "$s"; then :; else no 'a file CodeQL names only in a notification of its own counts as read: it passes'; fi
+
+  # What counts as read: only a file in the notification of extracted files, and in no error (Secondary's G-1)
+  folder "$B_ONLY_AMONG_ARTIFACTS"
+  fails 'a file named only among the files results point to is not read' "CodeQL didn't read java/test/B.java"
+  folder "$B_ONLY_IN_A_WARNING"
+  fails 'a file named only in another notification is not read' "CodeQL didn't read java/test/B.java"
+  if grep -qF 'The notifications it wrote: java/diagnostics/extraction-errors, java/diagnostics/successfully-extracted-files' "$work/said"; then :; else
+    no 'a file not read: it says which notifications CodeQL wrote, so a renamed one shows'; fi
+  folder "$B_EXTRACTED_AND_IN_AN_ERROR"
+  fails 'a file extracted, but named in a notification of level error' "CodeQL couldn't read java/test/B.java"
+  folder "$B_ONLY_IN_AN_ERROR"
+  fails 'a file named only in a notification of level error' "CodeQL couldn't read java/test/B.java"
+  folder "$AN_UNTRACKED_FILE_IN_AN_ERROR"
+  fails 'any file a notification of level error names, tracked or not' "CodeQL couldn't read java/gen/C.java"
 
   folder
   fails 'no results file at all' 'no results files in'
@@ -97,6 +125,8 @@ for edit in \
   's/\[\.runs\[\]\.results\[\]\] | length/[.runs[].results[]?] | length/' \
   's/^if \[ "\$found" != 0 \]; then$/if false; then/' \
   's/grep -Fxq -e "\$f"; then :; else/true; then :; else/' \
+  's/select(.descriptor.id == \$id)/select(true)/' \
+  's/select(.level == "error")/select(false)/' \
   's/^if \[ "\$count" -eq 0 \]; then$/if false; then/' \
   's/^  failed=1$/  :/' \
   's/^if \[ "\$failed" -ne 0 \]; then exit 1; fi$/:/'; do

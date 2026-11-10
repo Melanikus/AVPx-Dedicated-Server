@@ -3,6 +3,7 @@ package avpx.tools;
 import avpx.Settings;
 import avpx.access.AccessCode;
 import avpx.list.Listings;
+import avpx.list.ServersLine;
 import avpx.v2.Identity;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -479,19 +480,20 @@ public final class Smoke {
 
   // ----- The servers.cfg line (#175)
 
-  // The one line a game's servers.cfg takes for this machine (AvP-docs' #175 design, Fifth's reader), and a # line before it naming
-  // the server's commit and the day, printed on their own, so the operator shares them as they are and copies nothing by hand:
-  //   <name> TAB <public IPv4>:<the list's port> TAB <the list's pin> TAB <public IPv4>:<the relay's control port> TAB <the relay's id>
-  // Only the name and the public address are the operator's to give, since nothing on the machine knows them for sure (behind a
-  // provider's network, the machine's own addresses aren't the one players reach). Everything else is worked out here, from what this
-  // machine runs, and checked against what it serves:
-  //   - the list's pin: SHA-256 of the SubjectPublicKeyInfo (the DER of the certificate's public key) in the certificate file the list's
-  //     settings name, which must be the very key the list serves over TLS right now, asked on 127.0.0.1;
+  // The one line a game's servers.cfg takes for this machine (the owner's short line, 2026-11-10: ServersLine.java says it whole), and a
+  // # line before it naming the server's commit and the day, printed on their own, so the operator shares them as they are and copies
+  // nothing by hand:
+  //   <public IPv4>  <fingerprint>  <name>
+  // with :<the list's port>:<the relay's control port> after the address when they aren't 443 and 27500. Only the name and the public
+  // address are the operator's to give, since nothing on the machine knows them for sure (behind a provider's network, the machine's own
+  // addresses aren't the one players reach). The fingerprint is worked out here, from what this machine serves, each part checked:
+  //   - the list's SubjectPublicKeyInfo (the DER of its public key), as the list serves it over TLS right now, asked on 127.0.0.1, which
+  //     must be the very key in the certificate file the list's settings name;
   //   - the relay's id: CRYPTO.md section 12.1's SHA-384, by hand, of the static keys the settings hold, which must be the keys the
   //     list's GET /v1/relay-keys gives.
-  // The game trusts the list by that pin alone (#175's "trust the pin alone"), so the line holds for as long as the list keeps its key:
-  // deploy/README.md says how a certificate is made again from the same key. Exit 0 with the two lines, or 1 with the reason on the
-  // error stream and nothing on the output.
+  // The game trusts the server by that fingerprint alone, so the line holds for as long as the list keeps its key and the relay its
+  // static keys: deploy/README.md says how a certificate is made again from the same key. Exit 0 with the two lines, or 1 with the reason
+  // on the error stream and nothing on the output.
   private static int serversLine(Settings settings, String name, String address) throws Exception {
     String wrong = settings.protocol() != 2 ? "a servers.cfg line is for a version 2 server (\"protocol\": 2)"
         : c.certificate() == null ? "a servers.cfg line needs this machine's list: its settings have none"
@@ -536,11 +538,11 @@ public final class Smoke {
     sha384.update("AVPX relay keys v2".getBytes(StandardCharsets.US_ASCII));
     sha384.update(p384);
     sha384.update(kem);
-    String id = hex.formatHex(sha384.digest());
-    String pin = hex.formatHex(MessageDigest.getInstance("SHA-256").digest(spki));
+    byte[] id = sha384.digest();
+    // The key the list is serving, which the check above found to be the certificate file's
+    byte[] fingerprint = ServersLine.fingerprint(served, id);
     System.out.print("# " + name + ": AVPx Dedicated Server " + deployedCommit() + ", made " + LocalDate.now(ZoneOffset.UTC) + " (UTC)\n"
-        + name + "\t" + address + ":" + settings.list().port() + "\t" + pin + "\t" + address + ":" + settings.controlPort() + "\t" + id
-        + "\n");
+        + ServersLine.line(address, settings.list().port(), settings.controlPort(), fingerprint, name) + "\n");
     System.out.flush();
     return 0;
   }

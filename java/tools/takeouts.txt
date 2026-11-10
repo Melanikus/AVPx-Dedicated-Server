@@ -2467,3 +2467,32 @@ final class TakeoutCompareImported {
   }
 }
 >>>
+
+# ----- The servers.cfg line (ServersLine.java, the owner's short line, 2026-11-10), added the same day
+
+=== the servers line's fingerprint leaves out the zero byte after its words
+check: tests
+file: java/src/avpx/list/ServersLine.java
+<<< from
+    sha256.update((byte) 0);
+<<< to
+    sha256.update(new byte[0]);
+>>>
+
+=== the servers line's fingerprint takes a relay id of any length
+check: tests
+file: java/src/avpx/list/ServersLine.java
+<<< from
+    if (spki == null || spki.length == 0 || relayId == null || relayId.length != RELAY_ID_BYTES) {
+<<< to
+    if (spki == null || spki.length == 0 || relayId == null || relayId.length == 0) {
+>>>
+
+=== the servers line leaves the ports out when they aren't the usual ones
+check: tests
+file: java/src/avpx/list/ServersLine.java
+<<< from
+    String where = listPort == DEFAULT_LIST_PORT && relayPort == DEFAULT_RELAY_PORT ? address : address + ":" + listPort + ":" + relayPort;
+<<< to
+    String where = address;
+>>>

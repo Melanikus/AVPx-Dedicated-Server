@@ -31,6 +31,8 @@ public final class AllTests {
     avpx.list.AccessRequestsTest.register();
     Tests.file("AccessLimitsTest");
     avpx.list.AccessLimitsTest.register();
+    Tests.file("ServersLineTest");
+    avpx.list.ServersLineTest.register();
     Tests.file("AccessStoreTest");
     avpx.access.AccessStoreTest.register();
     Tests.file("HttpTest");

@@ -2,7 +2,8 @@
 # Runs ProVerif on every model in proofs/, and on the variants that break one half of the hybrid or both, and checks each query gives
 # the answer it must. Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
 # Modified 2026-11-10 by Melanikus: one group at a time, so the Proofs check can run them side by side (proofs.yml); each ProVerif run
-# held to a time limit; pqik's query 1 with names that take no arguments (below).
+# held to a time limit; pqik's query 1 with names that take no arguments (below). Later the same day: secrecy assumptions in every pqik and
+# pqxx run, each checked by ProVerif itself (secrets, below).
 #
 #   sh proofs/run.sh [group]   needs proverif and timeout on the PATH (GitHub's "Proofs" check installs ProVerif); exits 0 only if every
 #                              answer is the one written below. The group is pqnk, pqik-q1, pqik-q2, pqik-q3 or pqxx-q1 to pqxx-q4;
@@ -61,6 +62,37 @@ ran=0
 command -v proverif > /dev/null || { echo 'proofs: proverif is not on the PATH'; exit 1; }
 command -v timeout > /dev/null || { echo 'proofs: timeout is not on the PATH, so no run could be held to its time limit'; exit 1; }
 
+# SECRECY ASSUMPTIONS (added 2026-11-10, from the Proofs' round 4 measures): for pqik and pqxx, "not attacker(...)" for every secret the
+# variant doesn't give away. A broken half gives away its static keys and every result an honest side computes with that half (dhes, ss1
+# and the rest), never the ephemeral exponents, ML-KEM keys and coins themselves. So:
+#   as written:  every static key, in phase 0 (phase 1 gives them all away after the sessions), and every ephemeral secret;
+#   dh-broken:   the ML-KEM static keys, in phase 0, and every ephemeral secret;
+#   kem-broken:  the ECDH static keys, in phase 0, and every ephemeral secret;
+#   both-broken: every ephemeral secret.
+# ProVerif then drops every clause that needs the attacker to know one of them, and it checks each assumption itself: one that can be
+# derived stops the run with an error, which fails here. ProVerif's manual (2.05, section 6.7.2, page 116): "The use of secrecy assumptions
+# preserves soundness because ProVerif also checks that F cannot be derived; if it can be derived, ProVerif fails with an error message."
+# With them, pqik's query 2 ended in a minute (proofs-measure 06bd42b, round 4), where without them it ran out of memory or time.
+secrets() {
+  of=$1; kind=$2
+  case "$of" in
+    pqik) dhstatic='new sdh|cdhHonest'; kemstatic='new skem|ckemHonest'; ephemeral='new e|new ek|new r1|new re|new r2|new r3' ;;
+    pqxx) dhstatic='new hdh|new jdh'; kemstatic='new hkem|new jkem'; ephemeral='new e|new ek|new r3|new he|new r2|new r4' ;;
+    *) return 0 ;;
+  esac
+  case "$kind" in
+    as-written) statics="$dhstatic|$kemstatic" ;;
+    dh-broken) statics=$kemstatic ;;
+    kem-broken) statics=$dhstatic ;;
+    *) statics='' ;;
+  esac
+  old_ifs=$IFS
+  IFS='|'
+  for s in $statics; do printf 'not attacker(%s) phase 0.\n' "$s"; done
+  for s in $ephemeral; do printf 'not attacker(%s).\n' "$s"; done
+  IFS=$old_ifs
+}
+
 # One run: the model, the variant's name, the sed edits that make it (or nothing), which query (0 for every one), whether every name is
 # made with no arguments ("names": see pqik below), and the answers its queries must give, one word each ("true", "false", or "*" for
 # either)
@@ -97,6 +129,15 @@ variant() {
     fi
     left=$(grep -c '^query ' "$file" || true)
     if [ "$left" -ne 1 ]; then echo "FAIL  $label: $left queries left, not 1"; failed=1; return 0; fi
+  fi
+
+  # The secrecy assumptions this model and variant allow (secrets, above), just before the one "process" line
+  secrets "$model" "$name" > "$file.secrets"
+  if [ -s "$file.secrets" ]; then
+    if [ "$(grep -c '^process$' "$file")" -ne 1 ]; then echo "FAIL  $label: no single \"process\" line to put the secrecy assumptions before"; failed=1; return 0; fi
+    awk -v extra="$file.secrets" '/^process$/ { while ((getline line < extra) > 0) print line } { print }' "$file" > "$file.assumed"
+    mv "$file.assumed" "$file"
+    label="$label, $(wc -l < "$file.secrets" | tr -d ' ') secrets"
   fi
 
   ran=$((ran + 1))

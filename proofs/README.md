@@ -16,6 +16,14 @@ Written 2026-11-09 by Melanikus. CRYPTO.md section 14 promises these: models of 
 - as it is, with ECDH broken, and with ML-KEM broken: **every query must be true**, because either half alone holds;
 - with both broken: **the secrecy queries must be false** (pqnk's and pqik's authentication fail too; pqxx's may not, because the attacker learns each secret only as an honest side computes it, after the message it would need to forge, so run.sh doesn't hold it to an answer). That shows the model isn't trivially true, and that the hybrid is what protects it, as a take-out row does for a test.
 
+## What helps ProVerif finish, and why none of it can make a false proof
+
+pqik and pqxx are big enough that ProVerif ran out of memory or time on them as written. run.sh gives it two kinds of help, and ProVerif's own manual (2.05) says neither can turn a false answer into a true one:
+- **Secrecy assumptions** in every pqik and pqxx run: `not attacker(...)` for each secret the variant doesn't give away (run.sh, `secrets`, lists them). ProVerif drops every clause that needs the attacker to know one of them, and checks each one itself: "The use of secrecy assumptions preserves soundness because ProVerif also checks that F cannot be derived; if it can be derived, ProVerif fails with an error message" (section 6.7.2, page 116). A wrong one stops the run, which fails the check.
+- **Names that take no arguments** in pqik's query 1 (`new x[]`). A name's arguments "tune the performance and precision of the analysis", and "the internal representation of names always includes session identifiers (necessary for soundness)" (page 120). At worst a true becomes "cannot be proved", which fails.
+
+Never used here: `axiom` (ProVerif assumes it without proving it), `restriction` (it proves things only on the traces it keeps), and limits on the depth of terms or the number of hypotheses (they cost precision nobody reading the answer could see).
+
 ## Running them
 
 - **On GitHub:** the **Proofs** check (`.github/workflows/proofs.yml`) builds ProVerif 2.05 from INRIA's source release, checked by a pinned SHA-256 (INRIA publishes no checksum or signature, so the pin is the only check), with OCaml from Ubuntu's signed archive, and runs `sh proofs/run.sh <group>` on every change, one job for each group (pqnk, and each query of pqik and pqxx), side by side, each ProVerif run held to 60 minutes. The check passes only if every group does, and every query is in one.

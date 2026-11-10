@@ -298,7 +298,7 @@ Every implementation must make the same bytes. Where Noise leaves a choice, or w
 17. **Handshake B's prologue** is three MixHashes, in this order:
     - the region's name in ASCII, then one 0 byte (as A's);
     - the joiner's relay port, as 2 bytes little-endian (the joiner has it from JOIN_PORT, the host from NEW_JOINER);
-    - the host's id as the listing gives it, 48 bytes (section 8). Until section 8's third change is built, the code mixes the 16-byte fingerprint here; that change remakes handshake B's vectors and proofs/pqxx.pv with the id.
+    - the host's id as the listing gives it, 48 bytes (section 8). The server's side mixes it since 2694c87, with handshake B's vectors made again; the game's, with its beta.2 handshake B. In proofs/pqxx.pv the prologue's `fp(...)` stands for it: a one-way function of the host's two public keys, the same to the model at 16 bytes or 48.
     There's no pre-message: XX has none. The region binds B to the relay as well as to the port, at no cost. Settled 2026-11-09 with Primary; proofs/pqxx.pv has the same three.
 18. **Handshake B's datagrams** are `AVPE` both ways, never the relay's `AVPR`. They use kinds 16 to 20, the handshake id the joiner chose, a cookie of 16 zero bytes (the relay checks none), and point 10's fragments. On a joiner's port the relay passes them on unread (section 7).
 19. **The check code, committed before it's made.** Each side puts in 32 random bytes that the other can't see until it's too late to steer the code:
@@ -442,7 +442,7 @@ This runs on the joiner's relay port after READY, from game to game. The relay f
 - **The three places, what each costs, and when each is built:**
   1. **The approved players** (section 6): the store keeps each one's id, and the relay compares A1's `s` by it. The fingerprint stays for the access code and the owner's decision files. Cost: 96 more hex digits a record. Primary, 2026-11-09.
   2. **A relay's keys against the game's setting** (section 12.1): the setting names the relay's whole id, 96 hex digits. Cost: a longer `-dev` line, copied as MakeRelayKeys prints it. Fifth (the game's setting) and Primary (MakeRelayKeys and the vectors).
-  3. **The listing's host against the keys in B2** (this section): the listing carries the host's id in place of its fingerprint, and handshake B's prologue mixes the id (5.1 point 17). Cost: 55 more bytes a listed game, so `GET /v1/games`' worst case goes from 46,011 to 51,511 bytes and its cap from 48 KB to 56 KB (PROTOCOL.md). Handshake B's vectors and `proofs/pqxx.pv` change with it. Fifth (the game) and Primary (the list), after Fifth's step 7.
+  3. **The listing's host against the keys in B2** (this section): the listing carries the host's id in place of its fingerprint, and handshake B's prologue mixes the id (5.1 point 17). Cost: 55 more bytes a listed game, so `GET /v1/games`' worst case goes from 46,011 to 51,511 bytes and its cap from 48 KB to 56 KB (PROTOCOL.md). Handshake B's vectors change with it. **Built on the server's side** (Primary, 2694c87: the listing's `id`, the 56 KB cap, B's prologue, and the vectors, now sha256 06b40f26...); the game's side is Fifth's, in beta.2's handshake B.
   Until all three are built, SERVER-BLOCKERS.md item 6 keeps every tester off.
 
 | Step | From, to | Kind | Tokens | Size |

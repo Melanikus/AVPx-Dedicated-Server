@@ -4,8 +4,8 @@
 #
 #   sh remote-deploy.sh <commit> <jars sha256>
 #
-# Run as root by the SSM document avpx-deploy (deploy/avpx-deploy.ssm.json, made from this file by deploy/make-ssm-document.sh), which
-# the owner runs by hand on a test machine, or GitHub's deploy workflow runs once the owner has approved it. Nobody logs in to do this.
+# Run as root: by deploy/pull-deploy.sh (the machine's own timer, from root's installed copy in /usr/local/lib/avpx-pull/) once it has
+# checked a deploy the owner approved, or by the owner by hand in a test machine's console (deploy/README.md).
 #
 # WHAT IT DOES, in order, stopping at the first thing that fails:
 #   1. checks its two values again: the commit is 40 hex digits, the jars' sha256 64;
@@ -25,7 +25,7 @@
 #   9. keeps the newest few releases, and the one before, and removes older ones.
 #
 # WHO DOES WHAT: steps 2 to 4 handle code fetched from the network, so they run as the user avpx-build, which has no rights and owns
-# nothing, through systemd-run, with /etc/avpx (the settings and the pass key) and /etc/letsencrypt (the certificate's key) out of reach,
+# nothing, through systemd-run, with /etc/avpx (the settings, the pass key and the list's key, in /etc/avpx/tls) out of reach,
 # and the build with no network at all. Only root's own lines here read what they made, check it, and put it in place. The settings
 # and the certificate are never touched: only /opt/avpx and /opt/avpx-jdk* change.
 #
@@ -48,7 +48,7 @@ kept_releases=3
 say() { echo "deploy: $*"; }
 refuse() { say "$*"; exit 1; }
 
-# 1. The two values, checked again here: the SSM document checks them too, but this script trusts nothing it's given
+# 1. The two values, checked again here: pull-deploy.sh checks them too, but this script trusts nothing it's given
 [ "$#" -eq 2 ] || refuse "give exactly the commit and the jars' sha256"
 commit=$1
 want=$2
@@ -66,15 +66,14 @@ chmod 0700 "$work"
 
 # Runs a command as avpx-build: no rights, the settings and the certificate out of reach, writing only in $work. $1 is "network" or
 # "no-network".
-#   - /etc/avpx must be there (it holds the settings). /etc/letsencrypt is there only once certbot has run, so its "-" tells systemd to
-#     let it be missing (a test machine has no certificate from Let's Encrypt); when it's there, it's out of reach.
+#   - /etc/avpx must be there (it holds the settings, and the list's key in /etc/avpx/tls).
 #   - HOME is the work folder, and git reads no settings from outside it (GIT_CONFIG_NOSYSTEM, GIT_CONFIG_GLOBAL), so nothing set on the
 #     machine changes how the commit is fetched. avpx-build has no home of its own.
 as_builder() {
   if [ "$1" = network ]; then private=no; else private=yes; fi
   shift
   systemd-run --quiet --wait --pipe --collect -p User="$builder" -p PrivateNetwork="$private" -p NoNewPrivileges=yes \
-    -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes -p InaccessiblePaths=/etc/avpx -p InaccessiblePaths=-/etc/letsencrypt \
+    -p ProtectSystem=strict -p ProtectHome=yes -p PrivateTmp=yes -p InaccessiblePaths=/etc/avpx \
     -p ReadWritePaths="$work" -p WorkingDirectory="$work" \
     --setenv=HOME="$work" --setenv=GIT_CONFIG_NOSYSTEM=1 --setenv=GIT_CONFIG_GLOBAL=/dev/null -- "$@"
 }

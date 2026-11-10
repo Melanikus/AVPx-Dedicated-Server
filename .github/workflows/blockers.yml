@@ -28,27 +28,26 @@ jobs:
       - name: What blocks a deploy now
         run: sh deploy/check-blockers.sh --list
 
-  # deploy/remote-deploy.sh, the script the SSM document runs on the machine, tested with stand-ins for curl, systemctl and java: no
-  # machine, no network, no AWS. It moves a symbolic link, which needs Linux, so this is where its whole test runs.
+  # The machine's own deploy scripts, each tested with stand-ins: no machine, no network, no GitHub. remote-deploy.sh (what puts a
+  # commit in place) moves a symbolic link, which needs Linux, and pull-deploy.sh (what fetches an approved deploy, by the owner's ruling
+  # of 2026-11-09) needs Ubuntu's jq, so this is where their whole tests run.
   deploy-scripts:
     name: Deploy scripts
     runs-on: ubuntu-24.04
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: remote-deploy.sh, every case and its take-outs
         run: sh deploy/test-remote-deploy.sh
-      - name: The SSM document is what remote-deploy.sh makes
-        run: sh deploy/make-ssm-document.sh --check
-      - name: deploy.yml keeps its shape (by hand only, dry run by default, blockers first, the token in one job, every check required)
+      - name: pull-deploy.sh, every case and its take-outs (the owner's approval, deploy.yml's run, main and its blockers, before anything is deployed)
+        run: sh deploy/test-pull-deploy.sh
+      - name: deploy.yml keeps its shape (by hand only, dry run by default, blockers first, deployments written in one job, every check required)
         run: sh deploy/test-deploy-workflow.sh
       - name: open-for-tester.sh and close-for-tester.sh (one address, the server's ports only), with a stand-in ufw
         run: sh deploy/test-open-for-tester.sh
       - name: firewall.sh (the list machine, and a relay-only one), with a stand-in ufw
         run: sh deploy/test-firewall.sh
-      - name: get-aws-cli.sh (the pinned AWS CLI, its signature, sha256 and version), against a made-up release signed with a test key
-        run: sh deploy/test-get-aws-cli.sh
       - name: The curl, jq, gpg, unzip and sha256sum the deploy uses are Ubuntu's own on this runner, unchanged
         run: sh deploy/check-ubuntu-tools.sh

@@ -1,5 +1,6 @@
 #!/bin/sh
-# The tests of .github/workflows/deploy.yml's shape, with no GitHub and no AWS. Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
+# The tests of .github/workflows/deploy.yml's shape, with no GitHub. Written 2026-11-09 by Melanikus for AVPx Dedicated Server; for the
+# pull route the same night (the record job in place of the AWS one).
 #
 #   sh deploy/test-deploy-workflow.sh     exits 0 if every rule holds, 1 if any doesn't
 #
@@ -7,13 +8,13 @@
 #   1. it starts only by hand (workflow_dispatch), never on a push, a pull request or a timer;
 #   2. a dry run is what it does unless told otherwise;
 #   3. its first job runs the blockers check, in the form that refuses (no --list), and every later job needs the one before;
-#   4. only the deploy job may ask for an identity token (id-token: write, once in the file), and that job waits for "production";
-#   5. no action but checkout, and no secret: the role, machine and region come from variables;
+#   4. only the record job may write anything, and only deployments (deployments: write, once in the file), and that job waits for the
+#      owner's approval of "production". No job may ask for an identity token (id-token: write): nothing here goes to any cloud;
+#   5. no action but checkout, and no secret;
 #   6. every other workflow is in REQUIRED, by its file, so a commit must have passed it, and a workflow added later can't be forgotten;
 #      and the deploy's own jobs are named "Deploy: ...", so none can stand in for a required one;
-#   7. the tools (card #17): gh never; curl and jq only by their full path in /usr/bin, in a job that first checks they're Ubuntu's own
-#      (deploy/check-ubuntu-tools.sh); and aws only as "$aws", the pinned one, in a job that first fetches and checks it
-#      (deploy/get-aws-cli.sh).
+#   7. the tools: gh and aws never; curl and jq only by their full path in /usr/bin, in a job that first checks they're Ubuntu's own
+#      (deploy/check-ubuntu-tools.sh).
 set -eu
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -36,12 +37,17 @@ job_of blockers | grep -q 'run: sh deploy/check-blockers.sh$' || no 'the blocker
 if job_of blockers | grep -q 'needs:'; then no 'the blockers job is the first, needing nothing'; fi
 job_of gates | grep -q 'needs: blockers$' || no 'gates needs blockers'
 job_of build | grep -q 'needs: gates$' || no 'build needs gates'
-job_of deploy | grep -q 'needs: build$' || no 'deploy needs build'
+job_of record | grep -q 'needs: build$' || no 'record needs build'
 
-# 4. The identity token in the deploy job only, behind "production"
-[ "$(grep -v '^[[:space:]]*#' "$file" | grep -c 'id-token: write')" -eq 1 ] || no 'id-token: write is in the file exactly once, comments aside'
-job_of deploy | grep -q 'id-token: write' || no 'and it is in the deploy job'
-job_of deploy | grep -q 'environment: production$' || no 'the deploy job waits for the production environment'
+# 4. Writing deployments in the record job only, behind "production"; no identity token anywhere
+code_lines=$(grep -v '^[[:space:]]*#' "$file")
+[ "$(printf '%s\n' "$code_lines" | grep -c 'deployments: write')" -eq 1 ] || no 'deployments: write is in the file exactly once, comments aside'
+job_of record | grep -q 'deployments: write' || no 'and it is in the record job'
+job_of record | grep -q 'environment: production$' || no 'the record job waits for the production environment'
+if printf '%s\n' "$code_lines" | grep -q 'id-token:'; then no 'no job asks for an identity token'; fi
+if printf '%s\n' "$code_lines" | grep -Eq '^ +(contents|actions|packages|pull-requests|issues|statuses|checks|pages|security-events): write'; then
+  no 'nothing but deployments is ever written'
+fi
 grep -q '^  contents: read$' "$file" || no 'the workflow as a whole may only read'
 
 # 5. No action but checkout, and no secret
@@ -63,18 +69,15 @@ if grep -E '^    name: ' "$file" | grep -v "^    name: 'Deploy: " | grep -q .; t
 code=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*- name:' -e '^[[:space:]]*name:' "$file")
 by_name() { printf '%s\n' "$code" | grep -Eq "(^|[[:space:];|&(])$1[[:space:]]"; }
 if by_name gh; then no 'gh is not used'; fi
+if by_name aws; then no 'aws is not used: nothing here goes to any cloud'; fi
 if by_name curl || by_name jq; then no 'curl and jq are used only by their full path, /usr/bin/curl and /usr/bin/jq'; fi
-if by_name aws; then no 'aws is used only as "$aws", the pinned one'; fi
 # The line number in the job $1 of the first line matching $2 (a fixed text), or nothing
 first() { job_of "$1" | grep -n -F -- "$2" | head -n 1 | cut -d: -f1; }
-for job in blockers gates build deploy; do
+for job in blockers gates build record; do
   use=$(first "$job" '/usr/bin/curl'); jq_use=$(first "$job" '/usr/bin/jq')
   if [ -z "$use" ] || { [ -n "$jq_use" ] && [ "$jq_use" -lt "$use" ]; }; then use=$jq_use; fi
   check=$(first "$job" 'run: sh deploy/check-ubuntu-tools.sh')
   if [ -n "$use" ] && { [ -z "$check" ] || [ "$check" -gt "$use" ]; }; then no "the $job job checks curl and jq are Ubuntu's own before it uses them"; fi
-  use=$(first "$job" '"$aws"')
-  fetched=$(first "$job" 'run: sh deploy/get-aws-cli.sh "$RUNNER_TEMP/aws-cli"')
-  if [ -n "$use" ] && { [ -z "$fetched" ] || [ "$fetched" -gt "$use" ]; }; then no "the $job job fetches and checks the pinned aws before it uses it"; fi
 done
 
 if [ "$bad" -ne 0 ]; then
@@ -83,8 +86,8 @@ if [ "$bad" -ne 0 ]; then
 fi
 echo 'deploy.yml: every rule holds'
 
-# The take-outs of rule 7: broken copies of deploy.yml, each with one rule about the tools taken out, must each be caught. Each runs this
-# test again, in a folder of its own holding the copy; AVPX_IN_TAKEOUT tells that run not to start take-outs of its own.
+# The take-outs: broken copies of deploy.yml, each with one rule taken out, must each be caught. Each runs this test again, in a folder
+# of its own holding the copy; AVPX_IN_TAKEOUT tells that run not to start take-outs of its own.
 [ "${AVPX_IN_TAKEOUT:-}" = yes ] && exit 0
 t=$(mktemp -d)
 trap 'rm -rf "$t"' EXIT
@@ -96,9 +99,11 @@ for edit in \
   's|/usr/bin/jq -r .status|jq -r .status|' \
   's|^\(            \)/usr/bin/curl -q|\1curl -q|' \
   's|ask "compare/\$COMMIT...main" > compare.json|gh api "repos/$GITHUB_REPOSITORY/compare/$COMMIT...main" > compare.json|' \
-  's|id=\$("\$aws" ssm|id=$(aws ssm|' \
   's|^        run: sh deploy/check-ubuntu-tools.sh$|        run: true|' \
-  's|^        run: sh deploy/get-aws-cli.sh "\$RUNNER_TEMP/aws-cli"$|        run: true|'; do
+  's|^    environment: production$|    environment: staging|' \
+  's|^    timeout-minutes: 20$|    timeout-minutes: 20\n    permissions:\n      deployments: write|' \
+  's|^      deployments: write$|      deployments: write\n      id-token: write|' \
+  's|^    needs: build$|    needs: gates|'; do
   sed "$edit" "$file" > "$t/.github/workflows/deploy.yml"
   if cmp -s "$t/.github/workflows/deploy.yml" "$file"; then echo "TAKE-OUT CAN'T RUN, its text isn't in deploy.yml: $edit"; failed=1; continue; fi
   if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo "TAKE-OUT NOT NOTICED: $edit"; failed=1; else echo "take-out noticed: $edit"; fi

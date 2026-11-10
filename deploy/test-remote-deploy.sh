@@ -99,7 +99,7 @@ make_jdk() {
 # jars holding $3 (or fails, if $3 is FAIL), and whose get-jdk.sh pins $PIN
 machine() {
   m="$work/m$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"
-  # The machine's own /tmp is where mktemp -d would put a folder (TMPDIR, in deploy below); /etc/avpx is there, /etc/letsencrypt isn't
+  # The machine's own /tmp is where mktemp -d would put a folder (TMPDIR, in deploy below); /etc/avpx is there
   mkdir -p "$m/root/opt/avpx/releases" "$m/root/var/lib" "$m/root/tmp" "$m/root/etc/avpx" "$m/tree/java/tools"
   if [ "$2" != NONE ]; then
     make_jdk "$m/root/opt/avpx-jdk-$2" "$2"
@@ -168,7 +168,7 @@ all_cases() {
     && ! grep -q 'get-jdk into' "$m/log"; then :; else no 'a good deploy fetches that commit, puts both jars in place, restarts, and runs the installed smoke test'; fi
   # ...and every step that touched fetched code ran as avpx-build, with the settings and the certificate out of reach
   if grep 'systemd-run' "$m/log" | grep -v 'User=avpx-build' | grep -q .; then no 'every fetched-code step runs as avpx-build'; fi
-  if grep 'systemd-run' "$m/log" | grep -v 'InaccessiblePaths=/etc/avpx InaccessiblePaths=-/etc/letsencrypt' | grep -q .; then no 'with /etc/avpx and /etc/letsencrypt out of reach'; fi
+  if grep 'systemd-run' "$m/log" | grep -v 'InaccessiblePaths=/etc/avpx ' | grep -q .; then no 'with /etc/avpx out of reach'; fi
   grep 'systemd-run' "$m/log" | grep 'build.sh' | grep -q 'PrivateNetwork=yes' || no 'the build runs with no network'
   grep -q "chown avpx-build" "$m/log" || no 'the work folder is avpx-build own'
   if grep 'systemd-run' "$m/log" | grep -v ':: HOME=[^ ]*/var/lib/avpx-deploy\.[^ ]* GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null :: ' | grep -q .; then
@@ -269,7 +269,6 @@ s/^as_builder no-network env/as_builder network env/
 s/ -p InaccessiblePaths=\/etc\/avpx / /
 s/^  systemctl stop "\$service" || true$/  true/
 s/^  as_builder network sh "\$tree\/java\/tools\/get-jdk.sh"/  true "$tree\/java\/tools\/get-jdk.sh"/
-s/InaccessiblePaths=-\/etc\/letsencrypt/InaccessiblePaths=\/etc\/letsencrypt/
 s/^work=\$(mktemp -d "\$root\/var\/lib\/avpx-deploy\.XXXXXXXXXX")$/work=$(mktemp -d)/
 s/ --setenv=HOME="\$work"//
 s/^  \[ -f "\$1" \] && \[ ! -L "\$1" \] && .*$/  [ -f "$1" ] \&\& [ ! -L "$1" ]/

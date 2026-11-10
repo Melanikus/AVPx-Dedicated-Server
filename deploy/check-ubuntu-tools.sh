@@ -9,8 +9,6 @@
 #   1. a file that the Ubuntu package named below installed (dpkg says which package a file came from);
 #   2. unchanged since that package put it there, and so must the package's other files and those of the library it runs on
 #      (dpkg --verify compares each file with the checksum the package came with, and says nothing if all match).
-# The AWS command line tool isn't one of these: Ubuntu doesn't ship the one the deploy needs, so deploy/get-aws-cli.sh fetches and
-# checks a pinned one.
 #
 # WHAT THIS CAN'T DO: it trusts GitHub's runner itself, as every step on it must, since a runner that lies can lie to any check. What it
 # rules out is a tool that isn't Ubuntu's, such as one a runner update installed from somewhere else, or one changed after it was

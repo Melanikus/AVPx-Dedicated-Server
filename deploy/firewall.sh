@@ -20,8 +20,8 @@
 #
 # SSH: the owner's rule goes in first, and only then is a rule that lets SSH in from anywhere taken out (the one deploy/README.md's
 # section C makes), so the owner is never shut out halfway. If OWNER.IP is wrong, or the owner's address changes later, the way back in
-# is the provider's own console, which doesn't come through the network: DigitalOcean's Recovery Console, or AWS Systems Manager's
-# Session Manager. SSH over IPv6 is shut: an IPv4 rule opens nothing on IPv6.
+# is a console of the provider's own that doesn't come through the network, such as DigitalOcean's Recovery Console. On a host with no
+# such console, keep a second way in before running this. SSH over IPv6 is shut: an IPv4 rule opens nothing on IPv6.
 #
 # Run it as root, on a new public machine, and again whenever the owner's address changes (each run adds that address's rule; take an
 # old address's out with ufw delete). It's safe to run again: ufw doesn't add a rule twice. Change the UDP range here and in the settings

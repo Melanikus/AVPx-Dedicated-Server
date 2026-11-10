@@ -1,0 +1,16 @@
+# Every 5 minutes, avpx-pull.service asks GitHub whether the owner approved a new deploy for this machine. Written 2026-11-09 by
+# Melanikus for AVPx Dedicated Server. Five minutes keeps it to about 12 calls an hour, under GitHub's 60 for an address with no token.
+# systemd never starts the service again while a run of it is still going.
+#
+#   systemctl enable --now avpx-pull.timer      to start
+#   systemctl disable --now avpx-pull.timer     to stop: deploys are then by hand only, and the server runs as before
+[Unit]
+Description=AVPx Dedicated Server: look for an approved deploy every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

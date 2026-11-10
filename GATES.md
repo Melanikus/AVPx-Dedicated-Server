@@ -16,7 +16,7 @@ Written 2026-11-08 by Melanikus; for the Java server from 2026-11-09. Nothing re
 | **CodeQL (Java)** | java.yml | GitHub's static analysis, language `java-kotlin`, the security-and-quality queries, through `build.sh` | Any result in CodeQL's own SARIF, or any tracked `.java` file CodeQL didn't read |
 | **Snyk** | snyk.yml | Snyk Code (static analysis) on the whole repository | Any issue at any severity, or no `SNYK_TOKEN` |
 | **Server blockers** | blockers.yml | `deploy/test-check-blockers.sh`: the refusal of every deploy while SERVER-BLOCKERS.md lists anything works, and its own cases would notice the checker going wrong | The refusal's test failing. (A deploy refuses on its own while anything is listed) |
-| **Deploy scripts** | blockers.yml | `deploy/test-remote-deploy.sh` (the machine's side, with stand-ins: no machine, no network, no AWS), `make-ssm-document.sh --check`, `test-deploy-workflow.sh` (deploy.yml's shape, the tools' rules included), `test-open-for-tester.sh`, `test-firewall.sh` and `test-get-aws-cli.sh` (with stand-ins: no firewall touched, nothing fetched), and `check-ubuntu-tools.sh` on the runner itself | Any case, take-out or rule failing |
+| **Deploy scripts** | blockers.yml | `deploy/test-remote-deploy.sh` and `test-pull-deploy.sh` (the machine's side: putting a commit in place, and fetching a deploy the owner approved, with stand-ins: no machine, no network, no GitHub), `test-deploy-workflow.sh` (deploy.yml's shape, the tools' rules included), `test-open-for-tester.sh` and `test-firewall.sh` (with stand-ins: no firewall touched), and `check-ubuntu-tools.sh` on the runner itself | Any case, take-out or rule failing |
 | **Secret scanning and push protection** | GitHub's own | Switched on for the repository | A secret in a push is refused before it lands |
 
 **What isn't a check, and why:**
@@ -25,8 +25,8 @@ Written 2026-11-08 by Melanikus; for the Java server from 2026-11-09. Nothing re
 
 ## The workflows that aren't checks
 
-- **Deploy** (`deploy.yml`): started by hand, with a commit, as a dry run unless told otherwise. It refuses while SERVER-BLOCKERS.md lists anything. Then it checks the commit is on main and that the latest run of every workflow above, for that commit, succeeded. Then it builds the jars and waits for the owner to approve the `production` environment before anything is sent (deploy/README.md).
-- **Test build** (`test-build.yml`): started by hand; builds a commit's jars and prints what the owner types into AWS for a deploy to the test machine by hand. It can't reach AWS.
+- **Deploy** (`deploy.yml`): started by hand, with a commit, as a dry run unless told otherwise. It refuses while SERVER-BLOCKERS.md lists anything. Then it checks the commit is on main and that the latest run of every workflow above, for that commit, succeeded. Then it builds the jars and waits for the owner to approve the `production` environment, and only then records a GitHub deployment for the machine. The machine's own timer (deploy/pull-deploy.sh) takes it, after checking the run, the owner's approval, the commit on main and main's blockers itself. Nothing on GitHub reaches the machine (deploy/README.md, "The machine fetches its own deploys").
+- **Test build** (`test-build.yml`): started by hand; builds a commit's jars and prints what the owner checks for a deploy by hand on a test machine, and for installing the machine's own deploy scripts: the jars' SHA-256, and remote-deploy.sh's and pull-deploy.sh's. It reaches no machine.
 
 ## Settings on GitHub (PO sets these up)
 

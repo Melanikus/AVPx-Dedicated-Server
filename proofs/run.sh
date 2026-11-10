@@ -32,10 +32,24 @@ here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 group=${1:-all}
 minutes=${PROOFS_RUN_MINUTES:-60}
 
+# EVERY QUERY IS IN A GROUP (Primary's review, 2026-11-10). The groups are written once, here: proofs.yml's matrix must be exactly this
+# list (its first job checks that, with --groups), and the models must be exactly these three with exactly these many queries. So a model
+# or a query added later, or a group dropped from the matrix, can't sit unproved while the check stays green: each fails it until it's
+# given its group here, its block below, and its place in the matrix.
+groups='pqnk pqik-q1 pqik-q2 pqik-q3 pqxx-q1 pqxx-q2 pqxx-q3 pqxx-q4'
+if [ "$group" = --groups ]; then echo "$groups"; exit 0; fi
+models=$(find "$here" -maxdepth 1 -name '*.pv' -exec basename {} \; | LC_ALL=C sort | tr '\n' ' ')
+if [ "$models" != 'pqik.pv pqnk.pv pqxx.pv ' ]; then echo "proofs: the models are $models, not pqik.pv pqnk.pv pqxx.pv: each needs its groups"; exit 1; fi
+for counted in pqnk:2 pqik:3 pqxx:4; do
+  n=$(grep -c '^query ' "$here/${counted%%:*}.pv" || true)
+  if [ "$n" != "${counted#*:}" ]; then echo "proofs: ${counted%%:*}.pv has $n queries, not ${counted#*:}: each needs its group"; exit 1; fi
+done
+
 case "$minutes" in ''|*[!0-9]*) echo 'proofs: PROOFS_RUN_MINUTES is a whole number of minutes'; exit 2 ;; esac
 if [ "$minutes" -lt 1 ] || [ "$minutes" -gt 340 ]; then echo 'proofs: PROOFS_RUN_MINUTES is from 1 to 340'; exit 2; fi
-case "$group" in
-  all|pqnk|pqik-q1|pqik-q2|pqik-q3|pqxx-q1|pqxx-q2|pqxx-q3|pqxx-q4) ;;
+case "$group" in ''|*[!a-z0-9-]*) group=not-a-group ;; esac
+case " all $groups " in
+  *" $group "*) ;;
   *) echo 'proofs: the group is pqnk, pqik-q1 to pqik-q3 or pqxx-q1 to pqxx-q4, or none for all of them'; exit 2 ;;
 esac
 

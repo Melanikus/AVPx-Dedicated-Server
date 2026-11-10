@@ -22,7 +22,10 @@
 # THE GROUPS (2026-11-10): proofs/run.sh's groups run side by side, one job each, so a query that doesn't end yet can't hide the answers
 # of the ones that do. Each ProVerif run is held to 60 minutes (PROOFS_RUN_MINUTES), and one that hasn't ended by then fails. The last
 # job, "Proofs (ProVerif)", is the one main requires: it passes only if the stand-ins' job and every group passed, and fails on anything
-# else (a failure, a cancel, a skip). Every query of every model is in a group, so the check stays red until each one is proved.
+# else (a failure, a cancel, a skip). Every query of every model is in a group, so the check stays red until each one is proved. That's
+# held, not just written (Primary's review, 2026-11-10): run.sh refuses unless proofs/ holds exactly its three models with exactly their
+# numbers of queries, and the stand-ins' job below fails unless this file's matrix is exactly run.sh's groups. So a model, a query or a
+# group added later, or a group dropped from the matrix, fails the check until it's given its place in both.
 name: Proofs
 
 on:
@@ -47,6 +50,15 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # The groups job's matrix is exactly proofs/run.sh's groups, in its order, so no group is ever left out of the check
+      - name: Every group of proofs/run.sh, and nothing else, is in this check's matrix
+        run: |
+          set -eu
+          groups=$(sh proofs/run.sh --groups)
+          want="        group: [$(printf '%s' "$groups" | sed 's/ /, /g')]"
+          grep -qxF -- "$want" .github/workflows/proofs.yml \
+            || { echo "proofs.yml's matrix isn't exactly proofs/run.sh's groups ($groups)"; exit 1; }
+          echo "the matrix is proofs/run.sh's groups: $groups"
       - name: With no ProVerif, or a broken one, the proofs fail, never passing unproved
         run: |
           fake="$RUNNER_TEMP/fake-proverif"

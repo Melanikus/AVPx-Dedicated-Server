@@ -4,7 +4,7 @@ Written 2026-11-09 by Melanikus, at the owner's word: "20 years from now, we won
 
 **Who this is for:** you, years from now, with this repository and none of our accounts, keys or tokens. Nobody can give you permission, and you don't need it. This page is how you become the one who decides who plays: **the trust root**.
 
-**What "the trust root" means here:** whoever holds a server's keys and approves its players decides who can play on it, and nobody else does. The game trusts a server only through what it carries in its own files: the server's address, the key of its list's certificate, and its relay's id (servers.cfg, below). None of it depends on us being there. When you make your own keys and your own servers.cfg line, your server is as trusted as ours ever was, by the copies of the game that carry your line.
+**What "the trust root" means here:** whoever holds a server's keys and approves its players decides who can play on it, and nobody else does. The game trusts a server only through what it carries in its own files: one line in servers.cfg with the server's address and a fingerprint of its two keys, the list's certificate key and the relay's keys (section 3, step 5). None of it depends on us being there. When you make your own keys and your own servers.cfg line, your server is as trusted as ours ever was, by the copies of the game that carry your line.
 
 **Marked [BETA.2]:** parts being built for beta.2 (AvP-docs's BETA2-PLAN.md, "Built to outlive us") that may not be in your copy. If one is missing, the design is still what's written here, and the code to look in is named.
 
@@ -32,15 +32,25 @@ Follow deploy/README.md for the machine: the users (`avpx` runs the server, `avp
 
 1. **The list's certificate key.** The list is reached over HTTPS, and the game trusts it by the key of its certificate (its SPKI), not by any company that signs certificates. deploy/README.md says how, in "The list's key".
    - Make the key once, on the machine, and keep it: root's and avpx's to read, never copied off the machine.
-   - Make a certificate from it. Make each new certificate from the same key, so the games that carry your pin still trust it.
+   - Make a certificate from it. Make each new certificate from the same key, so the games that carry your line still trust it.
    - If the key is ever stolen or lost, make a new one. Your servers.cfg line changes, and the players need it again (section 7).
-   - **The game trusts the pin alone** (the owner's ruling, 2026-11-09). With a pin, it ignores the certificate's dates, its name and its issuer, and checks only that the key is the pinned one. **Why:** a date can only end a server, never save one. In 20 years nobody may be there to make a new certificate, and a date would stop every copy of the game reaching the server on that day, for good, with the key still safe. A key that's stolen or changed is answered by a new key and a new servers.cfg line (section 7), and for a server a release ships, by a new release. So the certificate's dates don't matter to the game: make it last as long as your tools allow.
+   - **The game trusts the key alone** (the owner's ruling, 2026-11-09). It ignores the certificate's dates, its name and its issuer, and checks only that the key is the one in your line's fingerprint. **Why:** a date can only end a server, never save one. In 20 years nobody may be there to make a new certificate, and a date would stop every copy of the game reaching the server on that day, for good, with the key still safe. A key that's stolen or changed is answered by a new key and a new servers.cfg line (section 7), and for a server a release ships, by a new release. So the certificate's dates don't matter to the game: make it last as long as your tools allow.
 2. **The relay's static keys:** `java -cp avpx-smoke.jar avpx.tools.MakeRelayKeys`, on the machine itself, so the secret is never anywhere else.
    - It prints three parts: the SECRET `staticKeys` block, which goes in `/etc/avpx/settings.json` and nowhere else; the PUBLIC keys; and the relay's **ID**, 96 hex digits.
    - The ID is public, and it's what the game checks the relay's keys against.
 3. **The settings:** `/etc/avpx/settings.json`, as `deploy/settings.example.json` shows, with `"protocol": 2`, your `staticKeys`, your region's name, and `"accessFolder": "/var/lib/avpx"`. The pass key is a secret too: `openssl rand -hex 32`, made on the machine.
 4. **Check it:** `java -jar avpx-smoke.jar --installed`. It's healthy when no line says FAIL, the last line is `<n> passed, 0 failed`, and its exit code is 0. It prints the relay's ID as the list gives it: that must be step 2's.
-5. **Your servers.cfg line** (the game's issue #175): the game ships a list of servers, one line each, with every field required: the server's address, the list's SPKI pin (step 1), and the relay's ID (step 2). `java -jar avpx-smoke.jar --installed --servers-line <a name for it> <its public IPv4 address>` prints your line. It takes the pin from the certificate the list serves and the ID from your settings' keys, and it refuses, printing nothing, if any of them disagree. Players add your line to their servers.cfg, or a release of the game carries it. [BETA.2: the game's side, which reads the line.] **A public server's address may go in a shipped file. A person's home address never does.**
+5. **Your servers.cfg line** (the game's issue #175, the owner's rulings of 2026-11-10): the game's whole list of servers is one file, `servers.cfg`, beside its `bin` folder, with one short line a server:
+
+       address  fingerprint  name
+
+   - **address:** the server's public IPv4 address. The list is at port 443 and the relay's control port at 27500, unless the line says `address:listport:relayport`.
+   - **fingerprint:** 64 lowercase hex digits: the SHA-256 of the text `AVPx servers.cfg line 1`, one zero byte, your list certificate's public key (its SubjectPublicKeyInfo, as DER, from step 1) and your relay's 48-byte ID (step 2; CRYPTO.md section 12.1). One number covers both keys. The game checks it against what your list serves before it sends your server anything else.
+   - **name:** what players see, 1 to 31 plain characters.
+
+   `java -jar avpx-smoke.jar --installed --servers-line <a name for it> <its public IPv4 address>` prints your line. It takes the key from the certificate the list serves and the ID from your settings' keys, and it refuses, printing nothing, if they disagree. [BETA.2: on beta2-server a9d2430 it still prints the earlier five-field form, and the short line replaces it, with the game's side that reads it.]
+
+   **How players switch to your server:** there's no server discovery, so you tell them: "open servers.cfg in the game folder with Notepad, replace the line (or add yours under it), save". Then each asks you for access (section 4). A new release of the game replaces servers.cfg when it's unzipped, so anyone who edited it keeps a copy first. **A public server's address may go in a shipped file. A person's home address never does.**
 
 **Deploys:** the machine fetches its own (deploy/README.md, "The machine fetches its own deploys"), so no key to it is kept anywhere else. A timer runs `deploy/pull-deploy.sh` every 5 minutes. It takes a deploy only if:
 - GitHub recorded it, from a Deploy run started by hand from `main` that succeeded;
@@ -105,7 +115,7 @@ GATES.md lists the checks every change must pass, with branch protection holding
 ## 7. When a key is lost or stolen
 
 - **The relay's static keys:** make new ones (section 3, step 2), put them in the settings, restart. The relay's ID changes, so every servers.cfg line naming it changes. Until players have the new line, their games refuse your relay. That's the point: a stolen key stops working the day you change it.
-- **The list's certificate key:** the same. A new key means a new SPKI pin in your servers.cfg line.
+- **The list's certificate key:** the same. A new key means a new fingerprint in your servers.cfg line.
 - **The pass key:** make a new one and restart.
 - **A player's identity:** revoke them (section 4). A revoke ends their sessions at the relay's next turn. They make a new identity and ask again.
 

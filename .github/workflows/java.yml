@@ -41,6 +41,21 @@ jobs:
           HOME="$trapped" sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
           echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
 
+      # A gate never passes for want of its tool (the owner's "built to outlive us", 2026-11-09: one day these downloads will be gone).
+      # So with every download sent to a proxy that isn't there, get-jdk.sh must fail, saying it's unreachable in the words every gate
+      # uses (TAKING-OVER.md), and leave no JDK behind.
+      - name: With nothing reachable, get-jdk.sh fails and leaves nothing, never passing for want of the JDK
+        run: |
+          dead=http://127.0.0.1:9
+          if https_proxy=$dead HTTPS_PROXY=$dead sh java/tools/get-jdk.sh "$RUNNER_TEMP/no-jdk" > "$RUNNER_TEMP/no-jdk.out" 2>&1; then
+            cat "$RUNNER_TEMP/no-jdk.out"; echo "get-jdk.sh passed with nothing reachable"; exit 1
+          fi
+          cat "$RUNNER_TEMP/no-jdk.out"
+          grep -qF 'is unreachable: replace it with an equivalent, see TAKING-OVER.md' "$RUNNER_TEMP/no-jdk.out" \
+            || { echo "get-jdk.sh failed without saying what was unreachable"; exit 1; }
+          test ! -e "$RUNNER_TEMP/no-jdk" || { echo "get-jdk.sh left a JDK folder behind after failing"; exit 1; }
+          echo "get-jdk.sh failed, as it must, said why, and left nothing"
+
       # The live tests open sockets on 127.0.0.1 only, and must all run here: with AVPX_LIVE=1 a live test that doesn't run fails
       - name: Build, and run every test, the live ones too
         env:
@@ -82,10 +97,11 @@ jobs:
 
       - name: The pin against Adoptium's newest GA release
         run: |
+          set -o pipefail
           pinned="jdk-$(sed -n "s/^JDK_RELEASE='\(.*\)'$/\1/p" java/tools/get-jdk.sh)"
           newest=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
             'https://api.adoptium.net/v3/assets/latest/25/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse' \
-            | jq -r '.[0].release_name')
+            | jq -r '.[0].release_name') || { echo "Adoptium's API is unreachable: replace it with an equivalent, see TAKING-OVER.md (the pin couldn't be checked, so this fails rather than passing unchecked)"; exit 1; }
           echo "pinned $pinned, Adoptium's newest $newest"
           test "$pinned" = "$newest"
 
@@ -318,6 +334,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # The checker of CodeQL's results first, against results files made up for it: every way CodeQL could fail to run or to read must
+      # fail the check, saying why, and broken copies of the checker must each be noticed
+      - name: The CodeQL checker fails whenever it must
+        run: sh java/tools/test-check-codeql.sh
+
       - name: The pinned JDK, checked as above
         run: |
           sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
@@ -338,27 +359,8 @@ jobs:
           category: java
           output: ${{ runner.temp }}/codeql
 
-      # Any finding at any severity fails the check (GATES.md): the results are counted from CodeQL's own file, not from its summary.
-      # Each one is written out too (its rule, its file and line, its words, and for a finding about data, where that data came from), so
-      # this log alone says what to fix.
-      - name: No findings at all
-        run: |
-          found=$(jq '[.runs[].results[]] | length' "$RUNNER_TEMP"/codeql/*.sarif)
-          echo "CodeQL found $found"
-          jq -r '.runs[].results[]
-            | "\(.ruleId)  \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)  \(.message.text)",
-              (.codeFlows[]?.threadFlows[]?.locations[0].location.physicalLocation
-                | "    its data comes from \(.artifactLocation.uri):\(.region.startLine)")' "$RUNNER_TEMP"/codeql/*.sarif
-          test "$found" = "0"
-
-      # A blind spot fails the gate too: every .java file in java/ must be in what CodeQL read
-      - name: CodeQL read every Java file
-        run: |
-          tracked=$(git ls-files 'java/*.java' | wc -l)
-          echo "$tracked Java files are tracked"
-          test "$tracked" -gt 0
-          for f in $(git ls-files 'java/*.java'); do
-            jq -e --arg f "$f" '[.runs[].artifacts[]?.location.uri] | any(. == $f)' "$RUNNER_TEMP"/codeql/*.sarif > /dev/null \
-              || jq -e --arg f "$f" '[.runs[].invocations[]?.toolExecutionNotifications[]?.locations[]?.physicalLocation.artifactLocation.uri] | any(. == $f)' "$RUNNER_TEMP"/codeql/*.sarif > /dev/null \
-              || { echo "CodeQL didn't read $f"; exit 1; }
-          done
+      # The verdict, from CodeQL's own results file (java/tools/check-codeql.sh): any finding at any severity fails the check (GATES.md),
+      # each one written out so this log alone says what to fix; so does any tracked .java file CodeQL didn't read, a blind spot; and so
+      # does no results file at all, so CodeQL that couldn't be fetched or couldn't run never passes for want of results.
+      - name: No findings at all, and CodeQL read every Java file
+        run: sh java/tools/check-codeql.sh "$RUNNER_TEMP/codeql"

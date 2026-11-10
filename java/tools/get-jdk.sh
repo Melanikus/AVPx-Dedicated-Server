@@ -13,6 +13,24 @@
 # The version, its address, its sha256 and Adoptium's fingerprint were looked up on 2026-11-08 from two places that agreed: the
 # release's own .sha256.txt, and Adoptium's API (api.adoptium.net/v3/assets/release_name/eclipse/jdk-25.0.5+8); the fingerprint from
 # adoptium.net/installation/gpg-verification. A new JDK changes all four lines below together, in one commit, looked up the same way.
+#
+# FOR WHOEVER BUILDS THIS YEARS FROM NOW (the owner's "built to outlive us", 2026-11-09), what each pin is, and what to do when it fails:
+#   - JDK_SHA256 is what pins the JDK: the SHA-256 of the exact file. Any copy of the file with this SHA-256 is this JDK, wherever it came
+#     from. So if JDK_URL is gone (Adoptium moved its releases, or GitHub is gone), a copy from anywhere else will do: a mirror, an
+#     archive (web.archive.org keeps many), or one someone kept. Put its address in JDK_URL, and its .sig beside it, or the signature
+#     check fails. The SHA-256 still has to match, so a wrong file can't get through.
+#   - ADOPTIUM_FINGERPRINT pins who made it: Adoptium's signing key, the one whose fingerprint this is, never just the key the address
+#     happens to serve. If Adoptium ever signs with another key, this refuses until the fingerprint is looked up again from two places that
+#     agree (their page above, and the key's own records). If the key is gone, and with it every copy of the .sig, then no copy of this JDK
+#     can be checked for who made it any more: move to a newer JDK, signed by a key that can be checked, as below.
+#   - JDK_RELEASE pins which one: java -version must say exactly this. Temurin 25 is a long-term release, with security updates for
+#     years. When they end, or Temurin itself is gone, take another build of OpenJDK 25 or newer, from any maker who signs their releases.
+#     Fill in its four lines the same way: from two places that agree, with its maker's key's fingerprint. The server uses only Java's
+#     own standard library (its ML-KEM is the JDK's, JEP 496, from Java 24 on), and nothing else, so any full OpenJDK of that version builds
+#     it. A different JDK makes different jar bytes, which is fine: GitHub and the machine both build with the one pinned here, and only
+#     have to match each other.
+#   - "The JDK is the newest Temurin 25" (java.yml) fails every quarter, when a security update comes out. That's the reminder to move
+#     these four lines. It isn't a fault in the code.
 set -eu
 
 JDK_RELEASE='25.0.5+8'
@@ -41,8 +59,14 @@ trap 'rm -rf "$work"' EXIT
 # nothing else) gets three more tries, 10 s apart, before this fails. Java's check went red on 2026-11-09 for one 504 from the download
 # server. Trying again changes nothing about what's trusted: whatever finally arrives must still pass the signature and sha256 checks
 # below, or it's thrown away.
+# A download that can't be had stops everything, saying so in the words every gate uses for a tool it can't reach (TAKING-OVER.md): so
+# nothing ever goes on, or passes, for want of the JDK.
 fetch() {
-  curl -q --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 --retry-delay 10 --output "$2" "$1"
+  if curl -q --fail --silent --show-error --location --proto '=https' --tlsv1.2 --retry 3 --retry-delay 10 --output "$2" "$1"; then
+    return 0
+  fi
+  echo "get-jdk: $1 is unreachable: replace it with an equivalent, see TAKING-OVER.md (any copy with the SHA-256 pinned here is the same JDK: the notes at the top of this script)" >&2
+  exit 1
 }
 
 fetch "$JDK_URL" "$work/jdk.tar.gz"

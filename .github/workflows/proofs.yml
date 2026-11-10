@@ -13,33 +13,40 @@
 # (CODING-STANDARD.md rule 7).
 #
 # A gate never passes for want of its tool (the owner's "built to outlive us", 2026-11-09: one day INRIA's address may be gone). If
-# ProVerif can't be fetched, isn't the pinned file, or won't build, this check fails, saying which. And the first step proves that
+# ProVerif can't be fetched, isn't the pinned file, or won't build, this check fails, saying which. And the first job proves that
 # proofs/run.sh can't pass without a real ProVerif: not with none, nor with one that stops, answers nothing, or says yes to everything.
 # If the address is gone for good, any copy with the pinned SHA-256 is the same file, from wherever it comes; if ProVerif itself is
 # gone, a tool that proves the same is found, reviewed as untrusted, pinned and wired in here in its place (TAKING-OVER.md, the gates),
 # never skipped.
+#
+# THE GROUPS (2026-11-10): proofs/run.sh's groups run side by side, one job each, so a query that doesn't end yet can't hide the answers
+# of the ones that do. Each ProVerif run is held to 60 minutes (PROOFS_RUN_MINUTES), and one that hasn't ended by then fails. The last
+# job, "Proofs (ProVerif)", is the one main requires: it passes only if the stand-ins' job and every group passed, and fails on anything
+# else (a failure, a cancel, a skip). Every query of every model is in a group, so the check stays red until each one is proved.
 name: Proofs
 
 on:
   pull_request:
   push:
     branches: [main]
+  # So a branch can be run without a pull request. It runs the same jobs, and proves nothing more or less
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
-  proofs:
-    name: Proofs (ProVerif)
+  # Stand-ins for ProVerif, in folders of their own, each put first on a PATH that holds no other: none at all, one that stops, one that
+  # runs and answers nothing, and one that says "true" to every query. proofs/run.sh must fail with each, and never say it passed. (The
+  # last fails at the variants with both halves broken, whose secrecy must come out false.)
+  standins:
+    name: "Proofs: with no ProVerif, or a broken one, they fail"
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Stand-ins for ProVerif, in folders of their own, each put first on a PATH that holds no other: none at all, one that stops, one
-      # that runs and answers nothing, and one that says "true" to every query. proofs/run.sh must fail with each, and never say it passed.
-      # (The last fails at the variants with both halves broken, whose secrecy must come out false.)
       - name: With no ProVerif, or a broken one, the proofs fail, never passing unproved
         run: |
           fake="$RUNNER_TEMP/fake-proverif"
@@ -57,6 +64,20 @@ jobs:
             fi
             echo "proofs/run.sh failed, as it must, with the stand-in ProVerif \"$kind\": $(tail -n 1 "$fake/$kind.out")"
           done
+
+  groups:
+    name: "Proofs: ${{ matrix.group }}"
+    runs-on: ubuntu-24.04
+    # Four runs of at most 60 minutes each, and the build
+    timeout-minutes: 270
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [pqnk, pqik-q1, pqik-q2, pqik-q3, pqxx-q1, pqxx-q2, pqxx-q3, pqxx-q4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: OCaml, from Ubuntu's signed archive
         run: |
           sudo apt-get update -q
@@ -79,7 +100,31 @@ jobs:
           (cd "$RUNNER_TEMP/proverif2.05" && sh ./build -nointeract)
           [ -x "$RUNNER_TEMP/proverif2.05/proverif" ] || { echo 'the build made no proverif'; exit 1; }
           echo "$RUNNER_TEMP/proverif2.05" >> "$GITHUB_PATH"
-      - name: Every model, every variant, every answer the one it must be
+      - name: This group's models, variants and queries, every answer the one it must be
+        env:
+          GROUP: ${{ matrix.group }}
+          PROOFS_RUN_MINUTES: 60
         run: |
           proverif -help 2>&1 | head -n 3 || true
-          sh proofs/run.sh
+          sh proofs/run.sh "$GROUP"
+
+  # The check main requires. It looks only at the other jobs' results: "success" for both, or it fails, saying which wasn't
+  all:
+    name: Proofs (ProVerif)
+    needs: [standins, groups]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: The stand-ins' job and every group passed
+        # Not "GROUPS": bash keeps that name for the user's group numbers, and ignores any value given to it
+        env:
+          STANDINS_RESULT: ${{ needs.standins.result }}
+          GROUPS_RESULT: ${{ needs.groups.result }}
+        run: |
+          echo "stand-ins: $STANDINS_RESULT; groups: $GROUPS_RESULT"
+          if [ "$STANDINS_RESULT" != success ] || [ "$GROUPS_RESULT" != success ]; then
+            echo 'the Proofs fail: every group must pass, and every query of every model is in one (proofs/run.sh)'
+            exit 1
+          fi
+          echo 'every model, variant and query gave the answer it must'

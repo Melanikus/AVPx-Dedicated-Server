@@ -1,5 +1,6 @@
 #!/bin/sh
-# The tests of .github/workflows/deploy.yml's shape, with no GitHub and no AWS. Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
+# The tests of .github/workflows/deploy.yml's shape, with no GitHub. Written 2026-11-09 by Melanikus for AVPx Dedicated Server; for the
+# pull route the same night (the record job in place of the AWS one).
 #
 #   sh deploy/test-deploy-workflow.sh     exits 0 if every rule holds, 1 if any doesn't
 #
@@ -7,14 +8,41 @@
 #   1. it starts only by hand (workflow_dispatch), never on a push, a pull request or a timer;
 #   2. a dry run is what it does unless told otherwise;
 #   3. its first job runs the blockers check, in the form that refuses (no --list), and every later job needs the one before;
-#   4. only the deploy job may ask for an identity token (id-token: write, once in the file), and that job waits for "production";
-#   5. no action but checkout, and no secret: the role, machine and region come from variables;
+#   4. only the record job may write anything, and only deployments (deployments: write, once in the file), and that job waits for the
+#      owner's approval of "production". No job may ask for an identity token (id-token: write): nothing here goes to any cloud;
+#   5. no action but checkout, and no secret;
 #   6. every other workflow is in REQUIRED, by its file, so a commit must have passed it, and a workflow added later can't be forgotten;
 #      and the deploy's own jobs are named "Deploy: ...", so none can stand in for a required one;
-#   7. the tools (card #17): gh never; curl and jq only by their full path in /usr/bin, in a job that first checks they're Ubuntu's own
-#      (deploy/check-ubuntu-tools.sh); and aws only as "$aws", the pinned one, in a job that first fetches and checks it
-#      (deploy/get-aws-cli.sh).
+#   7. the tools: gh and aws never, by any name (a command, or the last part of a path such as /usr/bin/gh); curl and jq only by their
+#      full path in /usr/bin, in a job that first checks they're Ubuntu's own (deploy/check-ubuntu-tools.sh);
+#   8. the run's name is "Deploy <commit> to <machine>", with " (dry run)" after it for a dry run: the machine requires that name for
+#      the deployment's own commit and machine (deploy/pull-deploy.sh), so an approval counts only for what it was given for;
+#   9. it runs from main only: the blockers job's first step refuses a run started from any other branch, so the list it reads is main's;
+#  10. no other workflow can write deployments: each workflow sets its own permissions at the top, none asks for write-all, and only
+#      deploy.yml has deployments: write. So only its record job can make a deployment, whatever the repository's default token allows
+#      (Secondary's review of the pull route, P-1);
+#  11. no workflow names a test's own hook: AVPX_DEPLOY_ROOT, AVPX_UFW and AVPX_CODEQL_FILES each swap a real tool or list for a test's
+#      stand-in, and AVPX_IN_TAKEOUT makes this test skip its take-outs. Each is for a test's own use only (Secondary's review of the
+#      gates failing closed, G-3);
+#  12. every file in .github/workflows ends in .yml, and is a plain file, not a link: GitHub runs a file there ending in .yaml too, and
+#      every rule here reads *.yml, so a workflow ending in .yaml would escape them all (Secondary's re-check, R-1). Every name is looked
+#      at, ones starting with a dot or two included (R-3), and none may start with a dot at all: rules 6, 10 and 11 read *.yml, which a
+#      shell's glob never matches to a hidden name (Secondary's third re-check, R-6);
+#  13. deploy.yml holds each value to its shape by case and by its length, never by grep (nor egrep or fgrep, by any path), which passes
+#      a text with a line break in it if any one of its lines matches. Each value's own two lines are required, in its own job, so no
+#      other tool (zgrep, awk, sed -n) can stand in for them (Secondary's third re-check, R-5): the commit (40 hex digits) and the machine
+#      (1 to 16 small letters, digits and -) in the blockers job, before anything else; the machine again, the jars' SHA-256 (64 hex
+#      digits) and the deployment's number (1 to 20 digits, no 0 first) in the record job (Secondary's re-checks, R-2 and R-4). Each
+#      line is required whole, ending in its refusal ("exit 1") with nothing after it, so a line can't keep its start and lose what it
+#      does (Secondary's fourth re-check, R-7).
+#
+# What rules 7 and 13 can't do (Secondary's third re-check, Info): they read words, so a name spelt another way (g''h, ${x}h) gets past
+# them. They're a tripwire, not the guard. What holds whatever a workflow spells is rule 4 (no job but record may write anything, and it
+# only deployments, after the owner's approval) and rule 5 (no action but checkout, and no secret), with each job's own permissions.
 set -eu
+# The ranges below ([a-z], [0-9a-f]) mean bytes, whatever the machine's language (Secondary's re-check, Info)
+LC_ALL=C
+export LC_ALL
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 flows="$here/../.github/workflows"
@@ -36,12 +64,17 @@ job_of blockers | grep -q 'run: sh deploy/check-blockers.sh$' || no 'the blocker
 if job_of blockers | grep -q 'needs:'; then no 'the blockers job is the first, needing nothing'; fi
 job_of gates | grep -q 'needs: blockers$' || no 'gates needs blockers'
 job_of build | grep -q 'needs: gates$' || no 'build needs gates'
-job_of deploy | grep -q 'needs: build$' || no 'deploy needs build'
+job_of record | grep -q 'needs: build$' || no 'record needs build'
 
-# 4. The identity token in the deploy job only, behind "production"
-[ "$(grep -v '^[[:space:]]*#' "$file" | grep -c 'id-token: write')" -eq 1 ] || no 'id-token: write is in the file exactly once, comments aside'
-job_of deploy | grep -q 'id-token: write' || no 'and it is in the deploy job'
-job_of deploy | grep -q 'environment: production$' || no 'the deploy job waits for the production environment'
+# 4. Writing deployments in the record job only, behind "production"; no identity token anywhere
+code_lines=$(grep -v '^[[:space:]]*#' "$file")
+[ "$(printf '%s\n' "$code_lines" | grep -c 'deployments: write')" -eq 1 ] || no 'deployments: write is in the file exactly once, comments aside'
+job_of record | grep -q 'deployments: write' || no 'and it is in the record job'
+job_of record | grep -q 'environment: production$' || no 'the record job waits for the production environment'
+if printf '%s\n' "$code_lines" | grep -q 'id-token:'; then no 'no job asks for an identity token'; fi
+if printf '%s\n' "$code_lines" | grep -Eq '^ +(contents|actions|packages|pull-requests|issues|statuses|checks|pages|security-events): write'; then
+  no 'nothing but deployments is ever written'
+fi
 grep -q '^  contents: read$' "$file" || no 'the workflow as a whole may only read'
 
 # 5. No action but checkout, and no secret
@@ -62,20 +95,80 @@ if grep -E '^    name: ' "$file" | grep -v "^    name: 'Deploy: " | grep -q .; t
 # 7. The tools. What runs is every line but comments and the steps' names (a name such as "curl and jq are Ubuntu's own" runs nothing).
 code=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*- name:' -e '^[[:space:]]*name:' "$file")
 by_name() { printf '%s\n' "$code" | grep -Eq "(^|[[:space:];|&(])$1[[:space:]]"; }
-if by_name gh; then no 'gh is not used'; fi
+# A program named at all: as a command, or as the last part of a path (/usr/bin/gh), with anything but a letter, digit, _ or - around it
+# (Secondary's re-check, R-4: by_name alone let /usr/bin/gh and /usr/bin/grep through, as their full path is how curl's is allowed)
+named_at_all() { printf '%s\n' "$code" | grep -Eq "(^|[^[:alnum:]_-])$1([^[:alnum:]_-]|\$)"; }
+if named_at_all gh; then no 'gh is not used, by any path'; fi
+if named_at_all aws; then no 'aws is not used, by any path: nothing here goes to any cloud'; fi
 if by_name curl || by_name jq; then no 'curl and jq are used only by their full path, /usr/bin/curl and /usr/bin/jq'; fi
-if by_name aws; then no 'aws is used only as "$aws", the pinned one'; fi
 # The line number in the job $1 of the first line matching $2 (a fixed text), or nothing
 first() { job_of "$1" | grep -n -F -- "$2" | head -n 1 | cut -d: -f1; }
-for job in blockers gates build deploy; do
+for job in blockers gates build record; do
   use=$(first "$job" '/usr/bin/curl'); jq_use=$(first "$job" '/usr/bin/jq')
   if [ -z "$use" ] || { [ -n "$jq_use" ] && [ "$jq_use" -lt "$use" ]; }; then use=$jq_use; fi
   check=$(first "$job" 'run: sh deploy/check-ubuntu-tools.sh')
   if [ -n "$use" ] && { [ -z "$check" ] || [ "$check" -gt "$use" ]; }; then no "the $job job checks curl and jq are Ubuntu's own before it uses them"; fi
-  use=$(first "$job" '"$aws"')
-  fetched=$(first "$job" 'run: sh deploy/get-aws-cli.sh "$RUNNER_TEMP/aws-cli"')
-  if [ -n "$use" ] && { [ -z "$fetched" ] || [ "$fetched" -gt "$use" ]; }; then no "the $job job fetches and checks the pinned aws before it uses it"; fi
 done
+
+# 8. The run's name, exactly
+grep -qxF "run-name: Deploy \${{ inputs.commit }} to \${{ inputs.machine }}\${{ inputs.dry_run && ' (dry run)' || '' }}" "$file" \
+  || no 'the run is named "Deploy <commit> to <machine>", with " (dry run)" after it for a dry run'
+
+# 9. From main only: the blockers job's first step is the one that refuses any other branch
+job_of blockers | grep -m 1 -- '^      - ' | grep -qx '      - name: Started from main' || no 'the blockers job starts by checking it was started from main'
+job_of blockers | grep -qxF '          [ "$GITHUB_REF" = refs/heads/main ] || { echo "deploy.yml runs from main only, and this run was started from $GITHUB_REF"; exit 1; }' \
+  || no 'and that step refuses a run started from any branch but main'
+
+# 10. Only deploy.yml can write deployments
+for f in "$flows"/*.yml; do
+  name=$(basename "$f")
+  grep -q '^permissions:' "$f" || no "$name sets its own permissions at the top"
+  if grep -v '^[[:space:]]*#' "$f" | grep -q 'write-all'; then no "$name never asks for write-all"; fi
+  [ "$f" = "$file" ] && continue
+  if grep -v '^[[:space:]]*#' "$f" | grep -q 'deployments: write'; then no "$name can't write deployments: only deploy.yml's record job can"; fi
+done
+
+# 11. No test's hook in any workflow, comments aside
+for f in "$flows"/*.yml; do
+  if grep -v '^[[:space:]]*#' "$f" | grep -Eq 'AVPX_(DEPLOY_ROOT|UFW|CODEQL_FILES|IN_TAKEOUT)'; then
+    no "$(basename "$f") names none of the tests' own hooks (AVPX_DEPLOY_ROOT, AVPX_UFW, AVPX_CODEQL_FILES, AVPX_IN_TAKEOUT)"
+  fi
+done
+
+# 12. Every file there ends in .yml and is a plain file: names starting with one dot or two included (..x.yaml), and a link refused
+# before anything else, even one that leads nowhere (Secondary's re-check, R-3). No name may start with a dot (R-6): rules 6, 10 and
+# 11 read *.yml, which never matches a hidden name
+for f in "$flows"/* "$flows"/.[!.]* "$flows"/..?*; do
+  if [ -L "$f" ]; then no "$(basename "$f") in .github/workflows is a link, not a plain file"; continue; fi
+  [ -e "$f" ] || continue
+  case "$(basename "$f")" in
+    .*) no "$(basename "$f") in .github/workflows starts with a dot, so the rules reading *.yml would never see it" ;;
+    *.yml) [ -f "$f" ] || no "$(basename "$f") in .github/workflows is a plain file" ;;
+    *) no "$(basename "$f") in .github/workflows ends in .yml, so every rule here reads it" ;;
+  esac
+done
+
+# 13. Values by case and length, never by grep; and the machine checked in the blockers job and the record job
+if named_at_all '[ef]?grep'; then no 'deploy.yml holds no value to a pattern with grep, egrep or fgrep, by any path (a line break gets through it): case and the length do'; fi
+# Each value's own case and length lines, in its own job (R-5): nothing else may stand in for them. And each line whole, from its start
+# to its refusing end with nothing after it (Secondary's fourth re-check, R-7): a line that kept its start but had its "exit 1" turned
+# into "true" would hold the value to nothing. The words a line says can be anything without a ";", so nothing can be slipped in before
+# its exit.
+line_is() { job_of "$1" | grep -Eq -- "$2" || no "$3"; }
+q="'"
+refuses_case='echo [^;]*; exit 1 ;; esac$'
+refuses_length='\|\| \{ echo [^;]*; exit 1; \}$'
+for job in blockers record; do
+  line_is "$job" '^ +case "\$MACHINE" in '"$q$q"'\|\*\[!a-z0-9-\]\*\) '"$refuses_case" \
+    "the $job job refuses a machine that isn't 1 to 16 small letters, digits and -, by case, ending in exit 1"
+  line_is "$job" '^ +\[ "\$\{#MACHINE\}" -le 16 \] '"$refuses_length" "the $job job refuses a machine of more than 16, ending in exit 1"
+done
+line_is blockers '^ +case "\$COMMIT" in \*\[!0-9a-f\]\*\) '"$refuses_case" "the blockers job refuses a commit that isn't small hex digits, ending in exit 1"
+line_is blockers '^ +\[ "\$\{#COMMIT\}" -eq 40 \] '"$refuses_length" "the blockers job refuses a commit that isn't 40 hex digits long, ending in exit 1"
+line_is record '^ +case "\$JARS" in \*\[!0-9a-f\]\*\) '"$refuses_case" "the record job refuses a jars' SHA-256 that isn't small hex digits, ending in exit 1"
+line_is record '^ +\[ "\$\{#JARS\}" -eq 64 \] '"$refuses_length" "the record job refuses a jars' SHA-256 that isn't 64 long, ending in exit 1"
+line_is record '^ +case "\$id" in '"$q$q"'\|0\*\|\*\[!0-9\]\*\) '"$refuses_case" "the record job refuses a deployment's number that isn't digits with no 0 first, ending in exit 1"
+line_is record '^ +\[ "\$\{#id\}" -le 20 \] '"$refuses_length" "the record job refuses a deployment's number of more than 20 digits, ending in exit 1"
 
 if [ "$bad" -ne 0 ]; then
   echo "$bad rules of deploy.yml don't hold"
@@ -83,24 +176,91 @@ if [ "$bad" -ne 0 ]; then
 fi
 echo 'deploy.yml: every rule holds'
 
-# The take-outs of rule 7: broken copies of deploy.yml, each with one rule about the tools taken out, must each be caught. Each runs this
-# test again, in a folder of its own holding the copy; AVPX_IN_TAKEOUT tells that run not to start take-outs of its own.
+# The take-outs: broken copies of deploy.yml, each with one rule taken out, must each be caught. Each runs this test again, in a folder
+# of its own holding the copy; AVPX_IN_TAKEOUT tells that run not to start take-outs of its own.
 [ "${AVPX_IN_TAKEOUT:-}" = yes ] && exit 0
 t=$(mktemp -d)
 trap 'rm -rf "$t"' EXIT
 mkdir -p "$t/deploy" "$t/.github/workflows"
 cp "$here/test-deploy-workflow.sh" "$t/deploy/test-deploy-workflow.sh"
-cp "$flows"/*.yml "$t/.github/workflows/"
+cp "$flows"/* "$t/.github/workflows/"
 failed=0
 for edit in \
   's|/usr/bin/jq -r .status|jq -r .status|' \
   's|^\(            \)/usr/bin/curl -q|\1curl -q|' \
   's|ask "compare/\$COMMIT...main" > compare.json|gh api "repos/$GITHUB_REPOSITORY/compare/$COMMIT...main" > compare.json|' \
-  's|id=\$("\$aws" ssm|id=$(aws ssm|' \
   's|^        run: sh deploy/check-ubuntu-tools.sh$|        run: true|' \
-  's|^        run: sh deploy/get-aws-cli.sh "\$RUNNER_TEMP/aws-cli"$|        run: true|'; do
+  's|^    environment: production$|    environment: staging|' \
+  's|^    timeout-minutes: 20$|    timeout-minutes: 20\n    permissions:\n      deployments: write|' \
+  's|^      deployments: write$|      deployments: write\n      id-token: write|' \
+  's|^    needs: build$|    needs: gates|' \
+  's|^run-name: .*$|run-name: Deploy|' \
+  's#^          \[ "\$GITHUB_REF" = refs/heads/main \] || #          true || #' \
+  's|^permissions:$|# permissions:|' \
+  's#^          case "\$MACHINE" in .*$#          true#' \
+  's|^          \[ "\${#MACHINE}" -le 16 \] .*$|          true|' \
+  's#^          case "\$COMMIT" in .*$#          true#' \
+  's|^          \[ "\${#COMMIT}" -eq 40 \] .*$|          true|' \
+  's#^          case "\$JARS" in .*$#          true#' \
+  's|^          \[ "\${#JARS}" -eq 64 \] .*$|          true|' \
+  's#^          case "\$id" in .*$#          true#' \
+  's|^          \[ "\${#id}" -le 20 \] .*$|          true|' \
+  's#^          case "\$JARS" in .*$#          printf %s "$JARS" | zgrep -Eqx "[0-9a-f]{64}" || exit 1#' \
+  's@^\(          case "\$COMMIT" in .*\); exit 1 ;; esac$@\1; true ;; esac@' \
+  's@^\(          \[ "\${#COMMIT}" -eq 40 \] || { .*\); exit 1; }$@\1; true; }@' \
+  's@^\(          case "\$MACHINE" in .*\); exit 1 ;; esac$@\1; true ;; esac@' \
+  's@^\(          \[ "\${#MACHINE}" -le 16 \] || { .*\); exit 1; }$@\1; true; }@' \
+  's@^\(          case "\$JARS" in .*\); exit 1 ;; esac$@\1; true ;; esac@' \
+  's@^\(          \[ "\${#JARS}" -eq 64 \] || { .*\); exit 1; }$@\1; true; }@' \
+  's@^\(          case "\$id" in .*\); exit 1 ;; esac$@\1; true ;; esac@' \
+  's@^\(          \[ "\${#id}" -le 20 \] || { .*\); exit 1; }$@\1; true; }@' \
+  's#^          case "\$JARS" in .*$#          printf %s "$JARS" | grep -Eqx "[0-9a-f]{64}" || exit 1#' \
+  's#^          case "\$JARS" in .*$#          printf %s "$JARS" | /usr/bin/grep -Eqx "[0-9a-f]{64}" || exit 1#' \
+  's#^          case "\$JARS" in .*$#          printf %s "$JARS" | egrep -qx "[0-9a-f]{64}" || exit 1#' \
+  's|^\(            \)/usr/bin/curl -q|\1/usr/bin/gh api -q|'; do
   sed "$edit" "$file" > "$t/.github/workflows/deploy.yml"
   if cmp -s "$t/.github/workflows/deploy.yml" "$file"; then echo "TAKE-OUT CAN'T RUN, its text isn't in deploy.yml: $edit"; failed=1; continue; fi
   if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo "TAKE-OUT NOT NOTICED: $edit"; failed=1; else echo "take-out noticed: $edit"; fi
 done
+
+# And another workflow broken the same way: test-build.yml given the right to write deployments, left with no permissions of its own,
+# or setting a test's hook
+cp "$file" "$t/.github/workflows/deploy.yml"
+other="$flows/test-build.yml"
+for edit in \
+  's|^  contents: read$|  contents: read\n  deployments: write|' \
+  's|^permissions:$|# permissions:|' \
+  's|^  contents: read$|  contents: write-all|' \
+  's|^permissions:$|env:\n  AVPX_CODEQL_FILES: /dev/null\npermissions:|'; do
+  sed "$edit" "$other" > "$t/.github/workflows/test-build.yml"
+  if cmp -s "$t/.github/workflows/test-build.yml" "$other"; then echo "TAKE-OUT CAN'T RUN, its text isn't in test-build.yml: $edit"; failed=1; continue; fi
+  if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo "TAKE-OUT NOT NOTICED (test-build.yml): $edit"; failed=1; else echo "take-out noticed (test-build.yml): $edit"; fi
+done
+
+# And a workflow GitHub would run that the rules reading *.yml wouldn't see: one ending in .yaml
+cp "$other" "$t/.github/workflows/test-build.yml"
+cp "$other" "$t/.github/workflows/another.yaml"
+if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo 'TAKE-OUT NOT NOTICED: a workflow ending in .yaml'; failed=1; else echo 'take-out noticed: a workflow ending in .yaml'; fi
+rm -f "$t/.github/workflows/another.yaml"
+
+# And one whose name starts with two dots, which a glob of * and .[!.]* never sees (Secondary's re-check, R-3)
+cp "$other" "$t/.github/workflows/..x.yaml"
+if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo 'TAKE-OUT NOT NOTICED: a workflow named ..x.yaml'; failed=1; else echo 'take-out noticed: a workflow named ..x.yaml'; fi
+rm -f "$t/.github/workflows/..x.yaml"
+
+# And a hidden one ending in .yml, given the right to write deployments: *.yml never matches it, so only rule 12 sees it (Secondary's
+# third re-check, R-6)
+sed 's|^  contents: read$|  contents: read\n  deployments: write|' "$other" > "$t/.github/workflows/.hidden.yml"
+if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo 'TAKE-OUT NOT NOTICED: a workflow named .hidden.yml'; failed=1; else echo 'take-out noticed: a workflow named .hidden.yml'; fi
+rm -f "$t/.github/workflows/.hidden.yml"
+
+# And a link in place of a workflow, even with a .yml name. Only where ln -s makes a real link (Linux, as GitHub's runner is; Git Bash
+# on Windows makes a copy, which proves nothing about links, so there it says so and goes on)
+ln -s test-build.yml "$t/.github/workflows/linked.yml" 2> /dev/null || true
+if [ -L "$t/.github/workflows/linked.yml" ]; then
+  if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo 'TAKE-OUT NOT NOTICED: a link in place of a workflow'; failed=1; else echo 'take-out noticed: a link in place of a workflow'; fi
+else
+  echo 'take-out of a link not run here: this system makes no symbolic links (GitHub runs it)'
+fi
+rm -f "$t/.github/workflows/linked.yml"
 exit "$failed"

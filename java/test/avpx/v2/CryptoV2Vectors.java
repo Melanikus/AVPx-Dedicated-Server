@@ -161,7 +161,7 @@ public final class CryptoV2Vectors {
         + " A2's encapsulation to the player's static ML-KEM key. handshakeA's steps give h and ck after every step (MixKey steps give the"
         + " secret mixed and the k made), and its transcript is h after A3 (5.1, point 15). Its datagrams carry a stand-in cookie: a real one is the relay's own HMAC, and only it"
         + " can check one. handshakeB is handshake B (section 8, and 5.1 points 17 to 20) the same way, joiner and host, with both"
-        + " identities and fingerprints, nJ and its commitment, nH, the transcript (h after B5) and the check code. Each side draws its"
+        + " identities, fingerprints and ids, nJ and its commitment, nH, the transcript (h after B5) and the check code. Each side draws its"
         + " random values in the order they first appear in its own messages. B's datagrams are end to end (AVPE), with a cookie of 0."
         + " handshakeB.refusals are whole B messages a side must refuse, by refusal number (section 16). sealedGame is section 9's sealed"
         + " game datagrams (AVPG), sealed under handshakeB's split: the joiner's with keys made from secretJoinerToHost, the host's from"
@@ -192,7 +192,7 @@ public final class CryptoV2Vectors {
   // A player's identity, made from seeds, and written down as the primitives take it
   private static Map<String, Object> identityFields(KeyPair p384, byte[] kemSeed, Identity id) {
     return fields("p384Private", hex(scalar(p384)), "p384Public", hex(id.p384Public()), "mlkemSeed", hex(kemSeed), "mlkemPublic",
-        hex(id.kemPublic()), "fingerprint", hex(id.fingerprint()));
+        hex(id.kemPublic()), "fingerprint", hex(id.fingerprint()), "id", hex(id.id()));
   }
 
   // Handshake B, walked step by step, then held to the real HandshakeB (java/test/avpx/v2/HandshakeB.java), as handshake A is
@@ -217,8 +217,8 @@ public final class CryptoV2Vectors {
     byte[] port = {(byte) relayPort, (byte) (relayPort >>> 8)};
     noise.mixHash(port);
     steps.add(step("prologue: MixHash(the joiner's relay port, 2 bytes little-endian)", noise, "data", hex(port)));
-    noise.mixHash(host.fingerprint());
-    steps.add(step("prologue: MixHash(the host's fingerprint, as the listing gives it)", noise, "data", hex(host.fingerprint())));
+    noise.mixHash(host.id());
+    steps.add(step("prologue: MixHash(the host's whole id, 48 bytes, as the listing gives it)", noise, "data", hex(host.id())));
 
     // B1, the joiner's: e, then its commitment to nJ. Its draws, in the order they first appear in its messages: e's two keys, nJ.
     ScriptedRandom joinerRandom = ScriptedRandom.seeded(805);
@@ -291,7 +291,7 @@ public final class CryptoV2Vectors {
     byte[] transcript = noise.h();
 
     // The real handshake, given the same randomness, must be these very steps
-    HandshakeB.Joiner realJoiner = HandshakeB.writeB1(REGION, relayPort, host.fingerprint(), joiner, ScriptedRandom.seeded(805));
+    HandshakeB.Joiner realJoiner = HandshakeB.writeB1(REGION, relayPort, host.id(), joiner, ScriptedRandom.seeded(805));
     must(Arrays.equals(realJoiner.b1(), b1), "HandshakeB's B1 isn't the steps'");
     HandshakeB.Host realHost = HandshakeB.readB1(REGION, relayPort, host, b1, ScriptedRandom.seeded(806));
     must(realHost != null && Arrays.equals(realHost.b2(), b2), "HandshakeB's B2 isn't the steps'");
@@ -324,23 +324,23 @@ public final class CryptoV2Vectors {
       datagrams.put("b" + (i + 1), list);
     }
 
-    // Refusal 10's bytes: a B2 from a host with other static keys, sealed under the fingerprint the listing names. Every tag checks,
-    // because the prologue is the one the joiner expects; only the fingerprint of the statics inside is wrong, and the joiner refuses it.
+    // Refusal 10's bytes: a B2 from a host with other static keys, sealed under the id the listing names. Every tag checks, because the
+    // prologue is the one the joiner expects; only the id of the statics inside is wrong, and the joiner refuses it.
     Identity other = Identity.of(P384.generate(ScriptedRandom.seeded(808)), MlKem.generate(ScriptedRandom.seeded(809)));
-    byte[] otherB2 = b2From(relayPort, host.fingerprint(), other, e, ek, b1);
-    HandshakeB.Joiner refuses = HandshakeB.writeB1(REGION, relayPort, host.fingerprint(), joiner, ScriptedRandom.seeded(805));
+    byte[] otherB2 = b2From(relayPort, host.id(), other, e, ek, b1);
+    HandshakeB.Joiner refuses = HandshakeB.writeB1(REGION, relayPort, host.id(), joiner, ScriptedRandom.seeded(805));
     must(Arrays.equals(refuses.b1(), b1) && refuses.readB2(otherB2) == null, "the joiner took a B2 from a host the listing didn't name");
 
     // Refusal 21's bytes: B5 revealing another nJ, with a good tag (the joiner holds the keys). SHA-384 of it isn't B1's commitment, so
     // the host refuses it. The same handshake again, from the same randomness, up to B4.
-    HandshakeB.Joiner liar = HandshakeB.writeB1(REGION, relayPort, host.fingerprint(), joiner, ScriptedRandom.seeded(805));
+    HandshakeB.Joiner liar = HandshakeB.writeB1(REGION, relayPort, host.id(), joiner, ScriptedRandom.seeded(805));
     HandshakeB.Host fooled = HandshakeB.readB1(REGION, relayPort, host, liar.b1(), ScriptedRandom.seeded(806));
     byte[] otherNJ = SeededRandom.of(810).next(HandshakeB.NONCE_BYTES);
     HandshakeB.Joiner.Done lied = liar.readB4(fooled.readB3(liar.readB2(fooled.b2())), otherNJ);
     must(lied != null && !Arrays.equals(lied.b5(), b5) && fooled.readB5(lied.b5()) == null, "the host took a B5 whose nJ isn't B1's");
     List<Object> refusals = List.of(
-        refusal(10, "B2 from a host with other static keys, sealed under the fingerprint the listing names: every tag checks, the"
-            + " fingerprint of the statics doesn't (the joiner refuses it)", otherB2),
+        refusal(10, "B2 from a host with other static keys, sealed under the id the listing names: every tag checks, the id of the"
+            + " statics doesn't (the joiner refuses it)", otherB2),
         refusal(21, "B5 revealing another nJ, with a good tag: SHA-384 of it isn't B1's commitment (the host refuses it)", lied.b5()));
 
     sealedGame.addAll(sealedGame(split));
@@ -361,14 +361,14 @@ public final class CryptoV2Vectors {
         "transcript", hex(transcript), "checkCode", HandshakeB.checkCode(transcript), "datagrams", datagrams, "refusals", refusals);
   }
 
-  // B2 as a host with the identity `as` would make it for B1, but with the prologue naming `fingerprint`. The host's draws are the same
+  // B2 as a host with the identity `as` would make it for B1, but with the prologue naming `hostId`. The host's draws are the same
   // as the real B2's (seed 806), so only the statics and es differ. For a test vector only: it's the case refusal 10 is for, a host
-  // that knows the listing's fingerprint but not its keys.
-  private static byte[] b2From(int relayPort, byte[] fingerprint, Identity as, KeyPair e, KeyPair ek, byte[] b1) {
+  // that knows the listing's id but not its keys.
+  private static byte[] b2From(int relayPort, byte[] hostId, Identity as, KeyPair e, KeyPair ek, byte[] b1) {
     Noise noise = new Noise(HandshakeB.PROTOCOL);
     noise.mixHash(Arrays.copyOf(REGION.getBytes(StandardCharsets.US_ASCII), REGION.length() + 1));
     noise.mixHash(new byte[] {(byte) relayPort, (byte) (relayPort >>> 8)});
-    noise.mixHash(fingerprint);
+    noise.mixHash(hostId);
     int eBytes = P384.encode((ECPublicKey) e.getPublic()).length;
     int ekBytes = MlKem.encode(ek.getPublic()).length;
     noise.mixHash(Arrays.copyOfRange(b1, 0, eBytes));

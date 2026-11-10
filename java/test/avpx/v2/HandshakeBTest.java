@@ -35,7 +35,7 @@ public final class HandshakeBTest {
   }
 
   private static HandshakeB.Joiner joiner(int seed) {
-    return HandshakeB.writeB1(REGION, PORT, HOST.fingerprint(), JOINER, ScriptedRandom.seeded(seed));
+    return HandshakeB.writeB1(REGION, PORT, HOST.id(), JOINER, ScriptedRandom.seeded(seed));
   }
 
   private static HandshakeB.Host host(byte[] b1, int seed) {
@@ -51,7 +51,7 @@ public final class HandshakeBTest {
   }
 
   public static void register() {
-    test("a joiner and its host agree on every key, the transcript and the check code; each learns the other's fingerprint", () -> {
+    test("a joiner and its host agree on every key, the transcript and the check code; each learns the other's whole id", () -> {
       HandshakeB.Joiner joiner = joiner(80);
       same(joiner.b1().length, 1713, "B1: 1,713 bytes, e's two keys and the commitment");
       HandshakeB.Host host = host(joiner.b1(), 81);
@@ -71,8 +71,8 @@ public final class HandshakeBTest {
       same(j.split().initiatorIv(), h.split().initiatorIv(), "and the IVs");
       same(j.split().responderIv(), h.split().responderIv(), "both ways");
       same(j.transcript(), h.transcript(), "the transcript, h after B5");
-      same(j.theirFingerprint(), HOST.fingerprint(), "the joiner has the host's fingerprint");
-      same(h.theirFingerprint(), JOINER.fingerprint(), "the host has the joiner's, to welcome back or ban");
+      same(j.theirId(), HOST.id(), "the joiner has the host's whole id");
+      same(h.theirId(), JOINER.id(), "the host has the joiner's, to welcome back or ban");
       same(HandshakeB.checkCode(j.transcript()), HandshakeB.checkCode(h.transcript()), "the same check code on both screens");
       ok(HandshakeB.checkCode(j.transcript()).matches("[0-9]{6}"), "6 digits");
     });
@@ -83,9 +83,9 @@ public final class HandshakeBTest {
       HandshakeB.Host wrong = HandshakeB.readB1(REGION, PORT, impostor, joiner.b1(), ScriptedRandom.seeded(83));
       same(joiner.readB2(wrong.b2()), null, "B2 from another identity, whatever its tags: refused, and nothing more is sent");
 
-      HandshakeB.Joiner otherPort = HandshakeB.writeB1(REGION, PORT + 1, HOST.fingerprint(), JOINER, ScriptedRandom.seeded(84));
+      HandshakeB.Joiner otherPort = HandshakeB.writeB1(REGION, PORT + 1, HOST.id(), JOINER, ScriptedRandom.seeded(84));
       same(otherPort.readB2(host(otherPort.b1(), 85).b2()), null, "another relay port in the prologue: refused");
-      HandshakeB.Joiner otherRegion = HandshakeB.writeB1("paris", PORT, HOST.fingerprint(), JOINER, ScriptedRandom.seeded(84));
+      HandshakeB.Joiner otherRegion = HandshakeB.writeB1("paris", PORT, HOST.id(), JOINER, ScriptedRandom.seeded(84));
       same(otherRegion.readB2(host(otherRegion.b1(), 85).b2()), null, "another region in the prologue: refused");
     });
 

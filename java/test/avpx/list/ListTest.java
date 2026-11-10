@@ -303,14 +303,14 @@ public final class ListTest {
       same(list(l, at(200), 8).size(), 1, "version 8 has only its own");
     });
 
-    test("the largest list answer is 46,011 bytes, under 48 KB; it uses only the escapes \\\" and \\\\, and says a year at most", () -> {
+    test("the largest list answer is 51,511 bytes, under 56 KB; it uses only the escapes \\\" and \\\\, and says a year at most", () -> {
       Listings l = listings();
 
-      // Version 65535 is a version-2 game's (FIRST_V2_VERSION is at most that), so each row has a fingerprint too
+      // Version 65535 is a version-2 game's (FIRST_V2_VERSION is at most that), so each row has a host's id too: 96 hex digits
       for (int i = 0; i < 120; i++) {
         Map<String, Object> worst = game("region", "longest-region-1", "code", codeOf(i), "name", QUOTE.repeat(32), "level",
             BACKSLASH.repeat(39), "mode", QUOTE.repeat(32), "gameStyle", 255, "levelNumber", 100, "coopLobby", 255, "players", 8,
-            "maxPlayers", 8, "version", 65535, "hostMs", 9999, "fingerprint", "f".repeat(32));
+            "maxPlayers", 8, "version", 65535, "hostMs", 9999, "id", "f".repeat(96));
         same(call(l, "POST", worst).status(), 201, "game " + i);
       }
 
@@ -324,8 +324,8 @@ public final class ListTest {
       Answer answer = call(l, "GET", null, "version=65535", later);
       String text = Json.write(answer.body());
       same(Json.list(answer.body().get("games")).size(), 100, "100 games");
-      same(text.length(), 46011, "the worst case PROTOCOL.md section 4 gives");
-      ok(text.length() <= Routes.MOST_LIST_BYTES, "under 48 KB");
+      same(text.length(), 51511, "the worst case PROTOCOL.md section 4 gives");
+      ok(text.length() <= Routes.MOST_LIST_BYTES, "under 56 KB");
 
       for (Object g : Json.list(answer.body().get("games"))) {
         same(Json.object(g).get("seconds"), Routes.MOST_SECONDS, "seconds stops at a year");
@@ -414,18 +414,38 @@ public final class ListTest {
       ok(text.length() <= Routes.MOST_RELAY_KEYS_BYTES, "under 4 KB");
     });
 
-    test("GET /v1/relay-keys's query is exactly region= and a region, with no body, and GET is its only call", () -> {
+    test("GET /v1/relay-keys with no query gives the keys of the relay this same server runs, and only that one (CRYPTO.md 12.2)", () -> {
+      byte[] p384 = bytes(97, 4);
+      byte[] kem = bytes(1568, 9);
+      List<Listings.Relay> relays = new ArrayList<>(RELAYS);
+      relays.set(1, new Listings.Relay("paris", "paris.relay.example.net", 27500, KEYS.get("paris"), p384, kem));
+      Listings ours = new Listings(relays, "paris", SeededRandom.of(5), NOW);
+      Answer answer = call(ours, "GET", null, "", NOW, "/v1/relay-keys");
+      same(answer.status(), 200, "this server runs paris, a version 2 relay");
+      same(answer.body(), call(ours, "GET", null, "region=paris", NOW, "/v1/relay-keys").body(), "the very answer ?region=paris gives");
+      same(call(ours, "GET", latin1("x"), "", NOW, "/v1/relay-keys").status(), 400, "with a body, still refused");
+      same(call(new Listings(relays, "virginia", SeededRandom.of(5), NOW), "GET", null, "", NOW, "/v1/relay-keys").status(), 404,
+          "this server runs virginia, a version 1 relay: no keys");
+      same(call(new Listings(relays, "tokyo", SeededRandom.of(5), NOW), "GET", null, "", NOW, "/v1/relay-keys").status(), 404,
+          "this server's relay isn't one the list knows");
+      Listings none = listings(relays);
+      same(call(none, "GET", null, "", NOW, "/v1/relay-keys").status(), 404, "a list with no relay of its own named");
+      List<String> lines = none.tick(at(60000));
+      matches(lines.get(0), "relay keys given 0 times, and 1 times not found", "counted as not found");
+    });
+
+    test("GET /v1/relay-keys's query is nothing, or exactly region= and a region, with no body, and GET is its only call", () -> {
       List<Listings.Relay> relays = new ArrayList<>(RELAYS);
       relays.set(1, new Listings.Relay("paris", "paris.relay.example.net", 27500, KEYS.get("paris"), bytes(97, 4), bytes(1568, 9)));
       Listings l = listings(relays);
 
-      for (String q : List.of("", "region=", "paris", "region=Paris", "region=paris&x=1", "x=1&region=paris", "region=paris&region=paris",
+      for (String q : List.of("region=", "paris", "region=Paris", "region=paris&x=1", "x=1&region=paris", "region=paris&region=paris",
           "region= paris", "region=paris ", "region=%70aris", "region=par is", "region=" + "r".repeat(17), "Region=paris", "region==paris",
           "region=paris#", "region=paris/", "region=pa\nris")) {
         same(call(l, "GET", null, q, NOW, "/v1/relay-keys").status(), 400, "query \"" + q + "\"");
       }
 
-      same(call(l, "GET", null, "region=paris", NOW, "/v1/relay-keys").status(), 200, "the one form");
+      same(call(l, "GET", null, "region=paris", NOW, "/v1/relay-keys").status(), 200, "the form with a region");
       same(call(l, "GET", latin1("x"), "region=paris", NOW, "/v1/relay-keys").status(), 400, "with a body");
 
       for (String method : List.of("POST", "PUT", "DELETE", "HEAD", "PATCH")) {
@@ -617,38 +637,44 @@ public final class ListTest {
       matches(l.tick(at(62000)).get(0), "^list: in the last 60 s: 0 games listed,", "counting only what came after");
     });
 
-    test("a version-2 game gives its fingerprint and keeps it for the listing's life, and an older game can't give one", () -> {
-      Listings l = listings();
-      int v2 = Requests.FIRST_V2_VERSION;
-      int older = v2 - 1;
-      String fingerprint = "0123456789abcdef0123456789abcdef";
+    test("a version-2 game gives its host's whole id (96 hex digits) and keeps it for the listing's life; an older game can't give one",
+        () -> {
+          Listings l = listings();
+          int v2 = Requests.FIRST_V2_VERSION;
+          int older = v2 - 1;
+          String id = "0123456789abcdef".repeat(6);
 
-      same(call(l, "POST", game("version", v2)).status(), 400, "a version-2 game without one");
-      same(call(l, "POST", game("version", older, "fingerprint", fingerprint)).status(), 400, "an older game with one");
+          same(call(l, "POST", game("version", v2)).status(), 400, "a version-2 game without one");
+          same(call(l, "POST", game("version", older, "id", id)).status(), 400, "an older game with one");
 
-      for (Object bad : List.of("0123456789ABCDEF0123456789ABCDEF", "0123456789abcdef0123456789abcde", "0123456789abcdef0123456789abcdef0",
-          "0123456789abcdef0123456789abcdeg", "", 7L)) {
-        same(call(l, "POST", game("version", v2, "fingerprint", bad)).status(), 400, "fingerprint " + bad);
-      }
+          // Never the 16-byte fingerprint in its place (SERVER-BLOCKERS.md item 6): not as the id, and not under the old field's name
+          for (Object bad : List.of(id.toUpperCase(java.util.Locale.ROOT), id.substring(1), id + "0", id.substring(1) + "g", id.substring(0, 32),
+              "", 7L)) {
+            same(call(l, "POST", game("version", v2, "id", bad)).status(), 400, "id " + bad);
+          }
 
-      Map<String, Object> posted = game("version", v2, "fingerprint", fingerprint);
-      String owner = ownerOf(call(l, "POST", posted));
-      List<Map<String, Object>> v2Games = list(l, NOW, v2);
-      same(v2Games.size(), 1, "it's listed");
-      same(v2Games.get(0).get("fingerprint"), fingerprint, "with its fingerprint");
+          same(call(l, "POST", game("version", v2, "fingerprint", id.substring(0, 32))).status(), 400, "the old fingerprint field");
+          same(call(l, "POST", game("version", v2, "id", id, "fingerprint", id.substring(0, 32))).status(), 400, "the id and the old field");
 
-      Map<String, Object> older1 = game("version", older, "code", "WXYZ6789");
-      same(call(l, "POST", older1).status(), 201, "an older game with none is listed");
-      ok(!list(l, NOW, older).get(0).containsKey("fingerprint"), "and its row has no fingerprint field at all");
+          Map<String, Object> posted = game("version", v2, "id", id);
+          String owner = ownerOf(call(l, "POST", posted));
+          List<Map<String, Object>> v2Games = list(l, NOW, v2);
+          same(v2Games.size(), 1, "it's listed");
+          same(v2Games.get(0).get("id"), id, "with its host's id");
+          ok(!v2Games.get(0).containsKey("fingerprint"), "and no fingerprint field");
 
-      same(call(l, "PUT", owned(owner, with(posted, "players", 2))).status(), 204, "a PUT with the same fingerprint");
-      same(call(l, "PUT", owned(owner, with(posted, "fingerprint", "f".repeat(32)))).status(), 403, "a PUT with another");
-      Map<String, Object> without = new LinkedHashMap<>(posted);
-      without.remove("fingerprint");
-      same(call(l, "PUT", owned(owner, without)).status(), 400, "a PUT without one");
-      same(call(l, "PUT", owned(owner, with(without, "version", older))).status(), 403, "a PUT that changes it to an older version, without one");
-      same(list(l, NOW, v2).get(0).get("fingerprint"), fingerprint, "it still has the one it was listed with");
-    });
+          Map<String, Object> older1 = game("version", older, "code", "WXYZ6789");
+          same(call(l, "POST", older1).status(), 201, "an older game with none is listed");
+          ok(!list(l, NOW, older).get(0).containsKey("id"), "and its row has no id field at all");
+
+          same(call(l, "PUT", owned(owner, with(posted, "players", 2))).status(), 204, "a PUT with the same id");
+          same(call(l, "PUT", owned(owner, with(posted, "id", "f".repeat(96)))).status(), 403, "a PUT with another");
+          Map<String, Object> without = new LinkedHashMap<>(posted);
+          without.remove("id");
+          same(call(l, "PUT", owned(owner, without)).status(), 400, "a PUT without one");
+          same(call(l, "PUT", owned(owner, with(without, "version", older))).status(), 403, "a PUT that changes it to an older version, without one");
+          same(list(l, NOW, v2).get(0).get("id"), id, "it still has the one it was listed with");
+        });
 
     test("&code= gives only that code's games of that version, from every region, and nothing if there are none", () -> {
       Listings l = listings();
@@ -679,7 +705,7 @@ public final class ListTest {
     });
 
     // The number every version-2 game and this list agree on (Requests.java says where it comes from). Changing it changes which games
-    // must carry a fingerprint, so it changes only with the game's own
+    // must carry their host's id, so it changes only with the game's own
     test("the first version-2 network version is 115, the one Secondary reserved for the relay v2 game side", () -> {
       same(Requests.FIRST_V2_VERSION, 115, "FIRST_V2_VERSION");
     });

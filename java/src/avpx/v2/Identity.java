@@ -56,6 +56,16 @@ public record Identity(KeyPair p384, KeyPair kem, byte[] p384Public, byte[] kemP
   // them, and finding such keys is a search of 2 to the 128th, which a quantum computer could cut to about 2 to the 64th. Matching all 48
   // bytes is beyond reach either way.
   public static String idHex(byte[] p384Public, byte[] kemPublic) {
-    return HexFormat.of().formatHex(Noise.sha384(FINGERPRINT_WORDS, p384Public, kemPublic));
+    return HexFormat.of().formatHex(idOf(p384Public, kemPublic));
+  }
+
+  // The same id as its 48 bytes: what handshake B's prologue mixes, and what a joiner compares the keys in B2 with (CRYPTO.md 5.1 point
+  // 17): the listing gives the host's (PROTOCOL.md section 4)
+  public byte[] id() {
+    return idOf(p384Public, kemPublic);
+  }
+
+  public static byte[] idOf(byte[] p384Public, byte[] kemPublic) {
+    return Noise.sha384(FINGERPRINT_WORDS, p384Public, kemPublic);
   }
 }

@@ -153,7 +153,8 @@ public final class Main {
 
     if (listSettings != null) {
       try {
-        Listings listings = new Listings(listSettings.relays(), RandomBytes.secure(), System.currentTimeMillis());
+        // The relay this server runs is the one GET /v1/relay-keys with no query answers for (CRYPTO.md section 12.2)
+        Listings listings = new Listings(listSettings.relays(), settings.region(), RandomBytes.secure(), System.currentTimeMillis());
         list = ListServer.start(listSettings, listings, store, log::line, System::currentTimeMillis, whenPartFails);
       } catch (ListServer.CertificateProblem e) {
         log.line("list: the certificate files could not be used (" + e.getMessage() + "), so the server did not start");

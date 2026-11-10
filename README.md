@@ -75,7 +75,7 @@ Everything here stays on your machine: the server listens on 127.0.0.1 only, and
 
 ## Putting it on a machine
 
-`deploy/README.md`: a test machine by hand, step by step, and later the public machine, deployed by GitHub through AWS Systems Manager with no key stored anywhere, after the owner approves each deploy.
+`deploy/README.md`: a test machine by hand, step by step, and the public machine, which fetches each deploy the owner approves on GitHub itself (deploy/pull-deploy.sh), with no key or token stored anywhere.
 
 ## The game's side
 

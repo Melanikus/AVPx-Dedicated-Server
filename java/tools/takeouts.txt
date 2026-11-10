@@ -1615,33 +1615,33 @@ file: java/src/avpx/relay/RelaySockets.java
 
 # ----- The list's fingerprint and &code= (version-2 games; Requests.java, Listings.java, Routes.java)
 
-=== a version-2 game is listed without its fingerprint
+=== a version-2 game is listed without its host's id
 check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
     } else if (speaksHandshakeB) {
-      throw new Refusal(400, "a game of network version " + FIRST_V2_VERSION + " or newer must give its fingerprint");
+      throw new Refusal(400, "a game of network version " + FIRST_V2_VERSION + " or newer must give its host's id");
     }
 <<< to
     }
 >>>
 
-=== an older game may give a fingerprint
+=== an older game may give a host's id
 check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
       if (!speaksHandshakeB) {
-        throw new Refusal(400, "fingerprint is only for a game of network version " + FIRST_V2_VERSION + " or newer");
+        throw new Refusal(400, "id is only for a game of network version " + FIRST_V2_VERSION + " or newer");
       }
 <<< to
 >>>
 
-=== a fingerprint of any shape
+=== a host's id of any shape
 check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
-    if (!(value instanceof String text) || !HEX_16_BYTES.matcher(text).matches()) {
-      throw new Refusal(400, "fingerprint must be 32 hex digits, small letters");
+    if (!(value instanceof String text) || !HEX_48_BYTES.matcher(text).matches()) {
+      throw new Refusal(400, "id must be 96 hex digits, small letters: the host's whole id");
     }
 
     return text;
@@ -1649,12 +1649,12 @@ file: java/src/avpx/list/Requests.java
     return String.valueOf(value);
 >>>
 
-=== a PUT may change the fingerprint
+=== a PUT may change the host's id
 check: tests
 file: java/src/avpx/list/Listings.java
 <<< from
-    if (!Objects.equals(listing.fingerprint(), old.shown.fingerprint())) {
-      throw new Refusal(403, "that is not the fingerprint that game was listed with");
+    if (!Objects.equals(listing.hostId(), old.shown.hostId())) {
+      throw new Refusal(403, "that is not the host's id that game was listed with");
     }
 <<< to
 >>>
@@ -1669,12 +1669,12 @@ file: java/src/avpx/list/Listings.java
       if (entry.shown.version() == version && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
 >>>
 
-=== a version-2 game's row leaves its fingerprint out
+=== a version-2 game's row leaves its host's id out
 check: tests
 file: java/src/avpx/list/Routes.java
 <<< from
-          if (g.fingerprint() != null) {
-            game.put("fingerprint", g.fingerprint());
+          if (g.hostId() != null) {
+            game.put("id", g.hostId());
           }
 <<< to
 >>>
@@ -1704,9 +1704,11 @@ check: tests
 file: java/src/avpx/list/Routes.java
 <<< from
         Requests.checkNoBody(body);
-        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+
+        // No query: the relay this same server runs, the one at the address the game asked (CRYPTO.md section 12.2)
 <<< to
-        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+
+        // No query: the relay this same server runs, the one at the address the game asked (CRYPTO.md section 12.2)
 >>>
 
 === relay-keys answers any method
@@ -2404,4 +2406,173 @@ file: java/src/avpx/list/AccessLimits.java
     return from instanceof Inet4Address ? from.getHostAddress() : "v6 " + HexFormat.of().formatHex(from.getAddress(), 0, IPV6_SENDER_BYTES);
 <<< to
     return from.getHostAddress();
+>>>
+
+=== item 6: a listing's host may be named by the 32-digit fingerprint, as before
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+  private static final Pattern HEX_48_BYTES = Pattern.compile("[0-9a-f]{96}");
+<<< to
+  private static final Pattern HEX_48_BYTES = Pattern.compile("[0-9a-f]{32}|[0-9a-f]{96}");
+>>>
+
+=== item 6: handshake B's prologue mixes the host's 16-byte fingerprint, not its id
+check: tests
+file: java/src/avpx/v2/Identity.java
+<<< from
+  public byte[] id() {
+    return idOf(p384Public, kemPublic);
+  }
+<<< to
+  public byte[] id() {
+    return fingerprint();
+  }
+>>>
+
+# ----- CODING-STANDARD.md rule 11, added 2026-11-10 after Snyk Code's finding on Smoke.java's servers line: bytes are compared with
+# MessageDigest.isEqual, which takes as long whatever they hold
+
+=== bytes compared in a time that tells how much matched
+check: standard
+file: java/src/avpx/v2/TakeoutCompare.java
+<<< new file
+package avpx.v2;
+
+import java.util.Arrays;
+
+final class TakeoutCompare {
+  private TakeoutCompare() {
+  }
+
+  static boolean same(byte[] tag, byte[] guess) {
+    return Arrays.equals(tag, guess);
+  }
+}
+>>>
+
+# Secondary's re-check (2026-11-10): the same compare, written with no "Arrays." in front, through a static import
+=== bytes compared in a time that tells how much matched, through a static import
+check: standard
+file: java/src/avpx/v2/TakeoutCompareImported.java
+<<< new file
+package avpx.v2;
+
+import static java.util.Arrays.mismatch;
+
+final class TakeoutCompareImported {
+  private TakeoutCompareImported() {
+  }
+
+  static boolean same(byte[] tag, byte[] guess) {
+    return mismatch(tag, guess) < 0;
+  }
+}
+>>>
+
+# ----- The servers.cfg line (ServersLine.java, the owner's short line, 2026-11-10), added the same day
+
+=== the servers line's fingerprint leaves out the zero byte after its words
+check: tests
+file: java/src/avpx/list/ServersLine.java
+<<< from
+    sha256.update((byte) 0);
+<<< to
+    sha256.update(new byte[0]);
+>>>
+
+=== the servers line's fingerprint takes a relay id of any length
+check: tests
+file: java/src/avpx/list/ServersLine.java
+<<< from
+    if (spki == null || spki.length == 0 || relayId == null || relayId.length != RELAY_ID_BYTES) {
+<<< to
+    if (spki == null || spki.length == 0 || relayId == null || relayId.length == 0) {
+>>>
+
+=== the servers line leaves the ports out when they aren't the usual ones
+check: tests
+file: java/src/avpx/list/ServersLine.java
+<<< from
+    String where = listPort == DEFAULT_LIST_PORT && relayPort == DEFAULT_RELAY_PORT ? address : address + ":" + listPort + ":" + relayPort;
+<<< to
+    String where = address;
+>>>
+
+# ----- GET /v1/relay-keys with no query: the relay this same server runs (CRYPTO.md section 12.2, a servers.cfg line names no region),
+# added 2026-11-10
+
+=== relay-keys with no query is refused, as before
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+        if (query.isEmpty()) {
+          Map<String, Object> own = listings.ownRelayKeys();
+<<< to
+        if (false) {
+          Map<String, Object> own = listings.ownRelayKeys();
+>>>
+
+=== relay-keys with no query answers for the list's first relay, not this server's own
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    return relayKeys(ownRegion);
+<<< to
+    return relayKeys(relays.keySet().iterator().next());
+>>>
+
+# Secondary's re-check of 3d40731 (2026-11-10, Info): a method reference compares with no "(" after Arrays.equals
+=== bytes compared through a method reference to Arrays.equals
+check: standard
+file: java/src/avpx/v2/TakeoutCompareReference.java
+<<< new file
+package avpx.v2;
+
+import java.util.Arrays;
+import java.util.function.BiPredicate;
+
+final class TakeoutCompareReference {
+  private TakeoutCompareReference() {
+  }
+
+  static final BiPredicate<byte[], byte[]> SAME = Arrays::equals;
+}
+>>>
+
+# Secondary's third re-check (2026-11-10, Info): a space before the bracket, and ByteBuffer's own mismatch
+=== bytes compared by Arrays.equals with a space before its bracket
+check: standard
+file: java/src/avpx/v2/TakeoutCompareSpaced.java
+<<< new file
+package avpx.v2;
+
+import java.util.Arrays;
+
+final class TakeoutCompareSpaced {
+  private TakeoutCompareSpaced() {
+  }
+
+  static boolean same(byte[] a, byte[] b) {
+    return Arrays.equals (a, b);
+  }
+}
+>>>
+
+=== bytes compared by a ByteBuffer's mismatch
+check: standard
+file: java/src/avpx/v2/TakeoutCompareBuffer.java
+<<< new file
+package avpx.v2;
+
+import java.nio.ByteBuffer;
+
+final class TakeoutCompareBuffer {
+  private TakeoutCompareBuffer() {
+  }
+
+  static boolean same(byte[] a, byte[] b) {
+    return ByteBuffer.wrap(a).mismatch(ByteBuffer.wrap(b)) < 0;
+  }
+}
 >>>

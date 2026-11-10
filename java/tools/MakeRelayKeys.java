@@ -21,9 +21,9 @@ import java.util.HexFormat;
 // - the PUBLIC keys, "p384" and "mlkem", for that relay's entry in list.relays on the list's machine, if the list is on another one
 //   (Settings.java). The list's own relay needs no entry: the list takes them from its staticKeys. GET /v1/relay-keys gives them to games.
 //   When the signed directory exists (CRYPTO.md section 12), they go in that instead.
-// - the relay's ID, 96 hex digits (RelayId.java, CRYPTO.md section 12.1), for the game's own settings file: AliensVsPredator.cfg, in its
-//   [Network] part, as the line RelayKey=<region>:<id> (the game reads it there and nowhere else: relay_list.cpp). It's public: the game
-//   uses that relay only if the keys the list gives hash to it.
+// - the relay's ID, 96 hex digits (RelayId.java, CRYPTO.md section 12.1): the last field of this machine's line in the game's
+//   servers.cfg (#175), which `Smoke --installed --servers-line <name> <public IPv4>` prints whole once the server runs. It's public: the
+//   game uses that relay only if the keys the list gives hash to it.
 // It takes nothing from its command line and writes no file, so the secret is only where it's put. Each run makes new keys, and so a new
 // id: every game's setting for that relay changes with them.
 public final class MakeRelayKeys {
@@ -67,7 +67,7 @@ public final class MakeRelayKeys {
     System.out.println("\"p384\": \"" + hex.formatHex(point) + "\",");
     System.out.println("\"mlkem\": \"" + hex.formatHex(kemPublic) + "\"");
     System.out.println();
-    System.out.println("ID: public, for the game's AliensVsPredator.cfg, [Network], the line RelayKey=<this relay's region>:<the id>");
+    System.out.println("ID: public, the relay's field in this machine's servers.cfg line (Smoke --installed --servers-line prints it)");
     System.out.println(RelayId.of(point, kemPublic));
   }
 }

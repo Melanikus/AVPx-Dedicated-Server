@@ -1,10 +1,11 @@
-# Test build: builds one commit's two jars and prints what the owner types into AWS to put them on the test machine by hand. Written
-# 2026-11-09 by Melanikus for AVPx Dedicated Server.
+# Test build: builds one commit's two jars and prints what the owner needs to put them on a machine by hand, and to install the machine's
+# own deploy scripts. Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
 #
 # WHY IT EXISTS: SERVER-BLOCKERS.md stops deploy.yml while anything is listed, and one of the things listed is a first deploy to a test
-# machine nobody else can reach. That first deploy is done by the owner's own hand (deploy/README.md, "The first test machine"): they
-# run the SSM document avpx-deploy in the AWS console, with the commit and the jars' SHA-256 this prints. So nothing automatic ever goes
-# around the blockers: this workflow can't reach AWS at all (no identity token, no secret, no variable), and only reads the repository.
+# machine nobody else can reach. That deploy is done by the owner's own hand (deploy/README.md, "A test machine anywhere"): they run
+# remote-deploy.sh in the machine's console, with the commit and the jars' SHA-256 this prints, once its own SHA-256 is this one. The
+# machine's timer (pull-deploy.sh) is installed the same way, its SHA-256 checked too. So nothing automatic ever goes around the
+# blockers: this workflow reaches no machine (no identity token, no secret, no variable), and only reads the repository.
 #
 # The machine builds the jars again from the same commit and takes them only if they're byte for byte these (deploy/remote-deploy.sh).
 # Every action is pinned to a full commit hash (CODING-STANDARD.md rule 7).
@@ -43,17 +44,20 @@ jobs:
       - name: Build, with every test
         run: JAVA_HOME="$RUNNER_TEMP/jdk" sh java/build.sh
       # The SHA-256 of what sha256sum prints for both jars, in the build folder: deploy/remote-deploy.sh makes it the same way
-      - name: What to type into AWS
+      - name: What the owner checks on the machine
         run: |
           jars=$( (cd java/build && sha256sum avpx-server.jar avpx-smoke.jar) | sha256sum | cut -d ' ' -f 1)
           script=$(sha256sum deploy/remote-deploy.sh | cut -d ' ' -f 1)
+          pull=$(sha256sum deploy/pull-deploy.sh | cut -d ' ' -f 1)
           {
             echo '### For the deploy by hand (deploy/README.md)'
             echo ''
             echo "- commit: \`$COMMIT\`"
             echo "- jarsSha256: \`$jars\`"
-            echo "- remote-deploy.sh's SHA-256 (for a machine with no AWS): \`$script\`"
+            echo "- remote-deploy.sh's SHA-256: \`$script\`"
+            echo "- pull-deploy.sh's SHA-256 (the machine's timer): \`$pull\`"
           } >> "$GITHUB_STEP_SUMMARY"
           echo "commit:            $COMMIT"
           echo "jarsSha256:        $jars"
           echo "remote-deploy.sh:  $script"
+          echo "pull-deploy.sh:    $pull"

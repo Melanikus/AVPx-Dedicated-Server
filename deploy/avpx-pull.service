@@ -1,0 +1,17 @@
+# The machine fetches its own deploys, once: deploy/pull-deploy.sh, as root, started by avpx-pull.timer every 5 minutes. Written
+# 2026-11-09 by Melanikus for AVPx Dedicated Server. Install it, with the timer and the two scripts, by hand (deploy/README.md, "The
+# machine fetches its own deploys"); a deploy never changes these.
+#
+# The server (avpx-java.service) doesn't need this: with the timer off, it runs as before.
+[Unit]
+Description=AVPx Dedicated Server: take a deploy the owner approved, if there's a new one
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Ubuntu's own folders only, so every command the script names is Ubuntu's
+Environment=PATH=/usr/bin:/bin
+ExecStart=/bin/sh /usr/local/lib/avpx-pull/pull-deploy.sh nyc3
+# A deploy builds and health-checks: 30 minutes at most, as remote-deploy.sh's own steps allow
+TimeoutStartSec=1800

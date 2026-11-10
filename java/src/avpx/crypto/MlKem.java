@@ -147,7 +147,7 @@ public final class MlKem {
     byte[] der = key.getEncoded();
 
     if (der.length != SPKI_PREFIX.length + ENCAPSULATION_KEY_BYTES
-        || !Arrays.equals(Arrays.copyOf(der, SPKI_PREFIX.length), SPKI_PREFIX)) {
+        || !MessageDigest.isEqual(Arrays.copyOf(der, SPKI_PREFIX.length), SPKI_PREFIX)) {
       throw new IllegalStateException("this Java's ML-KEM-1024 encapsulation key isn't in the form FIPS 203 and RFC 5280 give it");
     }
 

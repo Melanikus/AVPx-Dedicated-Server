@@ -99,7 +99,7 @@ make_jdk() {
 # jars holding $3 (or fails, if $3 is FAIL), and whose get-jdk.sh pins $PIN
 machine() {
   m="$work/m$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')"
-  # The machine's own /tmp is where mktemp -d would put a folder (TMPDIR, in deploy below); /etc/avpx is there, /etc/letsencrypt isn't
+  # The machine's own /tmp is where mktemp -d would put a folder (TMPDIR, in deploy below); /etc/avpx is there
   mkdir -p "$m/root/opt/avpx/releases" "$m/root/var/lib" "$m/root/tmp" "$m/root/etc/avpx" "$m/tree/java/tools"
   if [ "$2" != NONE ]; then
     make_jdk "$m/root/opt/avpx-jdk-$2" "$2"
@@ -168,13 +168,16 @@ all_cases() {
     && ! grep -q 'get-jdk into' "$m/log"; then :; else no 'a good deploy fetches that commit, puts both jars in place, restarts, and runs the installed smoke test'; fi
   # ...and every step that touched fetched code ran as avpx-build, with the settings and the certificate out of reach
   if grep 'systemd-run' "$m/log" | grep -v 'User=avpx-build' | grep -q .; then no 'every fetched-code step runs as avpx-build'; fi
-  if grep 'systemd-run' "$m/log" | grep -v 'InaccessiblePaths=/etc/avpx InaccessiblePaths=-/etc/letsencrypt' | grep -q .; then no 'with /etc/avpx and /etc/letsencrypt out of reach'; fi
+  if grep 'systemd-run' "$m/log" | grep -v 'InaccessiblePaths=/etc/avpx ' | grep -q .; then no 'with /etc/avpx out of reach'; fi
   grep 'systemd-run' "$m/log" | grep 'build.sh' | grep -q 'PrivateNetwork=yes' || no 'the build runs with no network'
   grep -q "chown avpx-build" "$m/log" || no 'the work folder is avpx-build own'
   if grep 'systemd-run' "$m/log" | grep -v ':: HOME=[^ ]*/var/lib/avpx-deploy\.[^ ]* GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null :: ' | grep -q .; then
     no "every avpx-build step has the work folder as its HOME, and git reads no settings from outside it"
   fi
-  if ls "$m/root/var/lib" | grep -q .; then no 'the work folder is removed at the end'; fi
+  # The one thing left in /var/lib is the lock's file, which stays on purpose: a lock is held on a file, and the next deploy opens the
+  # same one (#27's first run, 2026-11-10: this check, written before the lock, counted the lock's file as a work folder left behind)
+  if ls "$m/root/var/lib" | grep -vx 'avpx-deploy.lock' | grep -q .; then no 'the work folder is removed at the end'; fi
+  [ -f "$m/root/var/lib/avpx-deploy.lock" ] || no "the deploy's lock is held on /var/lib/avpx-deploy.lock"
 
   # A jar that is a link, to the settings, say: refused, though what it points at has the very bytes of the gates' jar, and nothing of
   # it is copied anywhere. Then the same with the build folder itself a link, to a folder holding both.
@@ -189,6 +192,12 @@ all_cases() {
   printf '#!/bin/sh\nln -s "%s" "$(dirname "$0")/build"\n' "$m/root/etc/avpx" > "$m/tree/java/build.sh"
   if ! deploy "$s" "$C1" "$(sha_of one)" && [ ! -e "$m/root/opt/avpx/current" ] && [ ! -e "$m/root/opt/avpx/releases/$C1" ] \
     && grep -q "didn't make both jars as plain files" "$m/out"; then :; else no 'a build folder that is a link is refused, and nothing is copied'; fi
+
+  # Another deploy running (here, a subshell holding the lock with the real flock): this one stops at once, saying so, and nothing changes
+  machine "$C1" "$PIN" one
+  if ( flock 8 && ! deploy "$s" "$C1" "$(sha_of one)" ) 8> "$m/root/var/lib/avpx-deploy.lock" && grep -q 'another deploy is running' "$m/out" \
+    && [ ! -e "$m/root/opt/avpx/current" ] && ! grep -q 'git fetch' "$m/log"; then :; else
+    no 'with another deploy running, a second stops at once, and changes nothing'; fi
 
   # The jars aren't the tested ones
   machine "$C1" "$PIN" one
@@ -269,11 +278,11 @@ s/^as_builder no-network env/as_builder network env/
 s/ -p InaccessiblePaths=\/etc\/avpx / /
 s/^  systemctl stop "\$service" || true$/  true/
 s/^  as_builder network sh "\$tree\/java\/tools\/get-jdk.sh"/  true "$tree\/java\/tools\/get-jdk.sh"/
-s/InaccessiblePaths=-\/etc\/letsencrypt/InaccessiblePaths=\/etc\/letsencrypt/
 s/^work=\$(mktemp -d "\$root\/var\/lib\/avpx-deploy\.XXXXXXXXXX")$/work=$(mktemp -d)/
 s/ --setenv=HOME="\$work"//
 s/^  \[ -f "\$1" \] && \[ ! -L "\$1" \] && .*$/  [ -f "$1" ] \&\& [ ! -L "$1" ]/
-s/^  \[ -f "\$1" \] && \[ ! -L "\$1" \] && .*$/  true/'
+s/^  \[ -f "\$1" \] && \[ ! -L "\$1" \] && .*$/  true/
+s/^flock -n 8 || refuse/true || refuse/'
 echo "$breaks" | while IFS= read -r edit; do
   sed "$edit" "$script" > "$work/broken.sh"
   if cmp -s "$work/broken.sh" "$script"; then echo "TAKE-OUT CAN'T RUN, its text isn't in the script: $edit"; exit 1; fi

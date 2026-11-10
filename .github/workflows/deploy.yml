@@ -1,32 +1,36 @@
-# The deploy: puts one commit of the Java server on the one machine, through AWS Systems Manager, with no key stored anywhere. Written
-# 2026-11-09 by Melanikus for AVPx Dedicated Server.
+# The deploy: records one commit of the Java server, approved by the owner, for the machine to fetch and put in place itself (the pull
+# route). Nothing here reaches the machine, and no key or token is kept anywhere. Written 2026-11-09 by Melanikus for AVPx Dedicated
+# Server; the pull route the same night, by the owner's ruling ("nyc3 pulls its deploys"), in place of the AWS Systems Manager route.
 #
-# It's started by hand only (Actions, "Deploy", Run workflow), with the commit to deploy. Each job needs the one before, and the first
-# that fails stops it all:
-#   1. Server blockers: refuses while SERVER-BLOCKERS.md lists anything (sh deploy/check-blockers.sh). So today it always refuses.
+# It's started by hand only (Actions, "Deploy", Run workflow), with the commit to deploy and the machine it's for. Each job needs the one
+# before, and the first that fails stops it all:
+#   1. Server blockers: refuses unless it was started from main, so the list it reads is main's as it is then; and refuses while that
+#      SERVER-BLOCKERS.md lists anything (sh deploy/check-blockers.sh). So today it always refuses.
 #   2. Gates: the commit is on main, and the latest run of every workflow named in REQUIRED, for a push of that very commit to main,
 #      ended in success. Runs are matched by their workflow's file, never by a check's name, so nothing else (another app's check, or
 #      this workflow's own jobs, all named "Deploy: ...") can stand in for one.
-#   3. Build: the two jars built from that commit with the pinned JDK (the server and its smoke test), and one SHA-256 of both, which
-#      goes to the machine. The machine builds them again from the same source and puts them in place only if they're byte for byte the
-#      same (deploy/remote-deploy.sh).
-#   4. Deploy: waits for the owner to approve the "production" environment. Only this job may ask GitHub for an identity token
-#      (id-token: write), which it trades with AWS for a role that may do one thing: run the SSM document avpx-deploy on the one
-#      machine (deploy/README.md says how the owner sets that role up). It sends the commit and the jars' SHA-256, and waits for the answer.
-#   A dry run (the default) does all of that but the sending, and says what it would have sent.
+#   3. Build: the two jars built from that commit with the pinned JDK (the server and its smoke test), and one SHA-256 of both. The
+#      machine builds them again from the same source and puts them in place only if they're byte for byte the same
+#      (deploy/remote-deploy.sh).
+#   4. Record: waits for the owner to approve the "production" environment. Then, with the one right to write deployments, it records a
+#      GitHub deployment for environment avpx-<machine>: the commit, the jars' SHA-256, and this run's number. The machine's own timer
+#      (deploy/pull-deploy.sh, every 5 minutes) finds it, checks this run was deploy.yml, by hand, from main, finished with success in
+#      its first attempt, named for this commit and machine, and approved by the owner, checks main's SERVER-BLOCKERS.md itself, and only
+#      then deploys. So the run must end with success for the machine to take it: this job is the last.
+#   A dry run (the default) does all of that but the recording, and says what it would have recorded.
 #
-# The role, the machine and the region come from the repository's variables (not secrets: none of them gives access by itself), and
-# each is held to its shape; until they're set, the deploy job refuses. No action but checkout is used: the identity token is fetched
-# with curl from GitHub's own endpoint into a file only this job can read, and the AWS command line tool trades it for the role itself
-# (AWS_WEB_IDENTITY_TOKEN_FILE), so no key passes through the script.
+# THE RUN'S NAME (run-name, below) is "Deploy <commit> to <machine>", with " (dry run)" after it for a dry run. The machine requires it
+# to be exactly "Deploy <the deployment's commit> to <itself>", so an approval only ever counts for the commit and machine the owner
+# started that run for, and a dry run's never does, whoever wrote the deployment.
 #
-# THE TOOLS, and where each comes from (card #17):
-#   - curl and jq are Ubuntu's own, always by their full path (/usr/bin/curl, /usr/bin/jq), so nothing earlier on PATH can stand in
-#     for one; each job that uses them first runs deploy/check-ubuntu-tools.sh, which checks they're Ubuntu's and unchanged;
-#   - the AWS command line tool is never the runner's: deploy/get-aws-cli.sh fetches the pinned one, checked by AWS's signature, its
-#     sha256 and its version, and the job uses only that ("$aws"). Until its pins are filled in, it refuses, and so does the deploy;
-#   - GitHub's own gh tool isn't used: its two questions to GitHub are asked with curl.
+# No action but checkout is used, and no secret. This job's own token (GitHub's GITHUB_TOKEN, which ends with the run) is the one thing
+# that writes, and only deployments.
+#
+# THE TOOLS: curl and jq are Ubuntu's own, always by their full path (/usr/bin/curl, /usr/bin/jq), so nothing earlier on PATH can stand
+# in for one; each job that uses them first runs deploy/check-ubuntu-tools.sh, which checks they're Ubuntu's and unchanged. GitHub's own
+# gh tool isn't used: its questions to GitHub are asked with curl.
 name: Deploy
+run-name: Deploy ${{ inputs.commit }} to ${{ inputs.machine }}${{ inputs.dry_run && ' (dry run)' || '' }}
 
 on:
   workflow_dispatch:
@@ -35,8 +39,13 @@ on:
         description: 'The commit to put on the machine: 40 hex digits, small letters, already on main'
         required: true
         type: string
+      machine:
+        description: 'The machine it is for: its region, 1 to 16 small letters, digits and -'
+        required: true
+        type: string
+        default: nyc3
       dry_run:
-        description: 'Do everything but send it, and say what would have been sent'
+        description: 'Do everything but record it, and say what would have been recorded'
         required: true
         type: boolean
         default: true
@@ -50,7 +59,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # Every step's case ranges ([a-z0-9-], [0-9a-f]) mean bytes, whatever the runner's language (Secondary's re-check, Info)
+  LC_ALL: C
   COMMIT: ${{ inputs.commit }}
+  MACHINE: ${{ inputs.machine }}
   # The workflows whose latest run for the commit must have succeeded, by file, all of them (GATES.md): every one but this file
   REQUIRED: 'java.yml blockers.yml snyk.yml proofs.yml'
 
@@ -60,13 +72,21 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
+      # Started from main only, so the checkout below is main as it is now, and the list it reads is main's
+      - name: Started from main
+        run: |
+          [ "$GITHUB_REF" = refs/heads/main ] || { echo "deploy.yml runs from main only, and this run was started from $GITHUB_REF"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: The commit's shape
+      # Each value is held to its shape by case and by its length, never by grep: grep passes a text with a line break in it if any one
+      # of its lines matches (Secondary's re-check, R-2)
+      - name: The commit's and the machine's shapes
         run: |
           case "$COMMIT" in *[!0-9a-f]*) echo 'the commit must be 40 hex digits, small letters'; exit 1 ;; esac
           [ "${#COMMIT}" -eq 40 ] || { echo 'the commit must be 40 hex digits, small letters'; exit 1; }
+          case "$MACHINE" in ''|*[!a-z0-9-]*) echo 'the machine is its region: 1 to 16 small letters, digits and -'; exit 1 ;; esac
+          [ "${#MACHINE}" -le 16 ] || { echo 'the machine is its region: 1 to 16 small letters, digits and -'; exit 1; }
       - name: Nothing blocks a deploy
         run: sh deploy/check-blockers.sh
 
@@ -133,77 +153,59 @@ jobs:
           echo "the jars for $COMMIT: $jars"
           echo "jars=$jars" >> "$GITHUB_OUTPUT"
 
-  deploy:
-    name: 'Deploy: send'
+  record:
+    name: 'Deploy: record, for the machine to take'
     needs: build
     runs-on: ubuntu-24.04
-    timeout-minutes: 45
+    timeout-minutes: 10
     environment: production
     permissions:
       contents: read
-      id-token: write
+      deployments: write
     env:
       JARS: ${{ needs.build.outputs.jars }}
-      ROLE: ${{ vars.AVPX_DEPLOY_ROLE_ARN }}
-      MACHINE: ${{ vars.AVPX_DEPLOY_MACHINE }}
-      REGION: ${{ vars.AVPX_DEPLOY_REGION }}
-      DRY_RUN: ${{ inputs.dry_run }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: curl and jq are Ubuntu's own, unchanged
         run: sh deploy/check-ubuntu-tools.sh
-      # A dry run fetches and checks it too, so a dry run proves the tool is there and pinned
-      - name: The pinned AWS command line tool, checked by AWS's signature, its sha256 and its version
-        run: sh deploy/get-aws-cli.sh "$RUNNER_TEMP/aws-cli"
-      - name: The role, the machine and the region are set, each in its shape
+      # By case and by length, as the blockers job holds the commit and the machine, never by grep
+      - name: The jars' SHA-256 and the machine, each in its shape
         run: |
-          printf '%s' "$JARS" | grep -Eqx '[0-9a-f]{64}' || { echo "the build gave no SHA-256 for the jars"; exit 1; }
-          printf '%s' "$ROLE" | grep -Eqx 'arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]{1,64}' || { echo 'set the variable AVPX_DEPLOY_ROLE_ARN to the role (deploy/README.md)'; exit 1; }
-          printf '%s' "$MACHINE" | grep -Eqx 'mi-[0-9a-f]{17}' || { echo 'set the variable AVPX_DEPLOY_MACHINE to the machine id SSM gave it, mi- and 17 hex digits'; exit 1; }
-          printf '%s' "$REGION" | grep -Eqx '[a-z]{2}-[a-z]+-[0-9]' || { echo 'set the variable AVPX_DEPLOY_REGION, such as us-east-1'; exit 1; }
+          case "$JARS" in *[!0-9a-f]*) echo "the build gave no SHA-256 for the jars"; exit 1 ;; esac
+          [ "${#JARS}" -eq 64 ] || { echo "the build gave no SHA-256 for the jars"; exit 1; }
+          case "$MACHINE" in ''|*[!a-z0-9-]*) echo 'the machine is its region: 1 to 16 small letters, digits and -'; exit 1 ;; esac
+          [ "${#MACHINE}" -le 16 ] || { echo 'the machine is its region: 1 to 16 small letters, digits and -'; exit 1; }
 
-      - name: A dry run says what it would send, and sends nothing
+      - name: A dry run says what it would record, and records nothing
         if: ${{ inputs.dry_run }}
         run: |
-          echo "would run the SSM document avpx-deploy on $MACHINE in $REGION, as $ROLE, with:"
+          echo "would record, for environment avpx-$MACHINE, a deployment of:"
           echo "  commit=$COMMIT"
           echo "  jarsSha256=$JARS"
+          echo "  runId=$GITHUB_RUN_ID"
 
-      - name: Send it, and wait for the machine's answer
+      - name: Record it, for the machine's timer to take
         if: ${{ !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -eu
           # Only Ubuntu's own folders, so every command here is Ubuntu's, whatever the runner put earlier on PATH
           PATH=/usr/bin:/bin
-          # GitHub's identity token for this job, for AWS (audience sts.amazonaws.com), into a file only this job's user can read, removed
-          # at the end. The aws tool trades it for the role itself, so no key ever passes through this script or its log.
-          umask 077
-          aws="$RUNNER_TEMP/aws-cli/bin/aws"
-          token_file="$RUNNER_TEMP/aws-web-identity"
-          trap 'rm -f "$token_file" "$token_file.json"' EXIT
-          /usr/bin/curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" > "$token_file.json"
-          /usr/bin/jq -r .value "$token_file.json" > "$token_file"
-          # It must look like the token it is (three parts of base64url, with dots between), or nothing is sent
-          grep -Eqx '[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+' "$token_file" || { echo 'GitHub gave no identity token'; exit 1; }
-          export AWS_WEB_IDENTITY_TOKEN_FILE="$token_file" AWS_ROLE_ARN="$ROLE" AWS_ROLE_SESSION_NAME="avpx-deploy-$GITHUB_RUN_ID" AWS_REGION="$REGION"
-          id=$("$aws" ssm send-command --region "$REGION" --document-name avpx-deploy --instance-ids "$MACHINE" \
-            --parameters "commit=$COMMIT,jarsSha256=$JARS" --comment "AVPx deploy of $COMMIT" --query Command.CommandId --output text)
-          echo "sent: command $id"
-          # The machine's answer: every 15 s, for up to 40 minutes (the document itself gives up after 30)
-          for i in $(seq 1 160); do
-            sleep 15
-            status=$("$aws" ssm get-command-invocation --region "$REGION" --command-id "$id" --instance-id "$MACHINE" --query Status --output text 2>/dev/null || echo Pending)
-            case "$status" in
-              Success|Failed|Cancelled|TimedOut)
-                "$aws" ssm get-command-invocation --region "$REGION" --command-id "$id" --instance-id "$MACHINE" --query StandardOutputContent --output text
-                echo "the machine says: $status"
-                [ "$status" = Success ]
-                exit $?
-                ;;
-            esac
-          done
-          echo 'no answer from the machine in 40 minutes'
-          exit 1
+          # The deployment's body, made by jq so every value is written as JSON writes it. No check of GitHub's own (required_contexts
+          # empty): the gates above are the checks, and the machine asks about this run itself.
+          /usr/bin/jq -n --arg ref "$COMMIT" --arg environment "avpx-$MACHINE" --arg jars "$JARS" --argjson run "$GITHUB_RUN_ID" \
+            '{ref: $ref, environment: $environment, auto_merge: false, required_contexts: [], production_environment: true,
+              description: "AVPx Dedicated Server, approved by the owner", payload: {jarsSha256: $jars, runId: $run}}' > body.json
+          /usr/bin/curl -q --fail --silent --show-error --proto '=https' --tlsv1.2 -X POST -H "Authorization: Bearer $GH_TOKEN" \
+            -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' --data @body.json \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/deployments" > made.json
+          id=$(/usr/bin/jq -r '.id | tostring' made.json)
+          sha=$(/usr/bin/jq -r .sha made.json)
+          case "$id" in ''|0*|*[!0-9]*) echo 'GitHub made no deployment'; exit 1 ;; esac
+          [ "${#id}" -le 20 ] || { echo 'GitHub made no deployment'; exit 1; }
+          [ "$sha" = "$COMMIT" ] || { echo "GitHub's deployment is for another commit ($sha)"; exit 1; }
+          echo "recorded deployment $id for avpx-$MACHINE: $COMMIT, jars $JARS, run $GITHUB_RUN_ID"
+          echo "the machine's timer takes it within about 5 minutes of this run ending; its journal says what became of it"

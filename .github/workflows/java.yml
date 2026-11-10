@@ -41,6 +41,21 @@ jobs:
           HOME="$trapped" sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
           echo "JAVA_HOME=$RUNNER_TEMP/jdk" >> "$GITHUB_ENV"
 
+      # A gate never passes for want of its tool (the owner's "built to outlive us", 2026-11-09: one day these downloads will be gone).
+      # So with every download sent to a proxy that isn't there, get-jdk.sh must fail, saying it's unreachable in the words every gate
+      # uses (TAKING-OVER.md), and leave no JDK behind.
+      - name: With nothing reachable, get-jdk.sh fails and leaves nothing, never passing for want of the JDK
+        run: |
+          dead=http://127.0.0.1:9
+          if https_proxy=$dead HTTPS_PROXY=$dead sh java/tools/get-jdk.sh "$RUNNER_TEMP/no-jdk" > "$RUNNER_TEMP/no-jdk.out" 2>&1; then
+            cat "$RUNNER_TEMP/no-jdk.out"; echo "get-jdk.sh passed with nothing reachable"; exit 1
+          fi
+          cat "$RUNNER_TEMP/no-jdk.out"
+          grep -qF 'is unreachable: replace it with an equivalent, see TAKING-OVER.md' "$RUNNER_TEMP/no-jdk.out" \
+            || { echo "get-jdk.sh failed without saying what was unreachable"; exit 1; }
+          test ! -e "$RUNNER_TEMP/no-jdk" || { echo "get-jdk.sh left a JDK folder behind after failing"; exit 1; }
+          echo "get-jdk.sh failed, as it must, said why, and left nothing"
+
       # The live tests open sockets on 127.0.0.1 only, and must all run here: with AVPX_LIVE=1 a live test that doesn't run fails
       - name: Build, and run every test, the live ones too
         env:
@@ -82,10 +97,11 @@ jobs:
 
       - name: The pin against Adoptium's newest GA release
         run: |
+          set -o pipefail
           pinned="jdk-$(sed -n "s/^JDK_RELEASE='\(.*\)'$/\1/p" java/tools/get-jdk.sh)"
           newest=$(curl --fail --silent --show-error --proto '=https' --tlsv1.2 \
             'https://api.adoptium.net/v3/assets/latest/25/hotspot?architecture=x64&image_type=jdk&os=linux&vendor=eclipse' \
-            | jq -r '.[0].release_name')
+            | jq -r '.[0].release_name') || { echo "Adoptium's API is unreachable: replace it with an equivalent, see TAKING-OVER.md (the pin couldn't be checked, so this fails rather than passing unchecked)"; exit 1; }
           echo "pinned $pinned, Adoptium's newest $newest"
           test "$pinned" = "$newest"
 
@@ -197,8 +213,18 @@ jobs:
           openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=localhost" \
             -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" -keyout "$dir/privkey.pem" -out "$dir/list-v2.pem" 2> /dev/null
           key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
-          keys=$("$JAVA_HOME/bin/java" -cp "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" avpx.tools.MakeRelayKeys \
-            | sed -n '/^"staticKeys": {$/,/^}$/p')
+          # MakeRelayKeys' output holds the relay's secret: kept this user's only, for as long as it takes to read the keys and the ID
+          (umask 077 && "$JAVA_HOME/bin/java" -cp "$GITHUB_WORKSPACE/java/build/avpx-smoke.jar" avpx.tools.MakeRelayKeys > "$dir/made.txt")
+          keys=$(sed -n '/^"staticKeys": {$/,/^}$/p' "$dir/made.txt")
+          relay_id=$(sed -n '/^ID: /{n;p;}' "$dir/made.txt")
+          rm -f "$dir/made.txt"
+          echo "$relay_id" | grep -q '^[0-9a-f]\{96\}$' || { echo "MakeRelayKeys didn't print a 96-digit ID"; exit 1; }
+          # The servers.cfg fingerprint (CRYPTO.md 12.2), worked out by openssl and sha256sum, not by our code: SHA-256 of the 23 letters
+          # "AVPx servers.cfg line 1", a zero byte, the DER of the list certificate's public key (SubjectPublicKeyInfo), and the relay's
+          # 48-byte id, from MakeRelayKeys' 96 digits (bash's printf turns each \xHH into its byte)
+          fingerprint=$( { printf 'AVPx servers.cfg line 1\0'; openssl x509 -in "$dir/list-v2.pem" -pubkey -noout | openssl pkey -pubin -outform DER;
+            printf "$(printf '%s' "$relay_id" | sed 's/../\\x&/g')"; } | sha256sum | cut -d' ' -f1)
+          echo "$fingerprint" | grep -q '^[0-9a-f]\{64\}$' || { echo "the fingerprint wasn't worked out"; exit 1; }
           printf '{ "region": "saopaulo", "passKey": "%s", "relayAddress": "127.0.0.1", "controlPort": 27500, "relayPorts": "27501-27564",\n  "protocol": 2, "accessFolder": "%s",\n  "list": { "address": "127.0.0.1", "port": 8443, "certFile": "%s", "keyFile": "%s",\n    "relays": [{ "region": "saopaulo", "host": "localhost", "port": 27500 }] },\n%s\n}\n' \
             "$key" "$access" "$dir/list-v2.pem" "$dir/privkey.pem" "$keys" > "$dir/settings.json"
           sudo install -m 0644 "$dir/settings.json" /etc/avpx/settings.json
@@ -216,6 +242,8 @@ jobs:
           ln "$access/.decisions.ci" "$access/decisions.$(date +%s%N)" && rm "$access/.decisions.ci"
           sleep 3
           smoke --installed --identities "$dir/identities" > smoke.out 2>&1 || status=$?
+          # This machine's servers.cfg line (#175), for an address only printed, never reached (203.0.113.9 is TEST-NET-3)
+          smoke --installed --servers-line "CI test server" 203.0.113.9 > line.out 2> line.err || status=$?
           kill "$server"
           wait "$server" || true
           rm -f "$dir/identities"
@@ -227,6 +255,22 @@ jobs:
           if ls "$access"/decisions.* > /dev/null 2>&1; then echo "the decisions file wasn't taken in"; exit 1; fi
           for fp in "$host" "$joiner"; do
             grep -q "\"fp\":\"$fp\",[^}]*\"state\":\"approved\"" "$access/requests.json" || { echo "the decisions file was refused, not taken"; exit 1; }
+          done
+          cat line.out line.err
+          test "$(wc -l < line.out)" -eq 2 || { echo "the servers line run didn't print exactly two lines"; exit 1; }
+          sed -n 1p line.out | grep -q '^# CI test server: AVPx Dedicated Server ' || { echo "the servers line has no # line before it"; exit 1; }
+          # The owner's short line (2026-11-10): the address, with both ports as this list isn't on 443, the fingerprint, the name
+          printf '203.0.113.9:8443:27500  %s  CI test server\n' "$fingerprint" > line.want
+          sed -n 2p line.out | cmp -s - line.want || { echo "the servers line isn't the address and ports, openssl's sum of both keys, and the name"; exit 1; }
+          # Each wrong name or address is refused: exit 1, nothing on the output, and only the reason on the error stream
+          for wrong in '#comment|203.0.113.9' ' padded|203.0.113.9' 'CI test server|0.0.0.0' 'CI test server|010.0.0.1' 'CI test server|example.com' \
+            'CI test server|224.0.0.1' 'CI test server|100.64.0.1' 'a name of thirty-two characters!|203.0.113.9' 'CI  test server|203.0.113.9'; do
+            if smoke --installed --servers-line "${wrong%|*}" "${wrong#*|}" > wrong.out 2> wrong.err; then
+              echo "a wrong name or address was taken: [$wrong]"; exit 1
+            fi
+            if [ -s wrong.out ] || ! grep -q '^servers line: ' wrong.err; then
+              echo "a wrong name or address wasn't refused with only its reason: [$wrong]"; exit 1
+            fi
           done
           grep -q '^PASS  GET /v1/relay-keys for ' smoke.out || { echo "the list's relay keys weren't this relay's own"; exit 1; }
           grep -q '^relay [a-z0-9-]* ID [0-9a-f]\{96\}$' smoke.out || { echo "the run didn't print the relay's id"; exit 1; }
@@ -295,6 +339,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # The checker of CodeQL's results first, against results files made up for it: every way CodeQL could fail to run or to read must
+      # fail the check, saying why, and broken copies of the checker must each be noticed
+      - name: The CodeQL checker fails whenever it must
+        run: sh java/tools/test-check-codeql.sh
+
       - name: The pinned JDK, checked as above
         run: |
           sh java/tools/get-jdk.sh "$RUNNER_TEMP/jdk"
@@ -315,27 +364,8 @@ jobs:
           category: java
           output: ${{ runner.temp }}/codeql
 
-      # Any finding at any severity fails the check (GATES.md): the results are counted from CodeQL's own file, not from its summary.
-      # Each one is written out too (its rule, its file and line, its words, and for a finding about data, where that data came from), so
-      # this log alone says what to fix.
-      - name: No findings at all
-        run: |
-          found=$(jq '[.runs[].results[]] | length' "$RUNNER_TEMP"/codeql/*.sarif)
-          echo "CodeQL found $found"
-          jq -r '.runs[].results[]
-            | "\(.ruleId)  \(.locations[0].physicalLocation.artifactLocation.uri):\(.locations[0].physicalLocation.region.startLine)  \(.message.text)",
-              (.codeFlows[]?.threadFlows[]?.locations[0].location.physicalLocation
-                | "    its data comes from \(.artifactLocation.uri):\(.region.startLine)")' "$RUNNER_TEMP"/codeql/*.sarif
-          test "$found" = "0"
-
-      # A blind spot fails the gate too: every .java file in java/ must be in what CodeQL read
-      - name: CodeQL read every Java file
-        run: |
-          tracked=$(git ls-files 'java/*.java' | wc -l)
-          echo "$tracked Java files are tracked"
-          test "$tracked" -gt 0
-          for f in $(git ls-files 'java/*.java'); do
-            jq -e --arg f "$f" '[.runs[].artifacts[]?.location.uri] | any(. == $f)' "$RUNNER_TEMP"/codeql/*.sarif > /dev/null \
-              || jq -e --arg f "$f" '[.runs[].invocations[]?.toolExecutionNotifications[]?.locations[]?.physicalLocation.artifactLocation.uri] | any(. == $f)' "$RUNNER_TEMP"/codeql/*.sarif > /dev/null \
-              || { echo "CodeQL didn't read $f"; exit 1; }
-          done
+      # The verdict, from CodeQL's own results file (java/tools/check-codeql.sh): any finding at any severity fails the check (GATES.md),
+      # each one written out so this log alone says what to fix; so does any tracked .java file CodeQL didn't read, a blind spot; and so
+      # does no results file at all, so CodeQL that couldn't be fetched or couldn't run never passes for want of results.
+      - name: No findings at all, and CodeQL read every Java file
+        run: sh java/tools/check-codeql.sh "$RUNNER_TEMP/codeql"

@@ -4,6 +4,11 @@
 # The CLI is Snyk's own release binary, v1.1308.3, checked against its SHA-256 before it runs. It needs the repository secret
 # SNYK_TOKEN (set by the owner); without it, this check fails rather than passing unread. Any issue at any severity fails it.
 #
+# A gate never passes for want of its tool (the owner's "built to outlive us", 2026-11-09: one day Snyk, its address or its free account
+# may be gone). If the CLI can't be fetched, isn't the pinned one, or can't reach Snyk's service, this check fails, saying which. A step
+# below proves the last of those: with Snyk out of reach, the CLI's scan fails. The fix for a tool that's gone is never to skip it: a
+# tool that proves the same is found, reviewed as untrusted, pinned and wired in here in its place (TAKING-OVER.md, the gates).
+#
 # No Snyk Open Source: the server has no Maven or Gradle file and fetches no package, by design, so there's nothing for it to read, and
 # a scan that reads nothing can't be told from a broken one. What proves there's nothing to find is the Java standard check
 # (java/tools/CheckStandard.java, in java.yml): it refuses any build file that fetches packages, any compiled code anywhere in the
@@ -22,7 +27,7 @@ jobs:
   snyk:
     name: Snyk
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -33,13 +38,56 @@ jobs:
         run: |
           set -euo pipefail
           curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/snyk" \
-            https://static.snyk.io/cli/v1.1308.3/snyk-linux
-          echo "$KEY  $RUNNER_TEMP/snyk" | sha256sum --check --strict
+            https://static.snyk.io/cli/v1.1308.3/snyk-linux \
+            || { echo "Snyk's CLI (static.snyk.io) is unreachable: replace it with an equivalent, see TAKING-OVER.md (nothing can be scanned, so this fails rather than passing unread)"; exit 1; }
+          echo "$KEY  $RUNNER_TEMP/snyk" | sha256sum --check --strict \
+            || { echo "the CLI fetched isn't the pinned one (its SHA-256 differs), so it never runs: this fails"; exit 1; }
           chmod +x "$RUNNER_TEMP/snyk"
+      # Snyk out of reach, for certain: the CLI runs in a network namespace of its own, with its loopback and nothing else, so whatever
+      # it does with proxies, nothing it sends can leave (Secondary's review of this check, G-2: a dead proxy proved nothing if the CLI
+      # ever ignored it). First, curl in the same kind of namespace must fail to reach Snyk, which shows the namespace really has no way
+      # out. Each runs as this runner's own user (setpriv), never as root; only making the namespace takes sudo. The CLI gets a made-up
+      # token (the secret is never given to this step), and its scan must fail. timeout stops a CLI that hangs instead; that counts as
+      # failing too.
+      # Before either failure counts, the wrapper must be shown to work: a wrapper that couldn't run anything (sudo, ip, unshare or setpriv
+      # missing or refused) would make curl and the CLI both fail, and this step pass for nothing (Secondary's re-check, G-4). So, first:
+      # a command run through it is this runner's own user; the CLI runs through it (its --version needs no network); and curl fails
+      # there for the network's reasons alone (its exit 6, no name for the host, or 7, no connection), never another.
+      - name: With Snyk out of reach, the scan fails, never passing unread
+        run: |
+          cut_off() {
+            sudo unshare --net -- sh -c 'ip link set lo up && u=$1 g=$2 h=$3 p=$4 && shift 4 &&
+              exec setpriv --reuid="$u" --regid="$g" --init-groups -- env HOME="$h" PATH="$p" "$@"' cut-off "$(id -u)" "$(id -g)" "$HOME" "$PATH" "$@"
+          }
+          [ "$(cut_off sh -c 'id -u')" = "$(id -u)" ] \
+            || { echo "the namespace's wrapper doesn't run a command as this runner's user, so this test would prove nothing"; exit 1; }
+          cut_off timeout 60 "$RUNNER_TEMP/snyk" --version \
+            || { echo "the Snyk CLI doesn't run in the namespace at all, so its failing there would prove nothing"; exit 1; }
+          status=0
+          cut_off curl -q --silent --max-time 20 --output /dev/null https://static.snyk.io/ || status=$?
+          case "$status" in
+            6|7) echo "curl could not reach Snyk from the namespace (its exit $status: no name for the host, or no connection), as it must not" ;;
+            0) echo 'curl reached Snyk from a namespace with no network, so this test would prove nothing'; exit 1 ;;
+            *) echo "curl failed in the namespace for another reason than the network (its exit $status), so this test would prove nothing"; exit 1 ;;
+          esac
+          if cut_off SNYK_TOKEN=00000000-0000-0000-0000-000000000000 timeout 300 "$RUNNER_TEMP/snyk" code test --severity-threshold=low; then
+            echo 'the Snyk CLI passed with Snyk out of reach'
+            exit 1
+          fi
+          echo 'the Snyk CLI failed, as it must, with Snyk out of reach'
       - name: Snyk Code
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "$SNYK_TOKEN" ]; then echo 'SNYK_TOKEN is not set, so nothing was scanned'; exit 1; fi
-          "$RUNNER_TEMP/snyk" code test --severity-threshold=low
+          # The CLI's own exit codes: 0 scanned and nothing found, 1 issues found, 2 the scan couldn't be done, 3 nothing it could scan
+          status=0
+          "$RUNNER_TEMP/snyk" code test --severity-threshold=low || status=$?
+          case "$status" in
+            0) echo 'Snyk Code: nothing found, at any severity' ;;
+            1) echo 'Snyk Code found issues (above): each one is fixed in the code, never ignored'; exit 1 ;;
+            2) echo "Snyk couldn't do the scan (its exit 2), so nothing was scanned: this fails rather than passing unread. If the token was refused, it has expired: the owner makes a new one. If Snyk is unreachable: replace it with an equivalent, see TAKING-OVER.md"; exit 1 ;;
+            3) echo "Snyk found nothing here it could scan (its exit 3), and a scan that reads nothing can't be told from a broken one: this fails"; exit 1 ;;
+            *) echo "Snyk stopped with exit $status, which isn't one of its answers, so the scan can't be trusted: this fails"; exit 1 ;;
+          esac

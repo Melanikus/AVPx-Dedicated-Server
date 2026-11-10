@@ -17,9 +17,11 @@ import java.util.Map;
 //                               AccessRequests.java has its rules, and ListServer calls it, not this (handle says why); the access
 //                               store keeps the requests and the owner's decisions
 //   GET    /v1/relays           the relays a game can use: 200 {relays}, never a key
-//   GET    /v1/relay-keys       with ?region= and a region, and nothing else (400): that version 2 relay's two static PUBLIC keys,
-//                               200 {region, p384, mlkem}; 404 for a region the list doesn't know or a version 1 relay. The game holds
-//                               them to a fingerprint it already has before it sends that relay anything (CRYPTO.md section 12.1)
+//   GET    /v1/relay-keys       with ?region= and a region: that version 2 relay's two static PUBLIC keys, 200 {region, p384, mlkem};
+//                               with no query at all: the keys of the relay this same server runs (a servers.cfg line names no region).
+//                               Any other query is 400; 404 for a region the list doesn't know, a version 1 relay, or no relay of its
+//                               own. The game holds them to a fingerprint it already has before it sends that relay anything (CRYPTO.md
+//                               sections 12.1 and 12.2)
 //   POST   /v1/games            put a game on the list, with its relay's pass: 201 {owner}, 403 a pass not good, 409 listed already,
 //                               503 the list is full
 //   PUT    /v1/games            renew it, and change what it says, with its owner key and a fresh pass: 204, 403, 404 not listed
@@ -40,9 +42,9 @@ public final class Routes {
   public static final long MOST_SECONDS = 31536000;
 
   // The most an answer to GET /v1/games can be: 100 games with every text field at its longest, every character one JSON writes as two
-  // (" and \), every number at its longest, and a fingerprint (a version-2 game's), come to 46,011 bytes. A game can refuse anything
-  // bigger. ListTest.java checks the worst case fits.
-  public static final int MOST_LIST_BYTES = 48 * 1024;
+  // (" and \), every number at its longest, and a host's id (a version-2 game's, 96 hex digits), come to 51,511 bytes. A game can refuse
+  // anything bigger. ListTest.java checks the worst case fits. (It was 46,011, under 48 KB, while a listing gave the 32-digit fingerprint.)
+  public static final int MOST_LIST_BYTES = 56 * 1024;
 
   // The most an answer to GET /v1/relays can be: 16 relays (Settings.java allows no more), each with the longest region and host name,
   // come to 1,868 bytes. ListTest.java checks that too.
@@ -52,7 +54,7 @@ public final class Routes {
   // to 3,380 bytes. ListTest.java checks that too.
   public static final int MOST_RELAY_KEYS_BYTES = 4 * 1024;
 
-  // GET /v1/relay-keys's one query: "region=" and a region (Pass.isRegion says what one is), with nothing before or after
+  // GET /v1/relay-keys's one query, when it has one: "region=" and a region (Pass.isRegion says what one is), with nothing before or after
   private static final String REGION_QUERY = "region=";
 
   // An answer: its status, and its body as JSON's objects (Json.write writes it), or null for none
@@ -94,10 +96,17 @@ public final class Routes {
         }
 
         Requests.checkNoBody(body);
+
+        // No query: the relay this same server runs, the one at the address the game asked (CRYPTO.md section 12.2)
+        if (query.isEmpty()) {
+          Map<String, Object> own = listings.ownRelayKeys();
+          return own == null ? error(404, "this server runs no version 2 relay") : new Answer(200, own);
+        }
+
         String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
 
         if (!Pass.isRegion(region)) {
-          throw new Refusal(400, "GET /v1/relay-keys's query is region= and a region, and nothing else");
+          throw new Refusal(400, "GET /v1/relay-keys's query is nothing, or region= and a region, and nothing else");
         }
 
         Map<String, Object> keys = listings.relayKeys(region);
@@ -134,8 +143,8 @@ public final class Routes {
           game.put("version", g.version());
 
           // Only a version-2 game has one, so an older game's reader, which refuses a field it doesn't know, never sees one
-          if (g.fingerprint() != null) {
-            game.put("fingerprint", g.fingerprint());
+          if (g.hostId() != null) {
+            game.put("id", g.hostId());
           }
 
           game.put("hostMs", g.hostMs());

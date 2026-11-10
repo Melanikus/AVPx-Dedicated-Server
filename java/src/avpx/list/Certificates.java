@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.cert.Certificate;
@@ -24,12 +25,14 @@ import java.util.List;
 import javax.net.ssl.KeyManagerFactory;
 import javax.net.ssl.SSLContext;
 
-// The list's certificate and its private key, from the two PEM files certbot keeps (deploy/certificate-hook.sh copies them where the
-// server can read them), made into what Java's TLS uses. Written 2026-11-08 by Melanikus for AVPx Dedicated Server.
+// The list's certificate and its private key, from two PEM files on the machine, made into what Java's TLS uses. Written 2026-11-08 by
+// Melanikus for AVPx Dedicated Server. Since 2026-11-09 (the owner's rulings) the key is made once on the machine and kept, and the
+// certificate is its own, self-signed, made from that key with openssl (deploy/README.md, section C step 6, and "The list's key"): the
+// game trusts the list by the key's pin alone, so no certificate authority is needed. A chain from one would read just the same.
 //
 // - Each file is opened once and read through that one handle, at most MOST_FILE_BYTES, so what's checked is what's used.
-// - The certificate file is the certificate and its chain, as certbot's fullchain.pem holds them.
-// - The key file is the private key in PKCS#8 form (-----BEGIN PRIVATE KEY-----), EC or RSA, as certbot writes it. An older form, or an
+// - The certificate file is the certificate, and its chain if it has one, PEM.
+// - The key file is the private key in PKCS#8 form (-----BEGIN PRIVATE KEY-----), EC or RSA, as openssl genpkey writes it. An older form, or an
 //   encrypted key, is refused with a plain reason that says how to make the PKCS#8 one.
 // - The key must belong to the certificate: it signs a few random bytes, and the certificate's public key must check that signature,
 //   before the pair is used. A pair that doesn't match is refused, so a half-renewed pair can't take the list down.
@@ -46,7 +49,7 @@ final class Certificates {
   // A pair that's been checked and can be used, with the bytes it was made from, so a later look can tell if the files changed
   record Loaded(SSLContext context, byte[] certBytes, byte[] keyBytes) {
     boolean sameFiles(byte[] cert, byte[] key) {
-      return Arrays.equals(certBytes, cert) && Arrays.equals(keyBytes, key);
+      return MessageDigest.isEqual(certBytes, cert) && MessageDigest.isEqual(keyBytes, key);
     }
   }
 
@@ -107,7 +110,7 @@ final class Certificates {
     String text = new String(keyBytes, StandardCharsets.US_ASCII);
 
     if (text.contains("ENCRYPTED PRIVATE KEY")) {
-      throw new ListServer.CertificateProblem("the key is encrypted; the server needs it as certbot writes it, unencrypted");
+      throw new ListServer.CertificateProblem("the key is encrypted; the server needs it as openssl genpkey writes it, unencrypted");
     }
 
     int start = text.indexOf(KEY_START);
@@ -130,7 +133,7 @@ final class Certificates {
     PKCS8EncodedKeySpec spec = new PKCS8EncodedKeySpec(der);
     Arrays.fill(der, (byte) 0);
 
-    // An EC key (certbot's own choice since 2.0) or an RSA one: whichever reads it
+    // An EC key (deploy/README.md makes a P-256 one) or an RSA one: whichever reads it
     for (String algorithm : List.of("EC", "RSA")) {
       try {
         return KeyFactory.getInstance(algorithm).generatePrivate(spec);

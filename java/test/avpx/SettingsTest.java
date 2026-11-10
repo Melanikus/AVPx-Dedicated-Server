@@ -332,16 +332,13 @@ public final class SettingsTest {
       byte[] example = Files.readAllBytes(Path.of("..", "deploy", "settings.example.json"));
       throwsWith(() -> Settings.parse(example), "passKey must be 64 hex digits", "the example's words for the key");
 
+      // No domain is needed (the owner's ruling, 2026-11-09: servers.cfg names the server by its address). The relay's name is a made-up
+      // one under .test, which nobody can ever own, and only the smoke test checks the list's certificate against it.
       Map<String, Object> filled = Json.readObject(example, 4);
       filled.put("passKey", KEY);
-      throwsWith(() -> parse(filled), "host must be a DNS name", "nor until the domain is put in");
-
-      Map<String, Object> list = Json.object(filled.get("list"));
-      List<Object> relays = Json.list(list.get("relays"));
-      relays.set(0, with(Json.object(relays.get(0)), "host", "virginia.relay.example.net"));
-      list.put("relays", relays);
-      filled.put("list", list);
-      same(parse(filled).region(), "virginia", "with one, it is the Virginia machine: its relay and the list");
+      same(Json.object(Json.list(Json.object(filled.get("list")).get("relays")).get(0)).get("host"), "virginia.relay.avpx.test",
+          "its relay's name is a made-up one, under .test");
+      same(parse(filled).region(), "virginia", "with a pass key, it is the Virginia machine: its relay and the list");
       same(parse(filled).list().relays().size(), 1, "with its one relay");
     });
 

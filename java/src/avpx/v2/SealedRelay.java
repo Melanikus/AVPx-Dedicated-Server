@@ -231,7 +231,7 @@ public final class SealedRelay implements Relay {
   }
 
   private static boolean startsWith(byte[] d, byte[] magic) {
-    return d.length >= magic.length && Arrays.equals(Arrays.copyOf(d, magic.length), magic);
+    return d.length >= magic.length && MessageDigest.isEqual(Arrays.copyOf(d, magic.length), magic);
   }
 
   private List<Out> refused(int number) {
@@ -314,7 +314,7 @@ public final class SealedRelay implements Relay {
   // A0 is fragment 0 of 1, of no bytes, with no cookie (CRYPTO.md 5.1, point 9). Its answer, A0': 'AVPR', 2, kind 2, 0, 0, the id (8),
   // the cookie (16), then 0 to 64 bytes. Nothing is kept: the cookie is made again to check it.
   private List<Out> cookieAsk(String address, int port, Fragments.Fragment f, long now) {
-    if (f.count() != 1 || f.length() != 0 || !Arrays.equals(f.cookie(), new byte[Fragments.COOKIE_BYTES])) {
+    if (f.count() != 1 || f.length() != 0 || !MessageDigest.isEqual(f.cookie(), new byte[Fragments.COOKIE_BYTES])) {
       return refused(6);
     }
 
@@ -364,7 +364,7 @@ public final class SealedRelay implements Relay {
     Assembling a = assembling.get(from);
 
     // One handshake at a time from an address and port: a new one there takes the place of the one before
-    if (a != null && !Arrays.equals(a.id(), f.id())) {
+    if (a != null && !MessageDigest.isEqual(a.id(), f.id())) {
       stopAssembling(from, a);
       a = null;
     }

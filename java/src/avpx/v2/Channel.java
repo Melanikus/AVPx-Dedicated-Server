@@ -3,6 +3,7 @@ package avpx.v2;
 import avpx.crypto.Gcm;
 import avpx.crypto.Hkdf;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.Arrays;
 
 // The sealed control channel (CRYPTO.md section 7): every 64-byte control message of PROTOCOL.md, sealed, after handshake A. Written
@@ -189,7 +190,7 @@ public final class Channel {
   public byte[] open(byte[] d, long now) {
     byte[] id = sessionIdOf(d);
 
-    if (id == null || !Arrays.equals(id, sessionId)) {
+    if (id == null || !MessageDigest.isEqual(id, sessionId)) {
       last = Refusal.SHAPE;
       return null;
     }

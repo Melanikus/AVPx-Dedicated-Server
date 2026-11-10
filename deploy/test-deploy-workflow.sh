@@ -26,11 +26,17 @@
 #      gates failing closed, G-3);
 #  12. every file in .github/workflows ends in .yml, and is a plain file, not a link: GitHub runs a file there ending in .yaml too, and
 #      every rule here reads *.yml, so a workflow ending in .yaml would escape them all (Secondary's re-check, R-1). Every name is looked
-#      at, ones starting with a dot or two included (R-3);
-#  13. deploy.yml holds each value (the commit, the machine, the jars' SHA-256, the deployment's number) to its shape by case and by
-#      its length, never by grep (nor egrep or fgrep, by any path), which passes a text with a line break in it if any one of its lines
-#      matches; and the machine is held to its shape in the blockers job, before anything else, as well as in the record job
-#      (Secondary's re-check, R-2 and R-4).
+#      at, ones starting with a dot or two included (R-3), and none may start with a dot at all: rules 6, 10 and 11 read *.yml, which a
+#      shell's glob never matches to a hidden name (Secondary's third re-check, R-6);
+#  13. deploy.yml holds each value to its shape by case and by its length, never by grep (nor egrep or fgrep, by any path), which passes
+#      a text with a line break in it if any one of its lines matches. Each value's own two lines are required, in its own job, so no
+#      other tool (zgrep, awk, sed -n) can stand in for them (Secondary's third re-check, R-5): the commit (40 hex digits) and the machine
+#      (1 to 16 small letters, digits and -) in the blockers job, before anything else; the machine again, the jars' SHA-256 (64 hex
+#      digits) and the deployment's number (1 to 20 digits, no 0 first) in the record job (Secondary's re-checks, R-2 and R-4).
+#
+# What rules 7 and 13 can't do (Secondary's third re-check, Info): they read words, so a name spelt another way (g''h, ${x}h) gets past
+# them. They're a tripwire, not the guard. What holds whatever a workflow spells is rule 4 (no job but record may write anything, and it
+# only deployments, after the owner's approval) and rule 5 (no action but checkout, and no secret), with each job's own permissions.
 set -eu
 # The ranges below ([a-z], [0-9a-f]) mean bytes, whatever the machine's language (Secondary's re-check, Info)
 LC_ALL=C
@@ -128,11 +134,13 @@ for f in "$flows"/*.yml; do
 done
 
 # 12. Every file there ends in .yml and is a plain file: names starting with one dot or two included (..x.yaml), and a link refused
-# before anything else, even one that leads nowhere (Secondary's re-check, R-3)
+# before anything else, even one that leads nowhere (Secondary's re-check, R-3). No name may start with a dot (R-6): rules 6, 10 and
+# 11 read *.yml, which never matches a hidden name
 for f in "$flows"/* "$flows"/.[!.]* "$flows"/..?*; do
   if [ -L "$f" ]; then no "$(basename "$f") in .github/workflows is a link, not a plain file"; continue; fi
   [ -e "$f" ] || continue
   case "$(basename "$f")" in
+    .*) no "$(basename "$f") in .github/workflows starts with a dot, so the rules reading *.yml would never see it" ;;
     *.yml) [ -f "$f" ] || no "$(basename "$f") in .github/workflows is a plain file" ;;
     *) no "$(basename "$f") in .github/workflows ends in .yml, so every rule here reads it" ;;
   esac
@@ -144,6 +152,14 @@ for job in blockers record; do
   job_of "$job" | grep -qF "case \"\$MACHINE\" in ''|*[!a-z0-9-]*)" && job_of "$job" | grep -qF '[ "${#MACHINE}" -le 16 ]' \
     || no "the $job job holds the machine to its shape: 1 to 16 small letters, digits and -"
 done
+# Each other value's own case and length lines, in its own job (R-5): nothing else may stand in for them
+holds_in() { job_of "$1" | grep -qF -- "$2" || no "$3"; }
+holds_in blockers 'case "$COMMIT" in *[!0-9a-f]*)' 'the blockers job holds the commit to hex digits, small letters, by case'
+holds_in blockers '[ "${#COMMIT}" -eq 40 ]' 'the blockers job holds the commit to 40 hex digits, by its length'
+holds_in record 'case "$JARS" in *[!0-9a-f]*)' "the record job holds the jars' SHA-256 to hex digits, small letters, by case"
+holds_in record '[ "${#JARS}" -eq 64 ]' "the record job holds the jars' SHA-256 to 64 hex digits, by its length"
+holds_in record "case \"\$id\" in ''|0*|*[!0-9]*)" "the record job holds the deployment's number to digits, no 0 first, by case"
+holds_in record '[ "${#id}" -le 20 ]' "the record job holds the deployment's number to at most 20 digits, by its length"
 
 if [ "$bad" -ne 0 ]; then
   echo "$bad rules of deploy.yml don't hold"
@@ -173,6 +189,14 @@ for edit in \
   's#^          \[ "\$GITHUB_REF" = refs/heads/main \] || #          true || #' \
   's|^permissions:$|# permissions:|' \
   's#^          case "\$MACHINE" in .*$#          true#' \
+  's|^          \[ "\${#MACHINE}" -le 16 \] .*$|          true|' \
+  's#^          case "\$COMMIT" in .*$#          true#' \
+  's|^          \[ "\${#COMMIT}" -eq 40 \] .*$|          true|' \
+  's#^          case "\$JARS" in .*$#          true#' \
+  's|^          \[ "\${#JARS}" -eq 64 \] .*$|          true|' \
+  's#^          case "\$id" in .*$#          true#' \
+  's|^          \[ "\${#id}" -le 20 \] .*$|          true|' \
+  's#^          case "\$JARS" in .*$#          printf %s "$JARS" | zgrep -Eqx "[0-9a-f]{64}" || exit 1#' \
   's#^          case "\$JARS" in .*$#          printf %s "$JARS" | grep -Eqx "[0-9a-f]{64}" || exit 1#' \
   's#^          case "\$JARS" in .*$#          printf %s "$JARS" | /usr/bin/grep -Eqx "[0-9a-f]{64}" || exit 1#' \
   's#^          case "\$JARS" in .*$#          printf %s "$JARS" | egrep -qx "[0-9a-f]{64}" || exit 1#' \
@@ -206,6 +230,12 @@ rm -f "$t/.github/workflows/another.yaml"
 cp "$other" "$t/.github/workflows/..x.yaml"
 if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo 'TAKE-OUT NOT NOTICED: a workflow named ..x.yaml'; failed=1; else echo 'take-out noticed: a workflow named ..x.yaml'; fi
 rm -f "$t/.github/workflows/..x.yaml"
+
+# And a hidden one ending in .yml, given the right to write deployments: *.yml never matches it, so only rule 12 sees it (Secondary's
+# third re-check, R-6)
+sed 's|^  contents: read$|  contents: read\n  deployments: write|' "$other" > "$t/.github/workflows/.hidden.yml"
+if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo 'TAKE-OUT NOT NOTICED: a workflow named .hidden.yml'; failed=1; else echo 'take-out noticed: a workflow named .hidden.yml'; fi
+rm -f "$t/.github/workflows/.hidden.yml"
 
 # And a link in place of a workflow, even with a .yml name. Only where ln -s makes a real link (Linux, as GitHub's runner is; Git Bash
 # on Windows makes a copy, which proves nothing about links, so there it says so and goes on)

@@ -87,8 +87,12 @@ public final class CheckStandard {
   private static final String ALL_TESTS = "java/test/avpx/AllTests.java";
 
   // Rule 11: the compares that stop at the first byte that differs, so the time they take says how much of a guess was right, and the
-  // static import that would let them be written with no "Arrays." in front (Secondary's re-check, 2026-11-10)
-  private static final List<String> TIMED_COMPARES = List.of("Arrays." + "equals(", "Arrays." + "mismatch(", "Arrays." + "compare",
+  // static import that would let them be written with no "Arrays." in front (Secondary's re-check, 2026-11-10). Each is also looked for
+  // in the line with its spaces taken out, so a space before the bracket hides nothing; and any method called mismatch is one, since
+  // ByteBuffer has one as well as Arrays (Secondary's third re-check, Info). ByteBuffer's equals can't be told from any other equals by
+  // its text: CODING-STANDARD.md says it's a reviewer's to catch.
+  private static final List<String> TIMED_COMPARES = List.of("Arrays." + "equals(", "Arrays." + "mismatch(", "." + "mismatch(",
+      "Arrays." + "compare",
       "Arrays." + "deepEquals(", "import static java.util." + "Arrays", "Arrays" + "::", "Objects." + "deepEquals(");
 
   // What one check found, and how much it looked at. Each check has its own, so Takeouts.java can check several copies at once.
@@ -280,8 +284,11 @@ public final class CheckStandard {
       }
 
       if (file.startsWith("java/src/") || file.startsWith("java/tools/")) {
+        // The line with no spaces at all, for the words with none in them: "Arrays . equals (" is the same call
+        String tight = text.replaceAll("\\s+", "");
+
         for (String word : TIMED_COMPARES) {
-          if (text.contains(word)) {
+          if (text.contains(word) || (word.indexOf(' ') < 0 && tight.contains(word))) {
             say(file, n, "rule 11: " + word + ", a compare that stops at the first byte that differs (or a way to write one without its name):"
                 + " compare bytes with MessageDigest.isEqual");
           }

@@ -2539,3 +2539,40 @@ final class TakeoutCompareReference {
   static final BiPredicate<byte[], byte[]> SAME = Arrays::equals;
 }
 >>>
+
+# Secondary's third re-check (2026-11-10, Info): a space before the bracket, and ByteBuffer's own mismatch
+=== bytes compared by Arrays.equals with a space before its bracket
+check: standard
+file: java/src/avpx/v2/TakeoutCompareSpaced.java
+<<< new file
+package avpx.v2;
+
+import java.util.Arrays;
+
+final class TakeoutCompareSpaced {
+  private TakeoutCompareSpaced() {
+  }
+
+  static boolean same(byte[] a, byte[] b) {
+    return Arrays.equals (a, b);
+  }
+}
+>>>
+
+=== bytes compared by a ByteBuffer's mismatch
+check: standard
+file: java/src/avpx/v2/TakeoutCompareBuffer.java
+<<< new file
+package avpx.v2;
+
+import java.nio.ByteBuffer;
+
+final class TakeoutCompareBuffer {
+  private TakeoutCompareBuffer() {
+  }
+
+  static boolean same(byte[] a, byte[] b) {
+    return ByteBuffer.wrap(a).mismatch(ByteBuffer.wrap(b)) < 0;
+  }
+}
+>>>

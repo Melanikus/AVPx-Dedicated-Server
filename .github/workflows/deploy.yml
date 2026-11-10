@@ -205,6 +205,7 @@ jobs:
           id=$(/usr/bin/jq -r '.id | tostring' made.json)
           sha=$(/usr/bin/jq -r .sha made.json)
           case "$id" in ''|0*|*[!0-9]*) echo 'GitHub made no deployment'; exit 1 ;; esac
+          [ "${#id}" -le 20 ] || { echo 'GitHub made no deployment'; exit 1; }
           [ "$sha" = "$COMMIT" ] || { echo "GitHub's deployment is for another commit ($sha)"; exit 1; }
           echo "recorded deployment $id for avpx-$MACHINE: $COMMIT, jars $JARS, run $GITHUB_RUN_ID"
           echo "the machine's timer takes it within about 5 minutes of this run ending; its journal says what became of it"

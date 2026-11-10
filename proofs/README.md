@@ -18,7 +18,7 @@ Written 2026-11-09 by Melanikus. CRYPTO.md section 14 promises these: models of 
 
 ## Running them
 
-- **On GitHub:** the **Proofs** check (`.github/workflows/proofs.yml`) builds ProVerif 2.05 from INRIA's source release, checked by a pinned SHA-256 (INRIA publishes no checksum or signature, so the pin is the only check), with OCaml from Ubuntu's signed archive, and runs `sh proofs/run.sh` on every change.
-- **On your own machine:** install ProVerif (from your system's packages, or built from its source at bblanche.gitlabpages.inria.fr/proverif), then `sh proofs/run.sh`. It exits 0 only if every answer is the one it must be.
+- **On GitHub:** the **Proofs** check (`.github/workflows/proofs.yml`) builds ProVerif 2.05 from INRIA's source release, checked by a pinned SHA-256 (INRIA publishes no checksum or signature, so the pin is the only check), with OCaml from Ubuntu's signed archive, and runs `sh proofs/run.sh <group>` on every change, one job for each group (pqnk, and each query of pqik and pqxx), side by side, each ProVerif run held to 60 minutes. The check passes only if every group does, and every query is in one.
+- **On your own machine:** install ProVerif (from your system's packages, or built from its source at bblanche.gitlabpages.inria.fr/proverif), then `sh proofs/run.sh` for every group in turn, or `sh proofs/run.sh pqik-q1` for one. It exits 0 only if every answer is the one it must be.
 
 **Not yet run:** these were written without running ProVerif (it isn't run on the author's machine unasked); the first Proofs run on GitHub is their first check. (Ubuntu 24.04 turned out to have no ProVerif package, so it's built from source.)

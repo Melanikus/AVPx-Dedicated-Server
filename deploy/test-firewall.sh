@@ -26,7 +26,6 @@ ufw default allow outgoing
 ufw allow from 203.0.113.9 to any port 22 proto tcp comment SSH, from the owner only
 ufw delete allow 22/tcp
 ufw allow 443/tcp comment AVPx list (HTTPS)
-ufw allow 80/tcp comment Let us Encrypt check while certbot renews
 ufw allow 27500/udp comment AVPx relay control
 ufw allow 27501:27564/udp comment AVPx relay, a port per joiner
 ufw --force enable
@@ -44,8 +43,8 @@ all_cases() {
   s=$1
   bad=0
   no() { bad=$((bad + 1)); [ "$quiet" = yes ] || { echo "FAIL  $1"; sed 's/^/    /' "$work/out" "$work/log"; }; }
-  if run "$s" list 203.0.113.9 && [ "$(cat "$work/log")" = "$LIST" ]; then :; else no 'the list machine gets SSH from the owner only, 443, 80 and the relay ports, nothing more'; fi
-  if run "$s" relay 203.0.113.9 && [ "$(cat "$work/log")" = "$RELAY" ]; then :; else no 'a relay-only machine gets SSH from the owner only and the relay ports: no 443, no 80'; fi
+  if run "$s" list 203.0.113.9 && [ "$(cat "$work/log")" = "$LIST" ]; then :; else no 'the list machine gets SSH from the owner only, 443 and the relay ports, nothing more: no 80'; fi
+  if run "$s" relay 203.0.113.9 && [ "$(cat "$work/log")" = "$RELAY" ]; then :; else no 'a relay-only machine gets SSH from the owner only and the relay ports: no 443'; fi
   # Every kind of wrong owner address, each refused before ufw is called: none, everyone, everyone on the network, a range, a name,
   # IPv6, a leading 0, a part over 255, too few or too many parts, a space after it
   for address in '' 0.0.0.0 255.255.255.255 203.0.113.0/24 any example.com ::1 203.0.113.09 203.0.113.256 203.0.113 203.0.113.9.1 '203.0.113.9 '; do

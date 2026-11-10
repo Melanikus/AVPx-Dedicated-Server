@@ -14,8 +14,7 @@ Written 2026-11-08 by Melanikus; for the Java server only from 2026-11-09. It's 
 | `check-blockers.sh` | Refuses every deploy while SERVER-BLOCKERS.md lists anything |
 | `check-ubuntu-tools.sh` | For GitHub's deploy workflow: checks the curl, jq, gpg, unzip and sha256sum it uses are Ubuntu's own, unchanged |
 | `get-aws-cli.sh` | For GitHub's deploy workflow: fetches the pinned AWS command line tool, checked by AWS's signature, its sha256 and its version. It refuses until its pins and `aws-cli-key.asc` are filled in (card #17) |
-| `firewall.sh` | The firewall of a public machine, later: `list OWNER.IP` for the list's machine (SSH from the owner's address only, TCP 443, TCP 80 for the certificate, and the relay), `relay OWNER.IP` for a relay-only one (SSH from the owner only, and the relay's UDP ports |
-| `certificate-hook.sh` | For the public machine, later: certbot runs it after each renewal |
+| `firewall.sh` | The firewall of a public machine, later: `list OWNER.IP` for the list's machine (SSH from the owner's address only, TCP 443, and the relay), `relay OWNER.IP` for a relay-only one (SSH from the owner only, and the relay's UDP ports |
 | `settings.example.json` | The settings, as `/etc/avpx/settings.json` holds them |
 | `settings.relay-only.example.json` | The settings of a relay-only machine, a later region's: no list |
 | `open-for-tester.sh`, `close-for-tester.sh`, `tester-address.sh` | A test machine opened to one tester's IPv4 address, and closed again |
@@ -68,9 +67,9 @@ This was the machine for what was SERVER-BLOCKERS.md's item 5: a first deploy to
    install -d -o root -g root -m 0755 /opt/avpx /opt/avpx/releases
    install -d -o root -g avpx -m 0750 /etc/avpx /etc/avpx/tls
    ```
-6. **A throwaway certificate,** for the made-up relay name `virginia.relay.avpx.test`, which never leaves this machine:
+6. **The list's key, made once and kept, and its certificate** (the section "The list's key" below says why): for the made-up relay name `virginia.relay.avpx.test`, which no one can ever own (`.test` is reserved, RFC 6761):
    ```
-   cd /etc/avpx/tls && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout test-key.pem -out test-cert.pem -days 30 -subj "/CN=virginia.relay.avpx.test" -addext "subjectAltName=DNS:virginia.relay.avpx.test" -addext "basicConstraints=critical,CA:FALSE" -addext "extendedKeyUsage=serverAuth" && chown root:avpx test-*.pem && chmod 0640 test-*.pem
+   cd /etc/avpx/tls && (umask 027 && openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out list-key.pem) && openssl req -x509 -key list-key.pem -out list-cert.pem -days 36500 -subj "/CN=virginia.relay.avpx.test" -addext "subjectAltName=DNS:virginia.relay.avpx.test" -addext "basicConstraints=critical,CA:FALSE" -addext "extendedKeyUsage=serverAuth" && chown root:avpx list-*.pem && chmod 0640 list-*.pem
    ```
 7. **The settings.** Make a pass key first, with `openssl rand -hex 32`. Then write `/etc/avpx/settings.json`, with the 64 digits it printed in place of `PASS_KEY`:
    ```
@@ -84,8 +83,8 @@ This was the machine for what was SERVER-BLOCKERS.md's item 5: a first deploy to
      "list": {
        "address": "0.0.0.0",
        "port": 443,
-       "certFile": "/etc/avpx/tls/test-cert.pem",
-       "keyFile": "/etc/avpx/tls/test-key.pem",
+       "certFile": "/etc/avpx/tls/list-cert.pem",
+       "keyFile": "/etc/avpx/tls/list-key.pem",
        "relays": [{ "region": "virginia", "host": "virginia.relay.avpx.test", "port": 27500 }]
      }
    }
@@ -161,11 +160,8 @@ ufw allow from YOUR.IP to any port 22 proto tcp && ufw delete allow 22/tcp && uf
 The status must show port 22 from `YOUR.IP` only. If your address changes, both firewalls keep you out: come in by the **Recovery Console** (step 1.3, which doesn't go through the network), and put the new address in both.
 
 **One change: name the region after where the machine really is.** Section C is written for AWS's us-east-1, in Virginia, so it says `virginia`. A droplet in DigitalOcean's nyc3 data centre (New York) is `nyc3`, DigitalOcean's own name for it, so players see where it is. In steps 6 and 7, then:
-- **the certificate** is for `nyc3.relay.avpx.test`:
-  ```
-  cd /etc/avpx/tls && openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout nyc3-key.pem -out nyc3-cert.pem -days 30 -subj "/CN=nyc3.relay.avpx.test" -addext "subjectAltName=DNS:nyc3.relay.avpx.test" -addext "basicConstraints=critical,CA:FALSE" -addext "extendedKeyUsage=serverAuth" && chown root:avpx nyc3-*.pem && chmod 0640 nyc3-*.pem
-  ```
-- **the settings** say `"region": "nyc3"`, `"certFile": "/etc/avpx/tls/nyc3-cert.pem"` and `"keyFile": "/etc/avpx/tls/nyc3-key.pem"`, and their one relay is `{ "region": "nyc3", "host": "nyc3.relay.avpx.test", "port": 27500 }`.
+- **the certificate** is for `nyc3.relay.avpx.test`: step 6 with `nyc3` in place of `virginia`, twice. Its key is made once, as there, and kept.
+- **the settings** say `"region": "nyc3"`, and their one relay is `{ "region": "nyc3", "host": "nyc3.relay.avpx.test", "port": 27500 }`. The certificate's files are step 6's own, `list-cert.pem` and `list-key.pem`.
 
 On another host, use that data centre's own place the same way.
 
@@ -213,11 +209,21 @@ Nothing is open to anyone else. **To be done with it:** destroy the droplet in D
 ## Later: the public machine
 
 When SERVER-BLOCKERS.md says `Nothing.`, GitHub's **Deploy** workflow (`.github/workflows/deploy.yml`) puts each version on the public machine, after you approve its `production` environment. It needs:
-- **the domain,** with DNS names for the list and for `<region>.relay.<the domain>`, the region named after where the machine really is (`virginia` on AWS us-east-1, `nyc3` on DigitalOcean's nyc3);
-- **a Let's Encrypt certificate covering both names,** so the smoke test's check against the relay's name passes: `certbot certonly --standalone -d <the list's name> -d <region>.relay.<the domain>`, with `certificate-hook.sh` as its deploy hook;
-- **the firewall opened** to the game's ports, and SSH narrowed to your own address (`sh deploy/firewall.sh list YOUR.IP`), and the same in the provider's firewall: SSH from your address only, TCP 443 and 80 and UDP 27500-27564 from anyone, nothing else. After that, the provider's own console is the way in if your address changes (DigitalOcean's Recovery Console, or AWS Systems Manager's Session Manager), since Lightsail's browser SSH comes from AWS's addresses and no longer gets through;
+- **no domain,** and no certificate from anyone else (the owner's rulings, 2026-11-09): players find the server by its line in the game's servers.cfg (#175), which holds its plain IPv4 address, the list's pin and the relay's id, so nothing a domain's next owner or a certificate authority does can move a player anywhere. The region is named after where the machine really is (`virginia` on AWS us-east-1, `nyc3` on DigitalOcean's nyc3);
+- **the list's key, made once and kept,** and its certificate: section C step 6, and the section "The list's key" below;
+- **its servers.cfg line,** once it runs: `java -jar /opt/avpx/current/avpx-smoke.jar --installed --servers-line "<its name>" <its public IPv4>` prints a `#` line naming the commit and the day, then the one line, every field worked out on the machine and checked against what it serves. Share those two lines as they are;
+- **the firewall opened** to the game's ports, and SSH narrowed to your own address (`sh deploy/firewall.sh list YOUR.IP`), and the same in the provider's firewall: SSH from your address only, TCP 443 and UDP 27500-27564 from anyone, nothing else. After that, the provider's own console is the way in if your address changes (DigitalOcean's Recovery Console, or AWS Systems Manager's Session Manager), since Lightsail's browser SSH comes from AWS's addresses and no longer gets through;
 - **an IAM role** that trusts only this repository's `production` environment through GitHub's OIDC, and may only run `avpx-deploy` on the one machine (`ssm:SendCommand`, `ssm:GetCommandInvocation`). No Lightsail rights;
 - **the repository variables** `AVPX_DEPLOY_ROLE_ARN`, `AVPX_DEPLOY_MACHINE` (the `mi-` id) and `AVPX_DEPLOY_REGION` (`us-east-1`). Until they're set, the workflow refuses.
+
+### The list's key
+
+**Why it's kept:** the game trusts the list by its key alone. The SHA-256 of the certificate's public key (its SubjectPublicKeyInfo, the "SPKI") is in every player's servers.cfg line, and the game checks nothing else of the certificate: not its name, its issuer or its dates. So the line holds for as long as the key does, and a server that outlives everyone who set it up keeps working.
+- **Make the key once,** on the machine itself (section C step 6), and never copy it off. It's root's, readable by `avpx` only (0640, in `/etc/avpx/tls`, which `avpx-build` can't read).
+- **A new certificate is made from the same key,** whenever one is wanted (another name, or just a newer one), with step 6's second command alone, `openssl req -x509 -key list-key.pem ...`, then `systemctl restart avpx-java`. The pin is the same, so the line is the same: check with `--servers-line` that it prints exactly what it printed before. The certificate's own dates don't matter to the game, and step 6 makes it good for 100 years anyway.
+- **A new key is a new line,** which every player must be given again. Make one only if the old one may have been seen by anyone (the machine broken into, say), and then tell players to drop the old line.
+- **Losing the machine loses the key,** and so the line: a new machine makes a new key, and a new line. That's the price of the key never being anywhere else.
+- **To see the pin by hand:** `openssl x509 -in /etc/avpx/tls/list-cert.pem -pubkey -noout | openssl pkey -pubin -outform DER | sha256sum`.
 
 **A new JDK every quarter:** Oracle's security updates come in January, April, July and October. When one lands, the check "The JDK is the newest Temurin 25" fails until get-jdk.sh's pinned lines move. The next deploy sees the machine's JDK isn't the pinned one, fetches the new one into a folder of its own, and moves the `/opt/avpx-jdk` link with the release.
 

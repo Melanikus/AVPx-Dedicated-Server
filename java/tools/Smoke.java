@@ -463,8 +463,10 @@ public final class Smoke {
     byte[] p384 = settings.staticKeys().p384Public();
     byte[] kem = settings.staticKeys().kemPublic();
     String expected = "{\"region\":\"" + c.region() + "\",\"p384\":\"" + hex.formatHex(p384) + "\",\"mlkem\":\"" + hex.formatHex(kem) + "\"}";
-    check(r.status() == 200 && r.body().equals(expected), "GET /v1/relay-keys for " + c.region() + ": 200, and exactly the public keys this "
-        + "relay's settings hold", r.status() == 200 ? "another answer" : r.status() + " " + r.body());
+    // What went wrong is said only when something did: a PASS line carries no words of a failure
+    boolean theirOwn = r.status() == 200 && r.body().equals(expected);
+    check(theirOwn, "GET /v1/relay-keys for " + c.region() + ": 200, and exactly the public keys this relay's settings hold",
+        theirOwn ? "" : r.status() == 200 ? "another answer" : r.status() + " " + r.body());
 
     MessageDigest sha = MessageDigest.getInstance("SHA-384");
     sha.update("AVPX relay keys v2".getBytes(StandardCharsets.US_ASCII));

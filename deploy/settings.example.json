@@ -8,10 +8,10 @@
   "list": {
     "address": "0.0.0.0",
     "port": 443,
-    "certFile": "/etc/avpx/tls/fullchain.pem",
-    "keyFile": "/etc/avpx/tls/privkey.pem",
+    "certFile": "/etc/avpx/tls/list-cert.pem",
+    "keyFile": "/etc/avpx/tls/list-key.pem",
     "relays": [
-      { "region": "virginia", "host": "virginia.relay.<the domain>", "port": 27500 }
+      { "region": "virginia", "host": "virginia.relay.avpx.test", "port": 27500 }
     ]
   }
 }

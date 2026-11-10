@@ -66,7 +66,7 @@ import javax.net.ssl.TrustManagerFactory;
 // 2026-11-08 by Melanikus for AVPx Dedicated Server; the first four ported test for test from test/live.test.js, the rest new.
 //
 // Unlike the Node tests, the list is tested over real TLS, with a certificate for 127.0.0.1 that build.sh makes fresh with the JDK's own
-// keytool (build/test-tls.p12) and throws away with build/. The tests write it out as the two PEM files certbot would, so the server reads
+// keytool (build/test-tls.p12) and throws away with build/. The tests write it out as the two PEM files the machine keeps, so the server reads
 // them just as it reads its real ones. No key is ever kept in the repository.
 public final class LiveTest {
   private LiveTest() {

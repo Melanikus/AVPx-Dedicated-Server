@@ -13,10 +13,10 @@
 #   TCP 22            SSH, from OWNER.IP only (keep it, or the machine can't be reached to fix it but by the       both kinds
 #                     provider's own console)
 #   TCP 443           the list (HTTPS), from anyone                                                           list only
-#   TCP 80            only for the certificate: Let's Encrypt's check, which certbot answers while it renews   list only
 #   UDP 27500         the relay's control port, from anyone                                                   both kinds
 #   UDP 27501-27564   the relay's ports for joiners (the same range as relayPorts in /etc/avpx/settings.json)  both kinds
-# Going out is allowed: the server answers, and the machine fetches its updates.
+# Going out is allowed: the server answers, and the machine fetches its updates. No TCP 80: the list's certificate is its own,
+# made on the machine from a key kept for good (deploy/README.md), so no certificate authority ever needs to reach it.
 #
 # SSH: the owner's rule goes in first, and only then is a rule that lets SSH in from anywhere taken out (the one deploy/README.md's
 # section C makes), so the owner is never shut out halfway. If OWNER.IP is wrong, or the owner's address changes later, the way back in
@@ -50,7 +50,6 @@ owner=$(tester_address "$2") || { echo 'the owner'"'"'s address must be one plai
 "$ufw" delete allow 22/tcp || echo 'there was no rule letting SSH in from anywhere to take out'
 if [ "$kind" = list ]; then
   "$ufw" allow 443/tcp comment 'AVPx list (HTTPS)'
-  "$ufw" allow 80/tcp comment 'Let us Encrypt check while certbot renews'
 fi
 "$ufw" allow 27500/udp comment 'AVPx relay control'
 "$ufw" allow 27501:27564/udp comment 'AVPx relay, a port per joiner'

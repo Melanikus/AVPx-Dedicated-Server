@@ -30,7 +30,7 @@ Written 2026-11-09 by Melanikus, at the owner's word: "20 years from now, we won
 
 Follow deploy/README.md for the machine: the users (`avpx` runs the server, `avpx-build` builds it, neither can log in), the folders, the firewall, the service. Then make everything that is yours. **Never use a key from this repository, from a backup of ours, or from anyone else: make your own on your own machine.**
 
-1. **The list's certificate key.** The list is reached over HTTPS, and the game trusts it by the key of its certificate (its SPKI), not by any company that signs certificates. [BETA.2: deploy/README.md's certificate step.]
+1. **The list's certificate key.** The list is reached over HTTPS, and the game trusts it by the key of its certificate (its SPKI), not by any company that signs certificates. deploy/README.md says how, in "The list's key".
    - Make the key once, on the machine, and keep it: root's and avpx's to read, never copied off the machine.
    - Make a certificate from it. Make each new certificate from the same key, so the games that carry your pin still trust it.
    - If the key is ever stolen or lost, make a new one. Your servers.cfg line changes, and the players need it again (section 7).
@@ -40,9 +40,15 @@ Follow deploy/README.md for the machine: the users (`avpx` runs the server, `avp
    - The ID is public, and it's what the game checks the relay's keys against.
 3. **The settings:** `/etc/avpx/settings.json`, as `deploy/settings.example.json` shows, with `"protocol": 2`, your `staticKeys`, your region's name, and `"accessFolder": "/var/lib/avpx"`. The pass key is a secret too: `openssl rand -hex 32`, made on the machine.
 4. **Check it:** `java -jar avpx-smoke.jar --installed`. It's healthy when no line says FAIL, the last line is `<n> passed, 0 failed`, and its exit code is 0. It prints the relay's ID as the list gives it: that must be step 2's.
-5. **Your servers.cfg line [BETA.2, the game's issue #175]:** the game ships a list of servers, one line each, with every field required: the server's address, the list's SPKI pin (step 1), and the relay's ID (step 2). Players add your line to their servers.cfg, or a release of the game carries it. The game repository's TAKING-OVER.md has the line's exact form. **A public server's address may go in a shipped file. A person's home address never does.**
+5. **Your servers.cfg line** (the game's issue #175): the game ships a list of servers, one line each, with every field required: the server's address, the list's SPKI pin (step 1), and the relay's ID (step 2). `java -jar avpx-smoke.jar --installed --servers-line <a name for it> <its public IPv4 address>` prints your line. It takes the pin from the certificate the list serves and the ID from your settings' keys, and it refuses, printing nothing, if any of them disagree. Players add your line to their servers.cfg, or a release of the game carries it. [BETA.2: the game's side, which reads the line.] **A public server's address may go in a shipped file. A person's home address never does.**
 
-**Deploys [BETA.2]:** the machine fetches its own deploys (a timer, so no key to it is kept anywhere else), and the first thing it runs is `deploy/check-blockers.sh`. Until that's built, deploy by hand, as deploy/README.md's "A test machine anywhere" says.
+**Deploys:** the machine fetches its own (deploy/README.md, "The machine fetches its own deploys"), so no key to it is kept anywhere else. A timer runs `deploy/pull-deploy.sh` every 5 minutes. It takes a deploy only if:
+- GitHub recorded it, from a Deploy run started by hand from `main` that succeeded;
+- you approved that run's `production` environment, by your login and your number;
+- the commit is on `main`;
+- `main`'s SERVER-BLOCKERS.md lists nothing, checked before anything is built or installed.
+
+Then remote-deploy.sh builds it with no rights and no network, takes the jars only if they're GitHub's, switches, health-checks, and rolls back on any failure. **A deploy never changes the two scripts that decide what runs as root:** only what you installed by hand does. **Without the timer** (`systemctl disable --now avpx-pull.timer`), the server runs exactly as before, and you deploy by hand, as "A test machine anywhere" says. When you take over, pull-deploy.sh names the owner by GitHub login and number: it's yours to change, and install again by hand.
 
 **Before it's open to the world, read SERVER-BLOCKERS.md.** It's the list of what must be done before a server is "in the wild", and `deploy/check-blockers.sh` refuses every deploy while it lists anything. If you take over and the list isn't empty, the items are yours to finish, and the rule stays: an item comes off only when it's done.
 
@@ -70,7 +76,7 @@ This server isn't released to players as a program: it runs on your machine. Wha
 
 ## 6. The gates: what each proves, and what can replace it
 
-GATES.md lists the checks every change must pass, with branch protection holding them for everyone. A gate's tool may be gone by the time you read this. **The rule for that, which you keep:** a gate whose tool can't be reached **fails**, and says so, with "<tool> is unreachable: replace it with an equivalent, see TAKING-OVER.md". It never passes silently. [BETA.2: the server's gates say that; until then, a gate whose tool is gone simply fails.]
+GATES.md lists the checks every change must pass, with branch protection holding them for everyone. A gate's tool may be gone by the time you read this. **The rule for that, which you keep:** a gate whose tool can't be reached **fails**, and says so, with "<tool> is unreachable: replace it with an equivalent, see TAKING-OVER.md". It never passes silently. The server's gates do say it, and a step in each proves they would: get-jdk.sh with every download sent nowhere, Snyk out of reach, CodeQL with no results file, and ProVerif missing, stopping, silent, or saying yes to everything (java.yml, snyk.yml, proofs.yml).
 
 | Gate | What it proves, and what it doesn't | If its tool is gone |
 |---|---|---|
@@ -81,7 +87,7 @@ GATES.md lists the checks every change must pass, with branch protection holding
 | **CodeQL (Java)** | GitHub's static analysis, its security-and-quality queries, failing on any result, and on any .java file it didn't read. **Proves** no known pattern of bug is in the code | Any open-source static analysis for Java that fails on a finding and on a file it can't read: SpotBugs with Find Security Bugs, or Semgrep's open rules |
 | **Snyk** | Snyk Code over the whole repository, at any severity. **Proves** a second analyser agrees. It's the one gate that needs a paid account: without its token, it fails, never passes | Needs a Snyk token, which will have expired. Replace it with a second open-source static analysis, as for CodeQL. Two different tools see different things |
 | **Server blockers** | `test-check-blockers.sh`. **Proves** the refusal works; a deploy itself refuses while SERVER-BLOCKERS.md lists anything | Ours. Plain sh and awk |
-| **Deploy scripts** | the machine's side of a deploy, the firewall scripts and deploy.yml's shape, each tested with stand-ins: no machine, no network, no GitHub. **Proves** they refuse what they should | Ours. Plain sh |
+| **Deploy scripts** | the machine's side of a deploy (remote-deploy.sh, and the pull route, pull-deploy.sh, against hostile answers from GitHub), the firewall scripts and deploy.yml's shape, each tested with stand-ins: no machine, no network, no GitHub. **Proves** they refuse what they should | Ours. Plain sh |
 | **Proofs (ProVerif)** | every model in `proofs/`, as written and with each half of the hybrid broken in turn, against an attacker who owns the network (CRYPTO.md section 14). **Proves** the handshakes' patterns keep their secrets and authenticate their parties with either half broken; with both broken they must fail, so the model isn't true for nothing. **Doesn't prove** our code: the test vectors and tests hold it to the pattern. **Hasn't passed yet:** the larger models need more memory than the standard runner has (GATES.md) | ProVerif, fetched from INRIA and checked by its sha256 (proofs.yml). If the address is gone, any copy of the same file, with that same sha256, is the same program. Archive it [BETA.2] |
 | **Secret scanning** (GitHub's) | no key or token is pushed | gitleaks or TruffleHog, run before every push and as a check |
 | **Branch protection** (GitHub's) | nothing reaches main without every gate, for everyone, admins too | On any other host: a protected main branch, with every gate required. On none at all: a rule you keep, that main moves only to a commit whose gates you ran and saw pass |
@@ -92,7 +98,7 @@ GATES.md lists the checks every change must pass, with branch protection holding
 - **GitHub:** the hosting, Actions, the deployment records, and the owner's approval of each deploy.
 - **Adoptium's signing key,** pinned by its fingerprint in get-jdk.sh.
 - **Snyk's account:** a gate only, never anything the running server needs.
-- **The owner's GitHub account,** named by its login and by its numeric id, in the pull route's script [BETA.2: pull-deploy.sh].
+- **The owner's GitHub account,** named by its login and by its numeric id, in the pull route's script, `deploy/pull-deploy.sh`.
 
 **The running server depends on none of these.** With the pull route's timer off, it runs, and it's deployed by hand (deploy/README.md, "A test machine anywhere"). So losing all four stops new deploys being checked by them, never the server itself.
 

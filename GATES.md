@@ -42,4 +42,4 @@ Written 2026-11-08 by Melanikus; for the Java server from 2026-11-09. Nothing re
   - only actions from GitHub and verified creators, each pinned by SHA (CODING-STANDARD.md rule 7);
   - the `GITHUB_TOKEN` read-only by default;
   - workflows from forks need approval.
-- **The `production` environment:** the owner is its only reviewer. It holds no secret: the deploy's role, machine and region are repository variables, and the role is reached through GitHub's OIDC.
+- **The `production` environment:** the owner is its only reviewer. It holds no secret and no variable: once the owner approves a deploy, deploy.yml's record job only records a GitHub deployment, and the machine fetches it itself (deploy/pull-deploy.sh). No cloud role, and no identity token: nothing on GitHub reaches a machine.

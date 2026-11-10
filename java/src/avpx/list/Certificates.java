@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.security.GeneralSecurityException;
 import java.security.KeyFactory;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.security.PrivateKey;
 import java.security.Signature;
 import java.security.cert.Certificate;
@@ -48,7 +49,7 @@ final class Certificates {
   // A pair that's been checked and can be used, with the bytes it was made from, so a later look can tell if the files changed
   record Loaded(SSLContext context, byte[] certBytes, byte[] keyBytes) {
     boolean sameFiles(byte[] cert, byte[] key) {
-      return Arrays.equals(certBytes, cert) && Arrays.equals(keyBytes, key);
+      return MessageDigest.isEqual(certBytes, cert) && MessageDigest.isEqual(keyBytes, key);
     }
   }
 

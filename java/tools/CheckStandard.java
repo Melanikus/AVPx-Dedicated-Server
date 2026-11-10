@@ -34,8 +34,10 @@ import java.util.stream.Stream;
 //   6. A finding is fixed, never hidden: nothing that tells javac or a scanner to look away, and no file that does.
 //   7. Every action a workflow uses is pinned to a full commit hash.
 //   8. Every test runs: every file in java/test that ends in Test.java is named in AllTests.java, or it would never run.
+//  11. Bytes are compared in the same time, whatever they hold: no Arrays.equals or Arrays.mismatch in java/src or java/tools, only
+//      MessageDigest.isEqual (rules 9 and 10 are a reviewer's).
 //
-// This file is the one place the words rules 3 to 6 look for are listed, so it leaves its own text out of those rules, and so does
+// This file is the one place the words rules 3 to 6 and 11 look for are listed, so it leaves its own text out of those rules, and so does
 // java/tools/takeouts.txt, whose rows put those words into a copy on purpose, to prove this check notices them. The words are written in
 // pieces here, so no other tool that looks for them (a scanner's own search, say) finds them in this file either.
 public final class CheckStandard {
@@ -81,6 +83,9 @@ public final class CheckStandard {
 
   // Rule 8
   private static final String ALL_TESTS = "java/test/avpx/AllTests.java";
+
+  // Rule 11: the compares that stop at the first byte that differs, so the time they take says how much of a guess was right
+  private static final List<String> TIMED_COMPARES = List.of("Arrays." + "equals(", "Arrays." + "mismatch(");
 
   // What one check found, and how much it looked at. Each check has its own, so Takeouts.java can check several copies at once.
   private final List<String> problems = new ArrayList<>();
@@ -218,7 +223,7 @@ public final class CheckStandard {
     }
   }
 
-  // Rules 2 to 5 on a Java file under java/
+  // Rules 2 to 5, and 11, on a Java file under java/
   private void checkJavaFolderFile(Path root, String file) throws IOException {
     if (!file.endsWith(".java") || file.equals(SELF) || file.equals(ROWS)) {
       return;
@@ -266,6 +271,14 @@ public final class CheckStandard {
         for (String word : SCREEN) {
           if (text.contains(word)) {
             say(file, n, "rule 5: " + word + " in the server's own code (it writes only through Log.java)");
+          }
+        }
+      }
+
+      if (file.startsWith("java/src/") || file.startsWith("java/tools/")) {
+        for (String word : TIMED_COMPARES) {
+          if (text.contains(word)) {
+            say(file, n, "rule 11: " + word + " stops at the first byte that differs: compare bytes with MessageDigest.isEqual");
           }
         }
       }

@@ -1,6 +1,7 @@
 package avpx.v2;
 
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -95,7 +96,7 @@ public final class Fragments {
 
   // The fragment in a datagram from outside, or null if it isn't exactly one, as the rules above say
   public static Fragment read(byte[] magic, byte[] d) {
-    if (d == null || d.length != DATAGRAM_BYTES || !Arrays.equals(Arrays.copyOf(d, 4), magic) || d[4] != VERSION) {
+    if (d == null || d.length != DATAGRAM_BYTES || !MessageDigest.isEqual(Arrays.copyOf(d, 4), magic) || d[4] != VERSION) {
       return null;
     }
 
@@ -146,7 +147,7 @@ public final class Fragments {
       }
 
       if (parts[f.index()] != null) {
-        return Arrays.equals(parts[f.index()], f.part());
+        return MessageDigest.isEqual(parts[f.index()], f.part());
       }
 
       parts[f.index()] = f.part();

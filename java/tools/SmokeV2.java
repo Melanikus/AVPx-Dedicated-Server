@@ -14,6 +14,7 @@ import java.net.DatagramSocket;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
 import java.security.KeyPair;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -97,7 +98,7 @@ final class SmokeV2 {
       // The host opens a game: at once, with no cookie round inside the seal
       Smoke.Read opened = hear(h, say(h, control, Smoke.msg(Smoke.HOST_OPEN)));
       Smoke.check(opened.type() == Smoke.HOST_OPENED && !Smoke.allZero(opened.pass())
-          && Arrays.equals(opened.pass(), Smoke.passFor(settings.passKey(), region, opened.code(), opened.passTime())),
+          && MessageDigest.isEqual(opened.pass(), Smoke.passFor(settings.passKey(), region, opened.code(), opened.passTime())),
           "a sealed HOST_OPEN gets a sealed HOST_OPENED at once, with this relay's own pass for region " + region);
       byte[] token = opened.secret();
       String code = opened.code();
@@ -111,7 +112,7 @@ final class SmokeV2 {
       // The joiner's sealed hello claims its port, and only then does the host hear of it, under its own session (PROTOCOL.md section 2)
       Smoke.send(j.socket(), port, j.channel().seal(Smoke.msg(Smoke.JOINER_HELLO, joined.secret(), null, 0, 0), System.currentTimeMillis()));
       Smoke.Read note = hear(h, Smoke.next(host, 1000));
-      Smoke.check(note.type() == Smoke.NEW_JOINER && note.port() == joined.port() && Arrays.equals(note.secret(), token),
+      Smoke.check(note.type() == Smoke.NEW_JOINER && note.port() == joined.port() && MessageDigest.isEqual(note.secret(), token),
           "the joiner's hello claims its port, and the host hears NEW_JOINER, sealed under its own session");
 
       // The host's hello, sealed, on the joiner's port: READY goes to the joiner
@@ -126,7 +127,7 @@ final class SmokeV2 {
       byte[] b = Fragments.cut(Fragments.hostToJoiner(), 16, Smoke.random(8), new byte[16], Smoke.random(1713)).get(0);
       Smoke.send(joiner, port, b);
       Smoke.Got passed = Smoke.next(host, 1000);
-      Smoke.check(passed != null && Arrays.equals(passed.data(), b) && passed.fromPort() == port,
+      Smoke.check(passed != null && MessageDigest.isEqual(passed.data(), b) && passed.fromPort() == port,
           "a handshake B datagram (AVPE, 1,200 bytes) goes through the joiner's port byte for byte");
 
       // Keep, and a keep sent twice
@@ -181,19 +182,20 @@ final class SmokeV2 {
       HandshakeA.Initiator initiator = HandshakeA.writeA1((String) a.get("region"), hex(relay.get("p384Public")),
           hex(relay.get("mlkemPublic")), Identity.of(s, sk), e, ek, hex(Json.object(a.get("skem")).get("m")));
 
-      if (!Arrays.equals(initiator.a1(), hex(a.get("a1")))) {
+      if (!MessageDigest.isEqual(initiator.a1(), hex(a.get("a1")))) {
         return "A1 differs from the file's";
       }
 
       HandshakeA.Initiator.Done done = initiator.readA2(hex(a.get("a2")));
 
-      if (done == null || !Arrays.equals(done.a3(), hex(a.get("a3")))) {
+      if (done == null || !MessageDigest.isEqual(done.a3(), hex(a.get("a3")))) {
         return "A3 differs from the file's";
       }
 
       HandshakeA.Keys keys = done.keys();
 
-      if (!Arrays.equals(keys.transcript(), hex(a.get("transcript"))) || !Arrays.equals(keys.sessionId(), hex(a.get("sessionId")))) {
+      if (!MessageDigest.isEqual(keys.transcript(), hex(a.get("transcript")))
+          || !MessageDigest.isEqual(keys.sessionId(), hex(a.get("sessionId")))) {
         return "the transcript or the session id differs from the file's";
       }
 
@@ -202,8 +204,8 @@ final class SmokeV2 {
       Channel channel = Channel.gameSide(keys, 0);
       Map<String, Object> fromGame = Json.object(Json.list(top.get("sealed")).get(0));
       Map<String, Object> fromRelay = Json.object(Json.list(top.get("sealed")).get(1));
-      boolean seals = Arrays.equals(channel.seal(hex(fromGame.get("message")), 0), hex(fromGame.get("sealed")));
-      boolean opens = Arrays.equals(channel.open(hex(fromRelay.get("sealed")), 0), hex(fromRelay.get("message")));
+      boolean seals = MessageDigest.isEqual(channel.seal(hex(fromGame.get("message")), 0), hex(fromGame.get("sealed")));
+      boolean opens = MessageDigest.isEqual(channel.open(hex(fromRelay.get("sealed")), 0), hex(fromRelay.get("message")));
       return seals && opens ? null : "the sealed channel's keys differ from the file's";
     } catch (IOException | Json.Bad | RuntimeException e) {
       return "the pin couldn't be run: " + e.getClass().getSimpleName();
@@ -220,8 +222,8 @@ final class SmokeV2 {
     while (!answered && System.nanoTime() < until) {
       byte[] id = Smoke.random(8);
       Smoke.Got back = Smoke.ask(s, control, a0(id));
-      answered = back != null && back.data().length == 64 && back.fromPort() == control && Arrays.equals(Arrays.copyOfRange(back.data(), 8,
-          16), id);
+      answered = back != null && back.data().length == 64 && back.fromPort() == control
+          && MessageDigest.isEqual(Arrays.copyOfRange(back.data(), 8, 16), id);
     }
 
     Smoke.check(answered, "the relay answers A0 with a COOKIE of 64 bytes, for 1,200, from its control port");

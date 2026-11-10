@@ -515,7 +515,7 @@ public final class Smoke {
     SSLContext tls = trustingOnly(c.certificate());
     byte[] served = servedKey(tls);
 
-    if (served == null || !Arrays.equals(served, spki)) {
+    if (served == null || !MessageDigest.isEqual(served, spki)) {
       System.err.println("servers line: the list doesn't serve the key its certificate file holds (is it running? was the file changed "
           + "since it started?): a pin from the file would be wrong");
       return 1;
@@ -677,7 +677,7 @@ public final class Smoke {
         Got back = ask(host, c.control(), msg(ECHO, mine, null, 0, i));
         double ms = (System.nanoTime() - t0) / 1e6;
         Read m = back == null ? null : read(back.data());
-        check(m != null && m.type() == ECHO_BACK && Arrays.equals(m.secret(), mine) && m.number() == i && back.data().length == 64
+        check(m != null && m.type() == ECHO_BACK && MessageDigest.isEqual(m.secret(), mine) && m.number() == i && back.data().length == 64
             && back.fromPort() == c.control(), "ECHO " + i + " comes back as ECHO_BACK, the same 64 bytes' worth, from the control port",
             String.format(Locale.ROOT, "%.2f ms", ms));
         best = Math.min(best, ms);
@@ -711,7 +711,7 @@ public final class Smoke {
             "the listing shows, with its host's id and no owner key or pass in it");
       } else {
         // No list here to check the pass, so it's checked by hand: this relay's own, for its region
-        check(Arrays.equals(opened.pass(), passFor(passKey, c.region(), code, opened.passTime())),
+        check(MessageDigest.isEqual(opened.pass(), passFor(passKey, c.region(), code, opened.passTime())),
             "the pass is this relay's own, for region " + c.region());
       }
 
@@ -728,7 +728,7 @@ public final class Smoke {
       // told the host at the JOIN; its NEW_JOINER is waiting by now, so this passes against both.
       send(joiner, port, msg(JOINER_HELLO, ticket, null, 0, 0));
       Read note = readOrNothing(next(host, 1000));
-      check(note.type() == NEW_JOINER && note.port() == joined.port() && Arrays.equals(note.secret(), token),
+      check(note.type() == NEW_JOINER && note.port() == joined.port() && MessageDigest.isEqual(note.secret(), token),
           "the joiner's hello claims its port, and the host hears NEW_JOINER with that port and its token");
 
       send(host, port, msg(HOST_HELLO, token, null, port, 0));
@@ -768,7 +768,7 @@ public final class Smoke {
 
           int i = got.data().length >= 4 ? (got.data()[0] & 0xff) | ((got.data()[1] & 0xff) << 8) : -1;
 
-          if (sent.containsKey(i) && Arrays.equals(sent.get(i), got.data())) {
+          if (sent.containsKey(i) && MessageDigest.isEqual(sent.get(i), got.data())) {
             same++;
             sent.remove(i);
           }
@@ -896,7 +896,7 @@ public final class Smoke {
       while (!answered && System.nanoTime() < until) {
         byte[] mine = random(16);
         Read m = readOrNothing(ask(probe, c.control(), msg(ECHO, mine, null, 0, 0)));
-        answered = m.type() == ECHO_BACK && Arrays.equals(m.secret(), mine);
+        answered = m.type() == ECHO_BACK && MessageDigest.isEqual(m.secret(), mine);
       }
     }
 

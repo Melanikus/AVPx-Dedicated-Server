@@ -49,6 +49,10 @@ A rule only a reviewer can check says so. When you add a rule, give it the next 
 **Why:** someone decades from now, with nobody to ask, should be able to read why each part is the way it is (AVP Tao 2).
 **Checked by:** a reviewer.
 
+## 11. Bytes are compared in the same time, whatever they hold
+**Why:** a compare that stops at the first byte that differs takes longer the more of a guess is right, so the time it takes can give away a secret a byte at a time. The server compares keys, ids, passes and tags, and which of them are secret isn't always plain (a scanner can't tell, nor can a reader years from now), so every compare is the kind that can't give anything away.
+**Checked by:** CheckStandard: no `Arrays.equals` or `Arrays.mismatch` in `java/src` or `java/tools`; bytes are compared with `MessageDigest.isEqual` (or `Crypto.same`, which also says no two nothings are the same). The tests in `java/test` may use either: what they compare is published test vectors and their own made-up values.
+
 ## The shell scripts in deploy/
 
 The same rules hold for them, and their own tests hold them to it:

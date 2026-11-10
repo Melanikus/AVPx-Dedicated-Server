@@ -2427,3 +2427,24 @@ file: java/src/avpx/v2/Identity.java
     return fingerprint();
   }
 >>>
+
+# ----- CODING-STANDARD.md rule 11, added 2026-11-10 after Snyk Code's finding on Smoke.java's servers line: bytes are compared with
+# MessageDigest.isEqual, which takes as long whatever they hold
+
+=== bytes compared in a time that tells how much matched
+check: standard
+file: java/src/avpx/v2/TakeoutCompare.java
+<<< new file
+package avpx.v2;
+
+import java.util.Arrays;
+
+final class TakeoutCompare {
+  private TakeoutCompare() {
+  }
+
+  static boolean same(byte[] tag, byte[] guess) {
+    return Arrays.equals(tag, guess);
+  }
+}
+>>>

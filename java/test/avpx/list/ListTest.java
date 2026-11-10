@@ -414,18 +414,38 @@ public final class ListTest {
       ok(text.length() <= Routes.MOST_RELAY_KEYS_BYTES, "under 4 KB");
     });
 
-    test("GET /v1/relay-keys's query is exactly region= and a region, with no body, and GET is its only call", () -> {
+    test("GET /v1/relay-keys with no query gives the keys of the relay this same server runs, and only that one (CRYPTO.md 12.2)", () -> {
+      byte[] p384 = bytes(97, 4);
+      byte[] kem = bytes(1568, 9);
+      List<Listings.Relay> relays = new ArrayList<>(RELAYS);
+      relays.set(1, new Listings.Relay("paris", "paris.relay.example.net", 27500, KEYS.get("paris"), p384, kem));
+      Listings ours = new Listings(relays, "paris", SeededRandom.of(5), NOW);
+      Answer answer = call(ours, "GET", null, "", NOW, "/v1/relay-keys");
+      same(answer.status(), 200, "this server runs paris, a version 2 relay");
+      same(answer.body(), call(ours, "GET", null, "region=paris", NOW, "/v1/relay-keys").body(), "the very answer ?region=paris gives");
+      same(call(ours, "GET", latin1("x"), "", NOW, "/v1/relay-keys").status(), 400, "with a body, still refused");
+      same(call(new Listings(relays, "virginia", SeededRandom.of(5), NOW), "GET", null, "", NOW, "/v1/relay-keys").status(), 404,
+          "this server runs virginia, a version 1 relay: no keys");
+      same(call(new Listings(relays, "tokyo", SeededRandom.of(5), NOW), "GET", null, "", NOW, "/v1/relay-keys").status(), 404,
+          "this server's relay isn't one the list knows");
+      Listings none = listings(relays);
+      same(call(none, "GET", null, "", NOW, "/v1/relay-keys").status(), 404, "a list with no relay of its own named");
+      List<String> lines = none.tick(at(60000));
+      matches(lines.get(0), "relay keys given 0 times, and 1 times not found", "counted as not found");
+    });
+
+    test("GET /v1/relay-keys's query is nothing, or exactly region= and a region, with no body, and GET is its only call", () -> {
       List<Listings.Relay> relays = new ArrayList<>(RELAYS);
       relays.set(1, new Listings.Relay("paris", "paris.relay.example.net", 27500, KEYS.get("paris"), bytes(97, 4), bytes(1568, 9)));
       Listings l = listings(relays);
 
-      for (String q : List.of("", "region=", "paris", "region=Paris", "region=paris&x=1", "x=1&region=paris", "region=paris&region=paris",
+      for (String q : List.of("region=", "paris", "region=Paris", "region=paris&x=1", "x=1&region=paris", "region=paris&region=paris",
           "region= paris", "region=paris ", "region=%70aris", "region=par is", "region=" + "r".repeat(17), "Region=paris", "region==paris",
           "region=paris#", "region=paris/", "region=pa\nris")) {
         same(call(l, "GET", null, q, NOW, "/v1/relay-keys").status(), 400, "query \"" + q + "\"");
       }
 
-      same(call(l, "GET", null, "region=paris", NOW, "/v1/relay-keys").status(), 200, "the one form");
+      same(call(l, "GET", null, "region=paris", NOW, "/v1/relay-keys").status(), 200, "the form with a region");
       same(call(l, "GET", latin1("x"), "region=paris", NOW, "/v1/relay-keys").status(), 400, "with a body");
 
       for (String method : List.of("POST", "PUT", "DELETE", "HEAD", "PATCH")) {

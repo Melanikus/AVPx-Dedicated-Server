@@ -526,11 +526,13 @@ public final class Smoke {
     HexFormat hex = HexFormat.of();
     byte[] p384 = settings.staticKeys().p384Public();
     byte[] kem = settings.staticKeys().kemPublic();
-    Reply keys = api(tls, "GET", "/v1/relay-keys?region=" + c.region(), (String) null);
+    // Asked with no query, as a game with this line asks it (CRYPTO.md section 12.2): the relay this same server runs
+    Reply keys = api(tls, "GET", "/v1/relay-keys", (String) null);
     String expected = "{\"region\":\"" + c.region() + "\",\"p384\":\"" + hex.formatHex(p384) + "\",\"mlkem\":\"" + hex.formatHex(kem) + "\"}";
 
     if (keys.status() != 200 || !keys.body().equals(expected)) {
-      System.err.println("servers line: the list's GET /v1/relay-keys doesn't give the static keys this relay's settings hold");
+      System.err.println("servers line: the list's GET /v1/relay-keys, with no query as a game asks it, doesn't give the static keys this "
+          + "relay's settings hold");
       return 1;
     }
 

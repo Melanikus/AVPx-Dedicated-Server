@@ -74,13 +74,23 @@ public final class Listings {
   }
 
   private final Map<String, Relay> relays = new LinkedHashMap<>();
+  private final String ownRegion;
   private final RandomBytes random;
   final Map<String, Entry> byGame = new LinkedHashMap<>();   // by "region code", the first listed first
   private long statsAt;
   private Counts counts = new Counts();
 
-  // relays: every relay the list knows, already checked (Settings.java). random: where owner keys come from. now: the time.
+  // relays: every relay the list knows, already checked (Settings.java). random: where owner keys come from. now: the time. With no
+  // relay of its own named, GET /v1/relay-keys with no query finds none (the tests' lists).
   public Listings(List<Relay> relays, RandomBytes random, long now) {
+    this(relays, null, random, now);
+  }
+
+  // ownRegion: the region of the relay this same server runs, beside the list (Main.java), which GET /v1/relay-keys with no query
+  // answers for: a game with only a servers.cfg line knows this machine's address, not its relay's region (CRYPTO.md section 12.2)
+  public Listings(List<Relay> relays, String ownRegion, RandomBytes random, long now) {
+    this.ownRegion = ownRegion;
+
     for (Relay r : relays) {
       this.relays.put(r.region(), new Relay(r.region(), r.host(), r.port(), r.passKey().clone(), r.p384() == null ? null : r.p384().clone(),
           r.mlkem() == null ? null : r.mlkem().clone()));
@@ -126,6 +136,16 @@ public final class Listings {
     shown.put("mlkem", hex.formatHex(relay.mlkem()));
     counts.keysGiven++;
     return shown;
+  }
+
+  // The keys of the relay this same server runs, as relayKeys gives them, or null when it runs none the list knows as version 2
+  public Map<String, Object> ownRelayKeys() {
+    if (ownRegion == null) {
+      counts.keysNotFound++;
+      return null;
+    }
+
+    return relayKeys(ownRegion);
   }
 
   // Whether a pass is good for this region and code, at now: made with that relay's key, and less than a minute old

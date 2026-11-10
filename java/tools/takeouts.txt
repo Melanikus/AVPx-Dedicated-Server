@@ -1704,9 +1704,11 @@ check: tests
 file: java/src/avpx/list/Routes.java
 <<< from
         Requests.checkNoBody(body);
-        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+
+        // No query: the relay this same server runs, the one at the address the game asked (CRYPTO.md section 12.2)
 <<< to
-        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+
+        // No query: the relay this same server runs, the one at the address the game asked (CRYPTO.md section 12.2)
 >>>
 
 === relay-keys answers any method
@@ -2495,4 +2497,27 @@ file: java/src/avpx/list/ServersLine.java
     String where = listPort == DEFAULT_LIST_PORT && relayPort == DEFAULT_RELAY_PORT ? address : address + ":" + listPort + ":" + relayPort;
 <<< to
     String where = address;
+>>>
+
+# ----- GET /v1/relay-keys with no query: the relay this same server runs (CRYPTO.md section 12.2, a servers.cfg line names no region),
+# added 2026-11-10
+
+=== relay-keys with no query is refused, as before
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+        if (query.isEmpty()) {
+          Map<String, Object> own = listings.ownRelayKeys();
+<<< to
+        if (false) {
+          Map<String, Object> own = listings.ownRelayKeys();
+>>>
+
+=== relay-keys with no query answers for the list's first relay, not this server's own
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    return relayKeys(ownRegion);
+<<< to
+    return relayKeys(relays.keySet().iterator().next());
 >>>

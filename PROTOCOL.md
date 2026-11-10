@@ -124,6 +124,7 @@ Every call is HTTPS with TLS 1.2 or newer, and the server sends HSTS. The server
 |---|---|---|
 | `GET /v1/relays` | none | `200 {"relays": [{"region", "host", "port"}]}`, at most 16 relays |
 | `GET /v1/relay-keys?region=R` | none | `200 {"region", "p384", "mlkem"}`: a version 2 relay's static public keys (CRYPTO.md section 12.1); `400` for any other query, or a body; `404` if the list has no version 2 relay in that region; `405` for any other method |
+| `GET /v1/relay-keys`, no query | none | `200 {"region", "p384", "mlkem"}` as above, for the relay this same server runs: a game with only a servers.cfg line knows the address, not the region (CRYPTO.md section 12.2); `400` with a body; `404` if this server runs no version 2 relay; `405` for any other method |
 | `POST /v1/games` | `{"region", "code", "pass", "passTime", "name", "level", "mode", "gameStyle", "levelNumber", "coopLobby", "players", "maxPlayers", "version", "id", "hostMs"}`, with `id` for a version-2 game and only for one | `201 {"owner"}`; `403` for a pass that isn't good; `409` if that game is listed already; `503` if the list is full |
 | `PUT /v1/games` | `{"owner"}` and all of POST's fields | `204`, no body; `403` for a pass that isn't good, the wrong owner, or an id other than the one it was listed with; `404` if that game isn't listed |
 | `DELETE /v1/games` | `{"region", "code", "owner"}` | `204`, no body; `403` for the wrong owner; `404` if that game isn't listed. The room itself stays until its host closes it, or stops keeping it. |

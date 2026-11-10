@@ -179,8 +179,12 @@ fi
 ask "actions/runs/$run" run.json || refuse 'GitHub could not be asked about the run (it is asked again next time)'
 how=$(read_answer run.json '[.path, .event, .head_branch, .status, (.conclusion // "none")] | join(" ")') \
   || refuse "GitHub's answer for the run could not be read (it is asked again next time)"
-attempt=$(read_answer run.json '.run_attempt | tostring') || refuse "GitHub's answer for the run could not be read (it is asked again next time)"
-title=$(read_answer run.json '.display_title | tostring') || refuse "GitHub's answer for the run could not be read (it is asked again next time)"
+# The attempt and the name are compared inside jq, as JSON values, whole: the shell's $(...) drops line breaks at the end of what it's
+# given, so a name with one there would compare equal outside jq (Secondary's re-check, R-2)
+attempt=$(read_answer run.json 'if .run_attempt == 1 then "first" else "again" end') \
+  || refuse "GitHub's answer for the run could not be read (it is asked again next time)"
+named=$(read_answer run.json --arg want "Deploy $commit to $machine" 'if .display_title == $want then "same" else "other" end') \
+  || refuse "GitHub's answer for the run could not be read (it is asked again next time)"
 
 if one_line_like "$how" '\.github/workflows/deploy\.yml workflow_dispatch main (queued|in_progress|waiting|requested|pending) none'; then
   say "run $run hasn't finished yet: asked again next time"
@@ -192,13 +196,12 @@ if ! one_line_like "$how" '\.github/workflows/deploy\.yml workflow_dispatch main
   refuse "deployment $id: its run isn't deploy.yml, started by hand from main, finished with success"
 fi
 
-if [ "$attempt" != 1 ]; then
+if [ "$attempt" != first ]; then
   note "refused: its run was run again, and only a run's first attempt counts"
   refuse "deployment $id: run $run was run again, and only a run's first attempt counts (the owner starts a new Deploy)"
 fi
 
-# Compared as text, whole: a line break, or anything before or after, makes it another text
-if [ "$title" != "Deploy $commit to $machine" ]; then
+if [ "$named" != same ]; then
   note "refused: its run was for another commit or machine, or a dry run (its name isn't \"Deploy $commit to $machine\")"
   refuse "deployment $id: run $run was for another commit or machine, or a dry run: its name isn't \"Deploy $commit to $machine\""
 fi

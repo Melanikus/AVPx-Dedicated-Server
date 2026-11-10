@@ -23,7 +23,12 @@
 #      (Secondary's review of the pull route, P-1);
 #  11. no workflow names a test's own hook: AVPX_DEPLOY_ROOT, AVPX_UFW and AVPX_CODEQL_FILES each swap a real tool or list for a test's
 #      stand-in, and AVPX_IN_TAKEOUT makes this test skip its take-outs. Each is for a test's own use only (Secondary's review of the
-#      gates failing closed, G-3).
+#      gates failing closed, G-3);
+#  12. every file in .github/workflows ends in .yml: GitHub runs a file there ending in .yaml too, and every rule here reads *.yml, so a
+#      workflow ending in .yaml would escape them all (Secondary's re-check, R-1);
+#  13. deploy.yml holds each value (the commit, the machine, the jars' SHA-256, the deployment's number) to its shape by case and by
+#      its length, never by grep, which passes a text with a line break in it if any one of its lines matches; and the machine is held
+#      to its shape in the blockers job, before anything else, as well as in the record job (Secondary's re-check, R-2).
 set -eu
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
@@ -114,6 +119,22 @@ for f in "$flows"/*.yml; do
   fi
 done
 
+# 12. Every file there ends in .yml, hidden ones too
+for f in "$flows"/* "$flows"/.[!.]*; do
+  [ -e "$f" ] || continue
+  case "$(basename "$f")" in
+    *.yml) [ -f "$f" ] || no "$(basename "$f") in .github/workflows is a plain file" ;;
+    *) no "$(basename "$f") in .github/workflows ends in .yml, so every rule here reads it" ;;
+  esac
+done
+
+# 13. Values by case and length, never by grep; and the machine checked in the blockers job and the record job
+if by_name grep; then no 'deploy.yml holds no value to a pattern with grep (a line break gets through it): case and the length do'; fi
+for job in blockers record; do
+  job_of "$job" | grep -qF "case \"\$MACHINE\" in ''|*[!a-z0-9-]*)" && job_of "$job" | grep -qF '[ "${#MACHINE}" -le 16 ]' \
+    || no "the $job job holds the machine to its shape: 1 to 16 small letters, digits and -"
+done
+
 if [ "$bad" -ne 0 ]; then
   echo "$bad rules of deploy.yml don't hold"
   exit 1
@@ -127,7 +148,7 @@ t=$(mktemp -d)
 trap 'rm -rf "$t"' EXIT
 mkdir -p "$t/deploy" "$t/.github/workflows"
 cp "$here/test-deploy-workflow.sh" "$t/deploy/test-deploy-workflow.sh"
-cp "$flows"/*.yml "$t/.github/workflows/"
+cp "$flows"/* "$t/.github/workflows/"
 failed=0
 for edit in \
   's|/usr/bin/jq -r .status|jq -r .status|' \
@@ -140,7 +161,9 @@ for edit in \
   's|^    needs: build$|    needs: gates|' \
   's|^run-name: .*$|run-name: Deploy|' \
   's#^          \[ "\$GITHUB_REF" = refs/heads/main \] || #          true || #' \
-  's|^permissions:$|# permissions:|'; do
+  's|^permissions:$|# permissions:|' \
+  's#^          case "\$MACHINE" in .*$#          true#' \
+  's#^          case "\$JARS" in .*$#          printf %s "$JARS" | grep -Eqx "[0-9a-f]{64}" || exit 1#'; do
   sed "$edit" "$file" > "$t/.github/workflows/deploy.yml"
   if cmp -s "$t/.github/workflows/deploy.yml" "$file"; then echo "TAKE-OUT CAN'T RUN, its text isn't in deploy.yml: $edit"; failed=1; continue; fi
   if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo "TAKE-OUT NOT NOTICED: $edit"; failed=1; else echo "take-out noticed: $edit"; fi
@@ -159,4 +182,10 @@ for edit in \
   if cmp -s "$t/.github/workflows/test-build.yml" "$other"; then echo "TAKE-OUT CAN'T RUN, its text isn't in test-build.yml: $edit"; failed=1; continue; fi
   if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo "TAKE-OUT NOT NOTICED (test-build.yml): $edit"; failed=1; else echo "take-out noticed (test-build.yml): $edit"; fi
 done
+
+# And a workflow GitHub would run that the rules reading *.yml wouldn't see: one ending in .yaml
+cp "$other" "$t/.github/workflows/test-build.yml"
+cp "$other" "$t/.github/workflows/another.yaml"
+if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo 'TAKE-OUT NOT NOTICED: a workflow ending in .yaml'; failed=1; else echo 'take-out noticed: a workflow ending in .yaml'; fi
+rm -f "$t/.github/workflows/another.yaml"
 exit "$failed"

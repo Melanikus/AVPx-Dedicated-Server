@@ -49,17 +49,27 @@ jobs:
       # out. Each runs as this runner's own user (setpriv), never as root; only making the namespace takes sudo. The CLI gets a made-up
       # token (the secret is never given to this step), and its scan must fail. timeout stops a CLI that hangs instead; that counts as
       # failing too.
+      # Before either failure counts, the wrapper must be shown to work: a wrapper that couldn't run anything (sudo, ip, unshare or setpriv
+      # missing or refused) would make curl and the CLI both fail, and this step pass for nothing (Secondary's re-check, G-4). So, first:
+      # a command run through it is this runner's own user; the CLI runs through it (its --version needs no network); and curl fails
+      # there for the network's reasons alone (its exit 6, no name for the host, or 7, no connection), never another.
       - name: With Snyk out of reach, the scan fails, never passing unread
         run: |
           cut_off() {
             sudo unshare --net -- sh -c 'ip link set lo up && u=$1 g=$2 h=$3 p=$4 && shift 4 &&
               exec setpriv --reuid="$u" --regid="$g" --init-groups -- env HOME="$h" PATH="$p" "$@"' cut-off "$(id -u)" "$(id -g)" "$HOME" "$PATH" "$@"
           }
-          if cut_off curl -q --silent --max-time 20 --output /dev/null https://static.snyk.io/; then
-            echo 'curl reached Snyk from a namespace with no network, so this test would prove nothing'
-            exit 1
-          fi
-          echo 'curl could not reach Snyk from the namespace, as it must not'
+          [ "$(cut_off sh -c 'id -u')" = "$(id -u)" ] \
+            || { echo "the namespace's wrapper doesn't run a command as this runner's user, so this test would prove nothing"; exit 1; }
+          cut_off timeout 60 "$RUNNER_TEMP/snyk" --version \
+            || { echo "the Snyk CLI doesn't run in the namespace at all, so its failing there would prove nothing"; exit 1; }
+          status=0
+          cut_off curl -q --silent --max-time 20 --output /dev/null https://static.snyk.io/ || status=$?
+          case "$status" in
+            6|7) echo "curl could not reach Snyk from the namespace (its exit $status: no name for the host, or no connection), as it must not" ;;
+            0) echo 'curl reached Snyk from a namespace with no network, so this test would prove nothing'; exit 1 ;;
+            *) echo "curl failed in the namespace for another reason than the network (its exit $status), so this test would prove nothing"; exit 1 ;;
+          esac
           if cut_off SNYK_TOKEN=00000000-0000-0000-0000-000000000000 timeout 300 "$RUNNER_TEMP/snyk" code test --severity-threshold=low; then
             echo 'the Snyk CLI passed with Snyk out of reach'
             exit 1

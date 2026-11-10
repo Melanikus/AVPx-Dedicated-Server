@@ -60,6 +60,7 @@ concurrency:
 
 env:
   COMMIT: ${{ inputs.commit }}
+  MACHINE: ${{ inputs.machine }}
   # The workflows whose latest run for the commit must have succeeded, by file, all of them (GATES.md): every one but this file
   REQUIRED: 'java.yml blockers.yml snyk.yml proofs.yml'
 
@@ -76,10 +77,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: The commit's shape
+      # Each value is held to its shape by case and by its length, never by grep: grep passes a text with a line break in it if any one
+      # of its lines matches (Secondary's re-check, R-2)
+      - name: The commit's and the machine's shapes
         run: |
           case "$COMMIT" in *[!0-9a-f]*) echo 'the commit must be 40 hex digits, small letters'; exit 1 ;; esac
           [ "${#COMMIT}" -eq 40 ] || { echo 'the commit must be 40 hex digits, small letters'; exit 1; }
+          case "$MACHINE" in ''|*[!a-z0-9-]*) echo 'the machine is its region: 1 to 16 small letters, digits and -'; exit 1 ;; esac
+          [ "${#MACHINE}" -le 16 ] || { echo 'the machine is its region: 1 to 16 small letters, digits and -'; exit 1; }
       - name: Nothing blocks a deploy
         run: sh deploy/check-blockers.sh
 
@@ -157,17 +162,19 @@ jobs:
       deployments: write
     env:
       JARS: ${{ needs.build.outputs.jars }}
-      MACHINE: ${{ inputs.machine }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: curl and jq are Ubuntu's own, unchanged
         run: sh deploy/check-ubuntu-tools.sh
+      # By case and by length, as the blockers job holds the commit and the machine, never by grep
       - name: The jars' SHA-256 and the machine, each in its shape
         run: |
-          printf '%s' "$JARS" | grep -Eqx '[0-9a-f]{64}' || { echo "the build gave no SHA-256 for the jars"; exit 1; }
-          printf '%s' "$MACHINE" | grep -Eqx '[a-z0-9-]{1,16}' || { echo 'the machine is its region: 1 to 16 small letters, digits and -'; exit 1; }
+          case "$JARS" in *[!0-9a-f]*) echo "the build gave no SHA-256 for the jars"; exit 1 ;; esac
+          [ "${#JARS}" -eq 64 ] || { echo "the build gave no SHA-256 for the jars"; exit 1; }
+          case "$MACHINE" in ''|*[!a-z0-9-]*) echo 'the machine is its region: 1 to 16 small letters, digits and -'; exit 1 ;; esac
+          [ "${#MACHINE}" -le 16 ] || { echo 'the machine is its region: 1 to 16 small letters, digits and -'; exit 1; }
 
       - name: A dry run says what it would record, and records nothing
         if: ${{ inputs.dry_run }}
@@ -195,7 +202,7 @@ jobs:
             "https://api.github.com/repos/$GITHUB_REPOSITORY/deployments" > made.json
           id=$(/usr/bin/jq -r '.id | tostring' made.json)
           sha=$(/usr/bin/jq -r .sha made.json)
-          printf '%s' "$id" | grep -Eqx '[1-9][0-9]*' || { echo 'GitHub made no deployment'; exit 1; }
+          case "$id" in ''|0*|*[!0-9]*) echo 'GitHub made no deployment'; exit 1 ;; esac
           [ "$sha" = "$COMMIT" ] || { echo "GitHub's deployment is for another commit ($sha)"; exit 1; }
           echo "recorded deployment $id for avpx-$MACHINE: $COMMIT, jars $JARS, run $GITHUB_RUN_ID"
           echo "the machine's timer takes it within about 5 minutes of this run ending; its journal says what became of it"

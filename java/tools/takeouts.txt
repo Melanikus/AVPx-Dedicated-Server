@@ -2448,3 +2448,22 @@ final class TakeoutCompare {
   }
 }
 >>>
+
+# Secondary's re-check (2026-11-10): the same compare, written with no "Arrays." in front, through a static import
+=== bytes compared in a time that tells how much matched, through a static import
+check: standard
+file: java/src/avpx/v2/TakeoutCompareImported.java
+<<< new file
+package avpx.v2;
+
+import static java.util.Arrays.mismatch;
+
+final class TakeoutCompareImported {
+  private TakeoutCompareImported() {
+  }
+
+  static boolean same(byte[] tag, byte[] guess) {
+    return mismatch(tag, guess) < 0;
+  }
+}
+>>>

@@ -180,10 +180,12 @@ all_cases() {
     'cancelled|s/"conclusion":"success"/"conclusion":"cancelled"/' \
     'run again|s/"run_attempt":1/"run_attempt":2/' \
     'no attempt|s/,"run_attempt":1//' \
+    'its attempt as text|s/"run_attempt":1/"run_attempt":"1"/' \
     'for another commit|s/"Deploy 1/"Deploy 9/' \
     'for another machine|s/ to nyc3"/ to paris"/' \
     'a dry run|s/ to nyc3"/ to nyc3 (dry run)"/' \
     'a line break in its name|s/ to nyc3"/ to nyc3\\nDeploy x"/' \
+    'a line break at the end of its name|s/ to nyc3"/ to nyc3\\n"/' \
     'no name|s/,"display_title":"[^"]*"//'; do
     next run; good_case "$c"
     run_answer "$c" "$(printf '%s' "$GOOD_RUN" | sed "${wrong#*|}")"
@@ -270,8 +272,9 @@ for edit in \
   's/^if ! as_builder no-network sh main\/deploy\/check-blockers.sh; then$/if false; then/' \
   's/ --proto .=https. --tlsv1.2 / /' \
   's/^if \[ -n "\$earlier" \]; then$/if false; then/' \
-  's/^if \[ "\$attempt" != 1 \]; then$/if false; then/' \
-  's/^if \[ "\$title" != "Deploy \$commit to \$machine" \]; then$/if false; then/' \
+  's/^if \[ "\$attempt" != first \]; then$/if false; then/' \
+  's/^if \[ "\$named" != same \]; then$/if false; then/' \
+  "s/'if \\.display_title == \\\$want then \"same\" else \"other\" end'/'.display_title'/; s/^if \\[ \"\\\$named\" != same \\]; then\$/if [ \"\\\$named\" != \"Deploy \\\$commit to \\\$machine\" ]; then/" \
   's/^"\$flock" -n 9 || /true || /' \
   's/^note "taking \$commit"$/:/' \
   's/\(| length | tostring end.\) 2>\/dev\/null) || refuse .*$/\1 2>\/dev\/null) || approved=""/'; do

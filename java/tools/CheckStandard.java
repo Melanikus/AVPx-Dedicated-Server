@@ -34,7 +34,8 @@ import java.util.stream.Stream;
 //   6. A finding is fixed, never hidden: nothing that tells javac or a scanner to look away, and no file that does.
 //   7. Every action a workflow uses is pinned to a full commit hash.
 //   8. Every test runs: every file in java/test that ends in Test.java is named in AllTests.java, or it would never run.
-//  11. Bytes are compared in the same time, whatever they hold: no Arrays.equals or Arrays.mismatch in java/src or java/tools, only
+//  11. Bytes are compared in the same time, whatever they hold: no Arrays.equals, Arrays.mismatch, Arrays.compare (or compareUnsigned)
+//      or Arrays.deepEquals in java/src or java/tools, and no static import of java.util.Arrays (which would let them be written without "Arrays."), only
 //      MessageDigest.isEqual (rules 9 and 10 are a reviewer's).
 //
 // This file is the one place the words rules 3 to 6 and 11 look for are listed, so it leaves its own text out of those rules, and so does
@@ -84,8 +85,10 @@ public final class CheckStandard {
   // Rule 8
   private static final String ALL_TESTS = "java/test/avpx/AllTests.java";
 
-  // Rule 11: the compares that stop at the first byte that differs, so the time they take says how much of a guess was right
-  private static final List<String> TIMED_COMPARES = List.of("Arrays." + "equals(", "Arrays." + "mismatch(");
+  // Rule 11: the compares that stop at the first byte that differs, so the time they take says how much of a guess was right, and the
+  // static import that would let them be written with no "Arrays." in front (Secondary's re-check, 2026-11-10)
+  private static final List<String> TIMED_COMPARES = List.of("Arrays." + "equals(", "Arrays." + "mismatch(", "Arrays." + "compare",
+      "Arrays." + "deepEquals(", "import static java.util." + "Arrays");
 
   // What one check found, and how much it looked at. Each check has its own, so Takeouts.java can check several copies at once.
   private final List<String> problems = new ArrayList<>();
@@ -278,7 +281,8 @@ public final class CheckStandard {
       if (file.startsWith("java/src/") || file.startsWith("java/tools/")) {
         for (String word : TIMED_COMPARES) {
           if (text.contains(word)) {
-            say(file, n, "rule 11: " + word + " stops at the first byte that differs: compare bytes with MessageDigest.isEqual");
+            say(file, n, "rule 11: " + word + ", a compare that stops at the first byte that differs (or a way to write one without its name):"
+                + " compare bytes with MessageDigest.isEqual");
           }
         }
       }

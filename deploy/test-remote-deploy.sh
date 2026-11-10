@@ -174,7 +174,10 @@ all_cases() {
   if grep 'systemd-run' "$m/log" | grep -v ':: HOME=[^ ]*/var/lib/avpx-deploy\.[^ ]* GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null :: ' | grep -q .; then
     no "every avpx-build step has the work folder as its HOME, and git reads no settings from outside it"
   fi
-  if ls "$m/root/var/lib" | grep -q .; then no 'the work folder is removed at the end'; fi
+  # The one thing left in /var/lib is the lock's file, which stays on purpose: a lock is held on a file, and the next deploy opens the
+  # same one (#27's first run, 2026-11-10: this check, written before the lock, counted the lock's file as a work folder left behind)
+  if ls "$m/root/var/lib" | grep -vx 'avpx-deploy.lock' | grep -q .; then no 'the work folder is removed at the end'; fi
+  [ -f "$m/root/var/lib/avpx-deploy.lock" ] || no "the deploy's lock is held on /var/lib/avpx-deploy.lock"
 
   # A jar that is a link, to the settings, say: refused, though what it points at has the very bytes of the gates' jar, and nothing of
   # it is copied anywhere. Then the same with the build folder itself a link, to a folder holding both.

@@ -32,7 +32,9 @@
 #      a text with a line break in it if any one of its lines matches. Each value's own two lines are required, in its own job, so no
 #      other tool (zgrep, awk, sed -n) can stand in for them (Secondary's third re-check, R-5): the commit (40 hex digits) and the machine
 #      (1 to 16 small letters, digits and -) in the blockers job, before anything else; the machine again, the jars' SHA-256 (64 hex
-#      digits) and the deployment's number (1 to 20 digits, no 0 first) in the record job (Secondary's re-checks, R-2 and R-4).
+#      digits) and the deployment's number (1 to 20 digits, no 0 first) in the record job (Secondary's re-checks, R-2 and R-4). Each
+#      line is required whole, ending in its refusal ("exit 1") with nothing after it, so a line can't keep its start and lose what it
+#      does (Secondary's fourth re-check, R-7).
 #
 # What rules 7 and 13 can't do (Secondary's third re-check, Info): they read words, so a name spelt another way (g''h, ${x}h) gets past
 # them. They're a tripwire, not the guard. What holds whatever a workflow spells is rule 4 (no job but record may write anything, and it
@@ -148,18 +150,25 @@ done
 
 # 13. Values by case and length, never by grep; and the machine checked in the blockers job and the record job
 if named_at_all '[ef]?grep'; then no 'deploy.yml holds no value to a pattern with grep, egrep or fgrep, by any path (a line break gets through it): case and the length do'; fi
+# Each value's own case and length lines, in its own job (R-5): nothing else may stand in for them. And each line whole, from its start
+# to its refusing end with nothing after it (Secondary's fourth re-check, R-7): a line that kept its start but had its "exit 1" turned
+# into "true" would hold the value to nothing. The words a line says can be anything without a ";", so nothing can be slipped in before
+# its exit.
+line_is() { job_of "$1" | grep -Eq -- "$2" || no "$3"; }
+q="'"
+refuses_case='echo [^;]*; exit 1 ;; esac$'
+refuses_length='\|\| \{ echo [^;]*; exit 1; \}$'
 for job in blockers record; do
-  job_of "$job" | grep -qF "case \"\$MACHINE\" in ''|*[!a-z0-9-]*)" && job_of "$job" | grep -qF '[ "${#MACHINE}" -le 16 ]' \
-    || no "the $job job holds the machine to its shape: 1 to 16 small letters, digits and -"
+  line_is "$job" '^ +case "\$MACHINE" in '"$q$q"'\|\*\[!a-z0-9-\]\*\) '"$refuses_case" \
+    "the $job job refuses a machine that isn't 1 to 16 small letters, digits and -, by case, ending in exit 1"
+  line_is "$job" '^ +\[ "\$\{#MACHINE\}" -le 16 \] '"$refuses_length" "the $job job refuses a machine of more than 16, ending in exit 1"
 done
-# Each other value's own case and length lines, in its own job (R-5): nothing else may stand in for them
-holds_in() { job_of "$1" | grep -qF -- "$2" || no "$3"; }
-holds_in blockers 'case "$COMMIT" in *[!0-9a-f]*)' 'the blockers job holds the commit to hex digits, small letters, by case'
-holds_in blockers '[ "${#COMMIT}" -eq 40 ]' 'the blockers job holds the commit to 40 hex digits, by its length'
-holds_in record 'case "$JARS" in *[!0-9a-f]*)' "the record job holds the jars' SHA-256 to hex digits, small letters, by case"
-holds_in record '[ "${#JARS}" -eq 64 ]' "the record job holds the jars' SHA-256 to 64 hex digits, by its length"
-holds_in record "case \"\$id\" in ''|0*|*[!0-9]*)" "the record job holds the deployment's number to digits, no 0 first, by case"
-holds_in record '[ "${#id}" -le 20 ]' "the record job holds the deployment's number to at most 20 digits, by its length"
+line_is blockers '^ +case "\$COMMIT" in \*\[!0-9a-f\]\*\) '"$refuses_case" "the blockers job refuses a commit that isn't small hex digits, ending in exit 1"
+line_is blockers '^ +\[ "\$\{#COMMIT\}" -eq 40 \] '"$refuses_length" "the blockers job refuses a commit that isn't 40 hex digits long, ending in exit 1"
+line_is record '^ +case "\$JARS" in \*\[!0-9a-f\]\*\) '"$refuses_case" "the record job refuses a jars' SHA-256 that isn't small hex digits, ending in exit 1"
+line_is record '^ +\[ "\$\{#JARS\}" -eq 64 \] '"$refuses_length" "the record job refuses a jars' SHA-256 that isn't 64 long, ending in exit 1"
+line_is record '^ +case "\$id" in '"$q$q"'\|0\*\|\*\[!0-9\]\*\) '"$refuses_case" "the record job refuses a deployment's number that isn't digits with no 0 first, ending in exit 1"
+line_is record '^ +\[ "\$\{#id\}" -le 20 \] '"$refuses_length" "the record job refuses a deployment's number of more than 20 digits, ending in exit 1"
 
 if [ "$bad" -ne 0 ]; then
   echo "$bad rules of deploy.yml don't hold"
@@ -197,6 +206,14 @@ for edit in \
   's#^          case "\$id" in .*$#          true#' \
   's|^          \[ "\${#id}" -le 20 \] .*$|          true|' \
   's#^          case "\$JARS" in .*$#          printf %s "$JARS" | zgrep -Eqx "[0-9a-f]{64}" || exit 1#' \
+  's@^\(          case "\$COMMIT" in .*\); exit 1 ;; esac$@\1; true ;; esac@' \
+  's@^\(          \[ "\${#COMMIT}" -eq 40 \] || { .*\); exit 1; }$@\1; true; }@' \
+  's@^\(          case "\$MACHINE" in .*\); exit 1 ;; esac$@\1; true ;; esac@' \
+  's@^\(          \[ "\${#MACHINE}" -le 16 \] || { .*\); exit 1; }$@\1; true; }@' \
+  's@^\(          case "\$JARS" in .*\); exit 1 ;; esac$@\1; true ;; esac@' \
+  's@^\(          \[ "\${#JARS}" -eq 64 \] || { .*\); exit 1; }$@\1; true; }@' \
+  's@^\(          case "\$id" in .*\); exit 1 ;; esac$@\1; true ;; esac@' \
+  's@^\(          \[ "\${#id}" -le 20 \] || { .*\); exit 1; }$@\1; true; }@' \
   's#^          case "\$JARS" in .*$#          printf %s "$JARS" | grep -Eqx "[0-9a-f]{64}" || exit 1#' \
   's#^          case "\$JARS" in .*$#          printf %s "$JARS" | /usr/bin/grep -Eqx "[0-9a-f]{64}" || exit 1#' \
   's#^          case "\$JARS" in .*$#          printf %s "$JARS" | egrep -qx "[0-9a-f]{64}" || exit 1#' \

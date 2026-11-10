@@ -28,9 +28,9 @@
 # together. If the hosting company has its own firewall in front of the machine (AWS Lightsail, DigitalOcean and most others do), set
 # the same there: SSH from OWNER.IP only, the rest from anyone, and nothing else.
 #
-# NEVER ON nyc3 DURING THE OWNER'S SELF-TEST (SERVER-BLOCKERS.md, "By name"): there the game's ports are the owner's alone and SSH is
-# open to anyone with keys only, by the owner's ruling of 2026-11-10. This is for a public machine, so it would open the game's ports to
-# everyone and narrow SSH to one address, undoing both.
+# NEVER ON nyc3 (SERVER-BLOCKERS.md, "By name"): by the owner's rulings of 2026-11-10, nyc3 lets in every address, and keys decide who
+# gets anything, SSH's included (keys only, LIMIT). This script would narrow SSH to one address, and shut out whoever reaches nyc3
+# through a VPN, whose address is never one person's.
 #
 # AVPX_UFW: only deploy/test-firewall.sh sets it, to a stand-in for ufw. On a real machine it's never set.
 set -eu

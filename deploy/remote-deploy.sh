@@ -35,6 +35,9 @@
 # AVPX_DEPLOY_ROOT: only deploy/test-remote-deploy.sh sets it, to a folder that stands in for /, so every step can be tested with no
 # machine. On a real machine it's never set.
 set -eu
+# Every pattern below means bytes, whatever the machine's language
+LC_ALL=C
+export LC_ALL
 
 root=${AVPX_DEPLOY_ROOT:-}
 releases="$root/opt/avpx/releases"

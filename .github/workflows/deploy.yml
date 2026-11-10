@@ -59,6 +59,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
+  # Every step's case ranges ([a-z0-9-], [0-9a-f]) mean bytes, whatever the runner's language (Secondary's re-check, Info)
+  LC_ALL: C
   COMMIT: ${{ inputs.commit }}
   MACHINE: ${{ inputs.machine }}
   # The workflows whose latest run for the commit must have succeeded, by file, all of them (GATES.md): every one but this file

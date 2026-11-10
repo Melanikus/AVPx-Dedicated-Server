@@ -13,8 +13,8 @@
 #   5. no action but checkout, and no secret;
 #   6. every other workflow is in REQUIRED, by its file, so a commit must have passed it, and a workflow added later can't be forgotten;
 #      and the deploy's own jobs are named "Deploy: ...", so none can stand in for a required one;
-#   7. the tools: gh and aws never; curl and jq only by their full path in /usr/bin, in a job that first checks they're Ubuntu's own
-#      (deploy/check-ubuntu-tools.sh);
+#   7. the tools: gh and aws never, by any name (a command, or the last part of a path such as /usr/bin/gh); curl and jq only by their
+#      full path in /usr/bin, in a job that first checks they're Ubuntu's own (deploy/check-ubuntu-tools.sh);
 #   8. the run's name is "Deploy <commit> to <machine>", with " (dry run)" after it for a dry run: the machine requires that name for
 #      the deployment's own commit and machine (deploy/pull-deploy.sh), so an approval counts only for what it was given for;
 #   9. it runs from main only: the blockers job's first step refuses a run started from any other branch, so the list it reads is main's;
@@ -24,12 +24,17 @@
 #  11. no workflow names a test's own hook: AVPX_DEPLOY_ROOT, AVPX_UFW and AVPX_CODEQL_FILES each swap a real tool or list for a test's
 #      stand-in, and AVPX_IN_TAKEOUT makes this test skip its take-outs. Each is for a test's own use only (Secondary's review of the
 #      gates failing closed, G-3);
-#  12. every file in .github/workflows ends in .yml: GitHub runs a file there ending in .yaml too, and every rule here reads *.yml, so a
-#      workflow ending in .yaml would escape them all (Secondary's re-check, R-1);
+#  12. every file in .github/workflows ends in .yml, and is a plain file, not a link: GitHub runs a file there ending in .yaml too, and
+#      every rule here reads *.yml, so a workflow ending in .yaml would escape them all (Secondary's re-check, R-1). Every name is looked
+#      at, ones starting with a dot or two included (R-3);
 #  13. deploy.yml holds each value (the commit, the machine, the jars' SHA-256, the deployment's number) to its shape by case and by
-#      its length, never by grep, which passes a text with a line break in it if any one of its lines matches; and the machine is held
-#      to its shape in the blockers job, before anything else, as well as in the record job (Secondary's re-check, R-2).
+#      its length, never by grep (nor egrep or fgrep, by any path), which passes a text with a line break in it if any one of its lines
+#      matches; and the machine is held to its shape in the blockers job, before anything else, as well as in the record job
+#      (Secondary's re-check, R-2 and R-4).
 set -eu
+# The ranges below ([a-z], [0-9a-f]) mean bytes, whatever the machine's language (Secondary's re-check, Info)
+LC_ALL=C
+export LC_ALL
 
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 flows="$here/../.github/workflows"
@@ -82,8 +87,11 @@ if grep -E '^    name: ' "$file" | grep -v "^    name: 'Deploy: " | grep -q .; t
 # 7. The tools. What runs is every line but comments and the steps' names (a name such as "curl and jq are Ubuntu's own" runs nothing).
 code=$(grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*- name:' -e '^[[:space:]]*name:' "$file")
 by_name() { printf '%s\n' "$code" | grep -Eq "(^|[[:space:];|&(])$1[[:space:]]"; }
-if by_name gh; then no 'gh is not used'; fi
-if by_name aws; then no 'aws is not used: nothing here goes to any cloud'; fi
+# A program named at all: as a command, or as the last part of a path (/usr/bin/gh), with anything but a letter, digit, _ or - around it
+# (Secondary's re-check, R-4: by_name alone let /usr/bin/gh and /usr/bin/grep through, as their full path is how curl's is allowed)
+named_at_all() { printf '%s\n' "$code" | grep -Eq "(^|[^[:alnum:]_-])$1([^[:alnum:]_-]|\$)"; }
+if named_at_all gh; then no 'gh is not used, by any path'; fi
+if named_at_all aws; then no 'aws is not used, by any path: nothing here goes to any cloud'; fi
 if by_name curl || by_name jq; then no 'curl and jq are used only by their full path, /usr/bin/curl and /usr/bin/jq'; fi
 # The line number in the job $1 of the first line matching $2 (a fixed text), or nothing
 first() { job_of "$1" | grep -n -F -- "$2" | head -n 1 | cut -d: -f1; }
@@ -119,8 +127,10 @@ for f in "$flows"/*.yml; do
   fi
 done
 
-# 12. Every file there ends in .yml, hidden ones too
-for f in "$flows"/* "$flows"/.[!.]*; do
+# 12. Every file there ends in .yml and is a plain file: names starting with one dot or two included (..x.yaml), and a link refused
+# before anything else, even one that leads nowhere (Secondary's re-check, R-3)
+for f in "$flows"/* "$flows"/.[!.]* "$flows"/..?*; do
+  if [ -L "$f" ]; then no "$(basename "$f") in .github/workflows is a link, not a plain file"; continue; fi
   [ -e "$f" ] || continue
   case "$(basename "$f")" in
     *.yml) [ -f "$f" ] || no "$(basename "$f") in .github/workflows is a plain file" ;;
@@ -129,7 +139,7 @@ for f in "$flows"/* "$flows"/.[!.]*; do
 done
 
 # 13. Values by case and length, never by grep; and the machine checked in the blockers job and the record job
-if by_name grep; then no 'deploy.yml holds no value to a pattern with grep (a line break gets through it): case and the length do'; fi
+if named_at_all '[ef]?grep'; then no 'deploy.yml holds no value to a pattern with grep, egrep or fgrep, by any path (a line break gets through it): case and the length do'; fi
 for job in blockers record; do
   job_of "$job" | grep -qF "case \"\$MACHINE\" in ''|*[!a-z0-9-]*)" && job_of "$job" | grep -qF '[ "${#MACHINE}" -le 16 ]' \
     || no "the $job job holds the machine to its shape: 1 to 16 small letters, digits and -"
@@ -163,7 +173,10 @@ for edit in \
   's#^          \[ "\$GITHUB_REF" = refs/heads/main \] || #          true || #' \
   's|^permissions:$|# permissions:|' \
   's#^          case "\$MACHINE" in .*$#          true#' \
-  's#^          case "\$JARS" in .*$#          printf %s "$JARS" | grep -Eqx "[0-9a-f]{64}" || exit 1#'; do
+  's#^          case "\$JARS" in .*$#          printf %s "$JARS" | grep -Eqx "[0-9a-f]{64}" || exit 1#' \
+  's#^          case "\$JARS" in .*$#          printf %s "$JARS" | /usr/bin/grep -Eqx "[0-9a-f]{64}" || exit 1#' \
+  's#^          case "\$JARS" in .*$#          printf %s "$JARS" | egrep -qx "[0-9a-f]{64}" || exit 1#' \
+  's|^\(            \)/usr/bin/curl -q|\1/usr/bin/gh api -q|'; do
   sed "$edit" "$file" > "$t/.github/workflows/deploy.yml"
   if cmp -s "$t/.github/workflows/deploy.yml" "$file"; then echo "TAKE-OUT CAN'T RUN, its text isn't in deploy.yml: $edit"; failed=1; continue; fi
   if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo "TAKE-OUT NOT NOTICED: $edit"; failed=1; else echo "take-out noticed: $edit"; fi
@@ -188,4 +201,19 @@ cp "$other" "$t/.github/workflows/test-build.yml"
 cp "$other" "$t/.github/workflows/another.yaml"
 if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo 'TAKE-OUT NOT NOTICED: a workflow ending in .yaml'; failed=1; else echo 'take-out noticed: a workflow ending in .yaml'; fi
 rm -f "$t/.github/workflows/another.yaml"
+
+# And one whose name starts with two dots, which a glob of * and .[!.]* never sees (Secondary's re-check, R-3)
+cp "$other" "$t/.github/workflows/..x.yaml"
+if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo 'TAKE-OUT NOT NOTICED: a workflow named ..x.yaml'; failed=1; else echo 'take-out noticed: a workflow named ..x.yaml'; fi
+rm -f "$t/.github/workflows/..x.yaml"
+
+# And a link in place of a workflow, even with a .yml name. Only where ln -s makes a real link (Linux, as GitHub's runner is; Git Bash
+# on Windows makes a copy, which proves nothing about links, so there it says so and goes on)
+ln -s test-build.yml "$t/.github/workflows/linked.yml" 2> /dev/null || true
+if [ -L "$t/.github/workflows/linked.yml" ]; then
+  if AVPX_IN_TAKEOUT=yes sh "$t/deploy/test-deploy-workflow.sh" > "$t/out" 2>&1; then echo 'TAKE-OUT NOT NOTICED: a link in place of a workflow'; failed=1; else echo 'take-out noticed: a link in place of a workflow'; fi
+else
+  echo 'take-out of a link not run here: this system makes no symbolic links (GitHub runs it)'
+fi
+rm -f "$t/.github/workflows/linked.yml"
 exit "$failed"

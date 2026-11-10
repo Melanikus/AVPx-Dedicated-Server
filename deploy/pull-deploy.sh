@@ -55,6 +55,9 @@
 # AVPX_DEPLOY_ROOT: only deploy/test-pull-deploy.sh sets it, to a folder that stands in for /, with stand-ins in its usr/bin, so every
 # step can be tested with no machine and no network. On a real machine it's never set.
 set -eu
+# Every pattern below means bytes, whatever the machine's language: systemd starts this with none, and a person might not
+LC_ALL=C
+export LC_ALL
 
 root=${AVPX_DEPLOY_ROOT:-}
 

@@ -497,7 +497,7 @@ public final class Smoke {
   private static int serversLine(Settings settings, String name, String address) throws Exception {
     String wrong = settings.protocol() != 2 ? "a servers.cfg line is for a version 2 server (\"protocol\": 2)"
         : c.certificate() == null ? "a servers.cfg line needs this machine's list: its settings have none"
-        : !isLineName(name) ? "the name must be 1 to 31 printable ASCII characters, with no space at either end and no # first"
+        : !isLineName(name) ? "the name must be 1 to 31 printable ASCII characters, with no space at either end, no two in a row, and no # first"
         : !isUsableIpv4(address) ? "the address must be this machine's public IPv4, written plainly, one a server can have (not 0.x, "
             + "224 and up, or a carrier's 100.64/10)"
         : null;
@@ -550,10 +550,12 @@ public final class Smoke {
   }
 
   // A servers.cfg name (#175): 1 to 31 characters of printable ASCII, so no tab; and here, also no space at either end (a reader that
-  // trims would see another name) and no # first (a line starting with # is a comment, and the game would never read it)
+  // trims would see another name), no two spaces in a row (the game's reader, servers_cfg.cpp, takes a run of them as one, so the name it
+  // shows would differ from the line printed: Primary's review of #175, N-1) and no # first (a line starting with # is a comment, and the
+  // game would never read it)
   static boolean isLineName(String name) {
     if (name == null || name.isEmpty() || name.length() > 31 || name.charAt(0) == ' ' || name.charAt(0) == '#'
-        || name.charAt(name.length() - 1) == ' ') {
+        || name.charAt(name.length() - 1) == ' ' || name.contains("  ")) {
       return false;
     }
 

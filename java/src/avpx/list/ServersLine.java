@@ -13,8 +13,9 @@ import java.util.HexFormat;
 // - the address is the machine's public IPv4, written plainly. The list is at port 443 and the relay's control port is 27500; a server
 //   on other ports is written <address>:<list port>:<relay port>, both given;
 // - the fingerprint is 64 hex digits, small letters (below);
-// - the name is the rest of the line: 1 to 31 printable ASCII characters, spaces inside it allowed, none at either end, not starting
-//   with # (a line starting with # is a comment).
+// - the name is the rest of the line: 1 to 31 printable ASCII characters, single spaces inside it allowed, but never two in a row (the
+//   game's reader takes a run of spaces as one, so it would show another name), none at either end, not starting with # (a line starting
+//   with # is a comment). Smoke's isLineName checks it before a line is printed.
 // The game reads the fields apart at any run of spaces or tabs (a chat app turns tabs into spaces), so two spaces are written here.
 //
 // THE FINGERPRINT is one number for both of the server's keys: SHA-256 over

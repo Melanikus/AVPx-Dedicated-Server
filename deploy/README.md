@@ -160,6 +160,8 @@ On another host, use that data centre's own place the same way.
    - or it ends with a `deploy:` line that says why not. Nothing broken is left running.
    Copy everything it printed, and send it to PO.
 
+**Checking jars you built yourself against jarsSha256** (on another machine, say, to run a server of the same commit): jarsSha256 is the SHA-256 of what `sha256sum avpx-server.jar avpx-smoke.jar` prints in `java/build`, in its Linux form, each line the 64 digits, two spaces, then the name. **On Windows, Git Bash's sha256sum writes ` *` before each name instead** (its mark for a file read as binary), so the same jars give another sum, and a false mismatch. Put the Linux form back first: `sha256sum avpx-server.jar avpx-smoke.jar | sed 's/ \*/  /' | sha256sum`. The build is the same on any machine with the pinned JDK (2026-11-10: ef62f03 built on Windows gave exactly the gates' jarsSha256 this way).
+
 ### 4. Later, for the game test
 
 To play the game against this machine from your own PC (PO gives the game's side of the steps), it's opened to **your own IP only**, in both firewalls:

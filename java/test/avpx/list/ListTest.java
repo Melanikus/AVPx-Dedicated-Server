@@ -303,13 +303,14 @@ public final class ListTest {
       same(list(l, at(200), 8).size(), 1, "version 8 has only its own");
     });
 
-    test("the largest list answer is 41,111 bytes, under 48 KB; it uses only the escapes \\\" and \\\\, and says a year at most", () -> {
+    test("the largest list answer is 46,011 bytes, under 48 KB; it uses only the escapes \\\" and \\\\, and says a year at most", () -> {
       Listings l = listings();
 
+      // Version 65535 is a version-2 game's (FIRST_V2_VERSION is at most that), so each row has a fingerprint too
       for (int i = 0; i < 120; i++) {
         Map<String, Object> worst = game("region", "longest-region-1", "code", codeOf(i), "name", QUOTE.repeat(32), "level",
             BACKSLASH.repeat(39), "mode", QUOTE.repeat(32), "gameStyle", 255, "levelNumber", 100, "coopLobby", 255, "players", 8,
-            "maxPlayers", 8, "version", 65535, "hostMs", 9999);
+            "maxPlayers", 8, "version", 65535, "hostMs", 9999, "fingerprint", "f".repeat(32));
         same(call(l, "POST", worst).status(), 201, "game " + i);
       }
 
@@ -323,7 +324,7 @@ public final class ListTest {
       Answer answer = call(l, "GET", null, "version=65535", later);
       String text = Json.write(answer.body());
       same(Json.list(answer.body().get("games")).size(), 100, "100 games");
-      same(text.length(), 41111, "the worst case PROTOCOL.md section 4 gives");
+      same(text.length(), 46011, "the worst case PROTOCOL.md section 4 gives");
       ok(text.length() <= Routes.MOST_LIST_BYTES, "under 48 KB");
 
       for (Object g : Json.list(answer.body().get("games"))) {
@@ -381,6 +382,59 @@ public final class ListTest {
       String text = Json.write(call(listings(most), "GET", null, "", NOW, "/v1/relays").body());
       same(text.length(), 1868, "the worst case PROTOCOL.md section 4 gives");
       ok(text.length() <= Routes.MOST_RELAYS_BYTES, "under 4 KB");
+    });
+
+    test("GET /v1/relay-keys gives a version 2 relay's two public keys and nothing else; 404 for a version 1 relay or an unknown region",
+        () -> {
+      byte[] p384 = bytes(97, 4);
+      byte[] kem = bytes(1568, 9);
+      List<Listings.Relay> relays = new ArrayList<>(RELAYS);
+      relays.set(1, new Listings.Relay("paris", "paris.relay.example.net", 27500, KEYS.get("paris"), p384, kem));
+      Listings l = listings(relays);
+      Answer answer = call(l, "GET", null, "region=paris", NOW, "/v1/relay-keys");
+      same(answer.status(), 200, "paris is a version 2 relay");
+      Map<String, Object> want = new LinkedHashMap<>();
+      want.put("region", "paris");
+      want.put("p384", hex(p384));
+      want.put("mlkem", hex(kem));
+      same(answer.body(), want, "its region and its two keys, in hex, small letters");
+      ok(!Json.write(answer.body()).contains(hex(KEYS.get("paris"))), "never its pass key");
+      same(call(l, "GET", null, "region=virginia", NOW, "/v1/relay-keys").status(), 404, "virginia is a version 1 relay: no keys");
+      same(call(l, "GET", null, "region=tokyo", NOW, "/v1/relay-keys").status(), 404, "a region the list doesn't know");
+      ok(!Json.write(call(l, "GET", null, "region=tokyo", NOW, "/v1/relay-keys").body()).contains("tokyo"),
+          "and its refusal doesn't say back what was asked");
+      List<String> lines = l.tick(at(60000));
+      matches(lines.get(0), "relay keys given 1 times, and 3 times not found", "the counts line counts them");
+      ok(!lines.get(0).contains("paris") && !lines.get(0).contains(hex(p384)), "with no region and no key");
+
+      // The worst case: the longest region, and the two keys
+      List<Listings.Relay> longest = List.of(new Listings.Relay("r".repeat(16), "h.example.net", 27500, KEYS.get("paris"), p384, kem));
+      String text = Json.write(call(listings(longest), "GET", null, "region=" + "r".repeat(16), NOW, "/v1/relay-keys").body());
+      same(text.length(), 3380, "the worst case Routes.java gives");
+      ok(text.length() <= Routes.MOST_RELAY_KEYS_BYTES, "under 4 KB");
+    });
+
+    test("GET /v1/relay-keys's query is exactly region= and a region, with no body, and GET is its only call", () -> {
+      List<Listings.Relay> relays = new ArrayList<>(RELAYS);
+      relays.set(1, new Listings.Relay("paris", "paris.relay.example.net", 27500, KEYS.get("paris"), bytes(97, 4), bytes(1568, 9)));
+      Listings l = listings(relays);
+
+      for (String q : List.of("", "region=", "paris", "region=Paris", "region=paris&x=1", "x=1&region=paris", "region=paris&region=paris",
+          "region= paris", "region=paris ", "region=%70aris", "region=par is", "region=" + "r".repeat(17), "Region=paris", "region==paris",
+          "region=paris#", "region=paris/", "region=pa\nris")) {
+        same(call(l, "GET", null, q, NOW, "/v1/relay-keys").status(), 400, "query \"" + q + "\"");
+      }
+
+      same(call(l, "GET", null, "region=paris", NOW, "/v1/relay-keys").status(), 200, "the one form");
+      same(call(l, "GET", latin1("x"), "region=paris", NOW, "/v1/relay-keys").status(), 400, "with a body");
+
+      for (String method : List.of("POST", "PUT", "DELETE", "HEAD", "PATCH")) {
+        same(call(l, method, null, "region=paris", NOW, "/v1/relay-keys").status(), 405, method);
+      }
+
+      same(call(l, "GET", null, "region=paris", NOW, "/v1/relay-keys/").status(), 404, "/v1/relay-keys/");
+      same(call(l, "GET", null, "region=paris", NOW, "/v1/relay-key").status(), 404, "/v1/relay-key");
+      same(call(l, "GET", null, "region=paris", NOW, "/v2/relay-keys").status(), 404, "/v2/relay-keys");
     });
 
     test("the list never gives an address, an owner key or a pass", () -> {
@@ -504,7 +558,7 @@ public final class ListTest {
       same(call(l, "GET", latin1("x"), "", NOW, "/v1/relays").status(), 400, "GET /v1/relays with a body");
     });
 
-    test("only the five calls are there", () -> {
+    test("only the six calls are there", () -> {
       Listings l = listings();
       same(call(l, "GET", null, "version=1", NOW, "/v1/games/").status(), 404, "/v1/games/");
       same(call(l, "GET", null, "version=1", NOW, "/v2/games").status(), 404, "/v2/games");
@@ -561,6 +615,73 @@ public final class ListTest {
       ok(!line.contains("ABCD2345") && !line.contains("Ripley"), "with no code or name");
       same(l.tick(at(61000)).size(), 0, "and the next line comes a minute after this one");
       matches(l.tick(at(62000)).get(0), "^list: in the last 60 s: 0 games listed,", "counting only what came after");
+    });
+
+    test("a version-2 game gives its fingerprint and keeps it for the listing's life, and an older game can't give one", () -> {
+      Listings l = listings();
+      int v2 = Requests.FIRST_V2_VERSION;
+      int older = v2 - 1;
+      String fingerprint = "0123456789abcdef0123456789abcdef";
+
+      same(call(l, "POST", game("version", v2)).status(), 400, "a version-2 game without one");
+      same(call(l, "POST", game("version", older, "fingerprint", fingerprint)).status(), 400, "an older game with one");
+
+      for (Object bad : List.of("0123456789ABCDEF0123456789ABCDEF", "0123456789abcdef0123456789abcde", "0123456789abcdef0123456789abcdef0",
+          "0123456789abcdef0123456789abcdeg", "", 7L)) {
+        same(call(l, "POST", game("version", v2, "fingerprint", bad)).status(), 400, "fingerprint " + bad);
+      }
+
+      Map<String, Object> posted = game("version", v2, "fingerprint", fingerprint);
+      String owner = ownerOf(call(l, "POST", posted));
+      List<Map<String, Object>> v2Games = list(l, NOW, v2);
+      same(v2Games.size(), 1, "it's listed");
+      same(v2Games.get(0).get("fingerprint"), fingerprint, "with its fingerprint");
+
+      Map<String, Object> older1 = game("version", older, "code", "WXYZ6789");
+      same(call(l, "POST", older1).status(), 201, "an older game with none is listed");
+      ok(!list(l, NOW, older).get(0).containsKey("fingerprint"), "and its row has no fingerprint field at all");
+
+      same(call(l, "PUT", owned(owner, with(posted, "players", 2))).status(), 204, "a PUT with the same fingerprint");
+      same(call(l, "PUT", owned(owner, with(posted, "fingerprint", "f".repeat(32)))).status(), 403, "a PUT with another");
+      Map<String, Object> without = new LinkedHashMap<>(posted);
+      without.remove("fingerprint");
+      same(call(l, "PUT", owned(owner, without)).status(), 400, "a PUT without one");
+      same(call(l, "PUT", owned(owner, with(without, "version", older))).status(), 403, "a PUT that changes it to an older version, without one");
+      same(list(l, NOW, v2).get(0).get("fingerprint"), fingerprint, "it still has the one it was listed with");
+    });
+
+    test("&code= gives only that code's games of that version, from every region, and nothing if there are none", () -> {
+      Listings l = listings();
+      same(call(l, "POST", game("code", "ABCD2345")).status(), 201, "virginia's ABCD2345");
+      same(call(l, "POST", game("region", "paris", "code", "ABCD2345")).status(), 201, "paris's ABCD2345");
+      same(call(l, "POST", game("code", "WXYZ6789")).status(), 201, "another code");
+      same(call(l, "POST", game("region", "paris", "code", "ABCD2345", "version", 8)).status(), 409, "the same game again, of another version");
+
+      Answer both = call(l, "GET", null, "version=7&code=ABCD2345", NOW);
+      same(both.status(), 200, "a code's games");
+      List<Object> found = Json.list(both.body().get("games"));
+      same(found.size(), 2, "both regions' games with that code");
+
+      for (Object g : found) {
+        same(Json.object(g).get("code"), "ABCD2345", "only that code");
+      }
+
+      Answer none = call(l, "GET", null, "version=7&code=QRST2345", NOW);
+      same(none.status(), 200, "a code nobody listed is no error");
+      same(Json.list(none.body().get("games")).size(), 0, "just no games");
+      same(Json.list(call(l, "GET", null, "version=8&code=ABCD2345", NOW).body().get("games")).size(), 0, "nor of another version");
+
+      for (String q : List.of("version=7&code=", "version=7&code=abcd2345", "version=7&code=ABCD234", "version=7&code=ABCD23456",
+          "version=7&code=ABCD2340", "version=7&code=ABCD2345&x=1", "version=7&code=ABCD2345&code=ABCD2345", "code=ABCD2345",
+          "code=ABCD2345&version=7")) {
+        same(call(l, "GET", null, q, NOW).status(), 400, "query \"" + q + "\"");
+      }
+    });
+
+    // The number every version-2 game and this list agree on (Requests.java says where it comes from). Changing it changes which games
+    // must carry a fingerprint, so it changes only with the game's own
+    test("the first version-2 network version is 115, the one Secondary reserved for the relay v2 game side", () -> {
+      same(Requests.FIRST_V2_VERSION, 115, "FIRST_V2_VERSION");
     });
   }
 

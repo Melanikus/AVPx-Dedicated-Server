@@ -26,6 +26,13 @@ import java.util.stream.Stream;
 //
 //   java -cp java/build/tools avpx.tools.Takeouts       run from the repository's top folder, after java/build.sh; exits 1 if any row
 //                                                       isn't noticed, can't find its text, or the unbroken copy fails
+//   ... avpx.tools.Takeouts --shard K/N                 the same for one share of the rows: those whose number (from 0), divided by N,
+//                                                       leaves K. N runs, K from 0 to N-1, run every row once between them.
+//
+// WHY SHARES (2026-11-09): each row builds and tests a whole copy, so the rows' time grows with them. At 220 rows the one job no longer
+// fit its 45 minutes, and GitHub cancelled it, so no row was proved. .github/workflows/java.yml runs the shares as one job each, side by
+// side: N is GitHub's own count of them (strategy.job-total) and K each one's own place (strategy.job-index), so no share can be left out
+// or run twice by a list written wrong. Each share checks the unbroken copy first, as the whole run does.
 //
 // Before any row, the unbroken copy must pass, or every row would "fail" for the wrong reason.
 //
@@ -67,6 +74,8 @@ public final class Takeouts {
 
   private static final long MOST_MINUTES_A_CHECK = 10;
   private static final int MOST_AT_ONCE = 4;
+  private static final int MOST_SHARES = 50;
+  private static final Pattern SHARE = Pattern.compile("[0-9]{1,2}/[0-9]{1,2}");
 
   record Row(int number, String name, String check, String file, String from, String to, byte[] newFile) {
   }
@@ -275,9 +284,53 @@ public final class Takeouts {
     }
   }
 
+  // The share of the rows asked for: {K, N}, or {0, 1} (every row) when nothing is asked. Null for anything else.
+  static int[] shareOf(String[] args) {
+    if (args.length == 0) {
+      return new int[] {0, 1};
+    }
+
+    if (args.length != 2 || !args[0].equals("--shard") || !SHARE.matcher(args[1]).matches()) {
+      return null;
+    }
+
+    String[] parts = args[1].split("/");
+    int k = digits(parts[0]);
+    int n = digits(parts[1]);
+    return n >= 1 && n <= MOST_SHARES && k < n ? new int[] {k, n} : null;
+  }
+
+  // A number written in decimal digits only, worked out digit by digit, with no parse that could throw (SHARE has already held it to one
+  // or two digits)
+  private static int digits(String text) {
+    int value = 0;
+
+    for (int i = 0; i < text.length(); i++) {
+      value = value * 10 + (text.charAt(i) - '0');
+    }
+
+    return value;
+  }
+
   public static void main(String[] args) throws Exception {
     Path root = Path.of("").toAbsolutePath();
-    List<Row> rows = read(Files.readAllLines(root.resolve(ROWS), StandardCharsets.US_ASCII));
+    int[] share = shareOf(args);
+
+    if (share == null) {
+      System.out.println("use: Takeouts, or Takeouts --shard K/N (N from 1 to " + MOST_SHARES + ", K from 0 to N-1)");
+      System.exit(2);
+    }
+
+    List<Row> all = read(Files.readAllLines(root.resolve(ROWS), StandardCharsets.US_ASCII));
+    List<Row> rows = new ArrayList<>();
+
+    for (int i = 0; i < all.size(); i++) {
+      if (i % share[1] == share[0]) {
+        rows.add(all.get(i));
+      }
+    }
+
+    System.out.println("share " + share[0] + " of " + share[1] + ": " + rows.size() + " of the " + all.size() + " rows");
 
     // The unbroken copy first: its tests (with the live ones) and its standard must pass
     Path base = makeCopy(root);

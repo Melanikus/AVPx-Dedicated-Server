@@ -19,8 +19,9 @@ import java.util.Map;
 import java.util.function.Consumer;
 import java.util.function.LongSupplier;
 
-// The relay's UDP sockets, around RelayCore.java: one for the control port and one for each joiner's port, all opened at start. Written
-// 2026-11-08 by Melanikus for AVPx Dedicated Server, from relay/sockets.js.
+// The relay's UDP sockets, around a Relay (RelayCore.java for protocol version 1, avpx.v2.SealedRelay for version 2): one for the control
+// port and one for each joiner's port, all opened at start. Written 2026-11-08 by Melanikus for AVPx Dedicated Server, from
+// relay/sockets.js.
 //
 // This is all the relay does on the network: a packet that comes to one of its ports goes to the core, and whatever the core says to send
 // is sent, from the port it names. Every decision is the core's, so it can be tested without sockets. The sockets are IPv4 only, as the
@@ -40,7 +41,7 @@ public final class RelaySockets {
   private static final long TICK_MILLISECONDS = 1000;
   private static final int MOST_PACKETS_A_TURN = 64;
 
-  private final RelayCore core;
+  private final Relay core;
   private final Consumer<String> log;
   private final LongSupplier now;
   private final Selector selector;
@@ -52,7 +53,7 @@ public final class RelaySockets {
   private long errors;
   private long tickedAt;
 
-  private RelaySockets(RelayCore core, Consumer<String> log, LongSupplier now, Selector selector, Map<Integer, DatagramChannel> channels) {
+  private RelaySockets(Relay core, Consumer<String> log, LongSupplier now, Selector selector, Map<Integer, DatagramChannel> channels) {
     this.core = core;
     this.log = log;
     this.now = now;
@@ -64,7 +65,7 @@ public final class RelaySockets {
   // Opens every port, the core's control port and each of its relay ports, on address ("0.0.0.0" for all of the machine's), and starts.
   // All of them or none: if any can't be opened, the ones that were are closed, and this throws. log: where its lines go. now: the time,
   // in milliseconds since 1970-01-01 UTC (System::currentTimeMillis: a pass carries the real time to another machine).
-  public static RelaySockets start(String address, RelayCore core, Consumer<String> log, LongSupplier now) throws IOException {
+  public static RelaySockets start(String address, Relay core, Consumer<String> log, LongSupplier now) throws IOException {
     Selector selector = Selector.open();
     Map<Integer, DatagramChannel> channels = new LinkedHashMap<>();
     List<Integer> ports = new ArrayList<>();

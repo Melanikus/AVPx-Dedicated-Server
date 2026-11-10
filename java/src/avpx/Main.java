@@ -1,12 +1,16 @@
 package avpx;
 
+import avpx.access.AccessStore;
 import avpx.list.ListServer;
 import avpx.list.Listings;
 import avpx.relay.RandomBytes;
+import avpx.relay.Relay;
 import avpx.relay.RelayCore;
 import avpx.relay.RelaySockets;
+import avpx.v2.SealedRelay;
 import java.io.IOException;
 import java.nio.file.Path;
+import java.security.SecureRandom;
 import java.time.Instant;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -63,21 +67,78 @@ public final class Main {
     }
 
     Log log = new Log(settings.logFile().isEmpty() ? null : Path.of(settings.logFile()), Instant::now, Log.SCREEN);
-    RelayCore core = new RelayCore(settings.controlPort(), settings.relayPorts(), settings.region(), settings.passKey(),
-        RandomBytes.secure(), new RelayCore.Limits(), System.currentTimeMillis());
+
+    // The access store (AccessStore.java): who asked to play here, and what the owner decided. A store that can't be read, or holds
+    // anything this server wouldn't write, stops the server here, with the reason: the relay never starts on an approved set nobody can
+    // vouch for.
+    AccessStore access = null;
+
+    if (!settings.accessFolder().isEmpty()) {
+      // Watched (Fourth's re-check of the access store, N3): opening reads requests.json, and the first turn below reads the decisions
+      // files, before the store's own watch exists (AccessStore.start). A file swapped for a named pipe at just that moment would make
+      // either wait for ever, and systemd never times out a server that has started. So if both haven't finished in 60 s, the server
+      // stops here, for systemd to start it again: then a pipe is refused before it's opened, as anything but a plain file is.
+      Thread startWatch = Thread.ofPlatform().daemon().name("access-start-watch").start(() -> {
+        try {
+          Thread.sleep(AccessStore.STUCK_MILLISECONDS);
+        } catch (InterruptedException e) {
+          // The start finished in time
+          return;
+        }
+
+        log.line("access: opening the store, or its first turn, hasn't finished in 60 s; the server stops, for systemd to start it again");
+        Runtime.getRuntime().halt(1);
+      });
+
+      try {
+        access = AccessStore.open(Path.of(settings.accessFolder()));
+
+        // One turn before anything listens (Fourth's re-check, N2): a decision the owner left in the folder while the server was down,
+        // a revoke among them, is taken before the relay hears its first A1, not a second after
+        String problem = access.turn(System.currentTimeMillis());
+
+        if (problem != null) {
+          log.line("access store: " + problem + ", so the server did not start");
+          log.close();
+          return 1;
+        }
+      } catch (AccessStore.Refused e) {
+        log.line(e.getMessage() + ", so the server did not start");
+        log.close();
+        return 1;
+      } finally {
+        startWatch.interrupt();
+      }
+    }
+
+    // The relay speaks one protocol: version 1 (PROTOCOL.md), or version 2 (CRYPTO.md: handshake A, then everything sealed, in front of
+    // the same games). Version 2 takes approved players only, so it always has a store (Settings.java).
+    Relay core;
+
+    if (settings.protocol() == 2) {
+      core = new SealedRelay(settings.controlPort(), settings.relayPorts(), settings.region(), settings.passKey(), settings.staticKeys(),
+          access, RandomBytes.secure(), new SecureRandom(), new RelayCore.Limits(), new SealedRelay.Limits(), System.currentTimeMillis());
+    } else {
+      core = new RelayCore(settings.controlPort(), settings.relayPorts(), settings.region(), settings.passKey(), RandomBytes.secure(),
+          new RelayCore.Limits(), System.currentTimeMillis());
+    }
+
     Settings.ListSettings listSettings = settings.list();
-    log.line("server: starting the " + settings.region() + " relay, version 1 of the relay's messages, " + settings.relayPorts().length
-        + " relay ports" + (listSettings != null ? ", and the list for " + listSettings.relays().size() + " relays" : ", and no list"));
+    log.line("server: starting the " + settings.region() + " relay, version " + settings.protocol() + " of the relay's messages, "
+        + settings.relayPorts().length + " relay ports"
+        + (listSettings != null ? ", and the list for " + listSettings.relays().size() + " relays" : ", and no list"));
 
     ListServer list = null;
+    AccessStore store = access;
 
-    // If the list stops on an error nobody expected (avpx/Fatal.java), the relay is told to stop too, and run() gives 1, for systemd to
-    // start the server again. The list starts before the relay, so the relay is handed over once it exists, and checked for a list
-    // that failed in between.
-    AtomicBoolean listFailed = new AtomicBoolean();
+    // If the list stops on an error nobody expected (avpx/Fatal.java), or the access store stops (AccessStore.start: its folder is no
+    // longer the server's own and 0700, or a turn of the owner's decisions has hung), the relay is told to stop too, and run() gives 1,
+    // for systemd to start the server again. Both start before the relay, so the relay is handed over once it exists, and checked for
+    // one that failed in between.
+    AtomicBoolean partFailed = new AtomicBoolean();
     AtomicReference<RelaySockets> relayToStop = new AtomicReference<>();
-    Runnable whenListFails = () -> {
-      listFailed.set(true);
+    Runnable whenPartFails = () -> {
+      partFailed.set(true);
       RelaySockets toStop = relayToStop.get();
 
       if (toStop != null) {
@@ -85,16 +146,23 @@ public final class Main {
       }
     };
 
+    // The store's own thread: the owner's decisions about once a second, and its line of counts once a minute
+    if (store != null) {
+      store.start(log::line, System::currentTimeMillis, whenPartFails);
+    }
+
     if (listSettings != null) {
       try {
         Listings listings = new Listings(listSettings.relays(), RandomBytes.secure(), System.currentTimeMillis());
-        list = ListServer.start(listSettings, listings, log::line, System::currentTimeMillis, whenListFails);
+        list = ListServer.start(listSettings, listings, store, log::line, System::currentTimeMillis, whenPartFails);
       } catch (ListServer.CertificateProblem e) {
         log.line("list: the certificate files could not be used (" + e.getMessage() + "), so the server did not start");
+        stopTurns(store);
         log.close();
         return 1;
       } catch (IOException e) {
         log.line("list: the HTTPS port could not be used (" + e.getClass().getSimpleName() + "), so the server did not start");
+        stopTurns(store);
         log.close();
         return 1;
       }
@@ -111,13 +179,14 @@ public final class Main {
         list.stop();
       }
 
+      stopTurns(store);
       log.close();
       return 1;
     }
 
     relayToStop.set(relay);
 
-    if (listFailed.get()) {
+    if (partFailed.get()) {
       relay.stopSoon();
     }
 
@@ -130,18 +199,27 @@ public final class Main {
         started.stop();
       }
 
+      stopTurns(store);
       log.close();
     }, "stop"));
 
-    // The relay runs until the stop above ends it, or until it or the list stops on an error nobody expected: then the server ends with
+    // The relay runs until the stop above ends it, or until it, the list or the store stops on something wrong: then the server ends with
     // 1, and systemd starts it afresh (deploy/avpx-java.service), rather than going on from a state nobody can vouch for
     relay.join();
 
-    if (relay.failed() || listFailed.get()) {
-      log.line("server: stopping on an error nobody expected, with 1, for systemd to start it again");
+    if (relay.failed() || partFailed.get()) {
+      log.line("server: stopping, with 1, for systemd to start it again (the line before this says why)");
+      stopTurns(store);
       return 1;
     }
 
     return 0;
+  }
+
+  // The access store's turns end, where there's a store
+  private static void stopTurns(AccessStore store) {
+    if (store != null) {
+      store.stopTurns();
+    }
   }
 }

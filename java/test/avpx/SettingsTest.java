@@ -7,14 +7,22 @@ import static avpx.testing.Tests.same;
 import static avpx.testing.Tests.test;
 import static avpx.testing.Tests.throwsWith;
 
+import avpx.crypto.MlKem;
+import avpx.crypto.P384;
 import avpx.list.Json;
 import avpx.list.Listings;
+import avpx.testing.ScriptedRandom;
 import avpx.testing.Stringify;
+import avpx.v2.HandshakeA;
+import avpx.v2.Identity;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyPair;
+import java.security.interfaces.ECPrivateKey;
+import java.security.interfaces.ECPublicKey;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.HexFormat;
@@ -31,6 +39,7 @@ public final class SettingsTest {
 
   private static final String KEY = "5a".repeat(32);
   private static final String PARIS_KEY = "7b".repeat(32);
+  private static final String ACCESS = "C:\\AVPx\\access";
 
   // Stands for a field left out ({ ...x, field: undefined } in the Node tests)
   private static final Object LEAVE_OUT = new Object();
@@ -92,6 +101,14 @@ public final class SettingsTest {
 
   private static void refused(Map<String, Object> o, String why) {
     throwsWith(() -> parse(o), "settings: ", why);
+  }
+
+  // A version 2 relay's staticKeys, as MakeRelayKeys prints them, from fixed seeds
+  private static Map<String, Object> v2Keys() {
+    KeyPair p384 = P384.generate(ScriptedRandom.seeded(60));
+    String number = String.format("%096x", ((ECPrivateKey) p384.getPrivate()).getS());
+    String point = HexFormat.of().formatHex(P384.encode((ECPublicKey) p384.getPublic()));
+    return object("p384Private", number, "p384Public", point, "mlkemSeed", "6e".repeat(64));
   }
 
   public static void register() {
@@ -184,7 +201,131 @@ public final class SettingsTest {
 
       throwsWith(() -> Settings.parse(latin1("{")), "must be JSON", "not JSON");
       throwsWith(() -> Settings.parse(latin1("[]")), "JSON object", "not an object");
-      throwsWith(() -> Settings.parse(latin1(" ".repeat(16 * 1024 + 1))), "at most 16 KB", "too big");
+      throwsWith(() -> Settings.parse(latin1(" ".repeat(64 * 1024 + 1))), "at most 64 KB", "too big");
+    });
+
+    test("protocol 2: its static keys are needed, each held to what it must be, and the relay's keys are the ones written", () -> {
+      KeyPair p384 = P384.generate(ScriptedRandom.seeded(40));
+      byte[] number = HexFormat.of().parseHex(String.format("%096x", ((ECPrivateKey) p384.getPrivate()).getS()));
+      String point = HexFormat.of().formatHex(P384.encode((ECPublicKey) p384.getPublic()));
+      String seed = "3c".repeat(64);
+      Map<String, Object> keys = object("p384Private", HexFormat.of().formatHex(number), "p384Public", point, "mlkemSeed", seed);
+      Settings s = parse(with(relayOnly(), "protocol", 2, "staticKeys", keys, "accessFolder", ACCESS));
+      same(s.protocol(), 2, "protocol 2");
+      same(HexFormat.of().formatHex(s.staticKeys().p384Public()), point, "its P-384 public key, as written");
+      same(s.staticKeys().kemPublic(), MlKem.encode(MlKem.fromSeed(HexFormat.of().parseHex(seed)).getPublic()),
+          "its ML-KEM key, made from the seed");
+      Identity player = Identity.of(P384.generate(ScriptedRandom.seeded(44)), MlKem.generate(ScriptedRandom.seeded(45)));
+      HandshakeA.Initiator game = HandshakeA.writeA1("virginia", s.staticKeys().p384Public(), s.staticKeys().kemPublic(), player,
+          ScriptedRandom.seeded(41));
+      ok(HandshakeA.readA1(s.staticKeys(), "virginia", game.a1(), fp -> true, ScriptedRandom.seeded(42)).responder() != null,
+          "and they work: a game's A1 to those public keys is read with them");
+      same(parse(relayOnly()).protocol(), 1, "protocol 1 when none is named");
+      same(parse(relayOnly()).staticKeys(), null, "with no static keys");
+
+      Map<String, Object> two = with(relayOnly(), "protocol", 2, "accessFolder", ACCESS);
+      same(s.accessFolder(), ACCESS, "its access folder, as written");
+      same(parse(relayOnly()).accessFolder(), "", "none, on protocol 1, when none is named");
+      same(parse(with(relayOnly(), "accessFolder", ACCESS)).accessFolder(), ACCESS, "protocol 1 may have one, for the list's requests");
+      throwsWith(() -> parse(with(two, "staticKeys", keys, "accessFolder", LEAVE_OUT)), "accessFolder is needed for protocol 2",
+          "protocol 2 with no access folder: it takes approved players only, so it would take nobody");
+      throwsWith(() -> parse(with(two, "staticKeys", keys, "accessFolder", "")), "accessFolder is needed for protocol 2",
+          "and an empty one is none");
+      refused(with(two, "staticKeys", keys, "accessFolder", "x".repeat(261)), "an access folder of 261 characters");
+      String other = HexFormat.of().formatHex(P384.encode((ECPublicKey) P384.generate(ScriptedRandom.seeded(43)).getPublic()));
+      refused(with(relayOnly(), "protocol", 3), "protocol 3");
+      refused(with(relayOnly(), "protocol", "2"), "protocol as text");
+      throwsWith(() -> parse(two), "staticKeys are needed for protocol 2", "protocol 2 with no static keys, said plainly");
+      throwsWith(() -> parse(with(relayOnly(), "staticKeys", keys)), "for protocol 2 only", "static keys with protocol 1");
+      refused(with(two, "staticKeys", "keys"), "static keys that aren't an object");
+      refused(with(two, "staticKeys", with(keys, "p384Public", other)), "a P-384 number with another key's point");
+      refused(with(two, "staticKeys", with(keys, "p384Private", "00".repeat(48))), "a P-384 number of 0");
+      refused(with(two, "staticKeys", with(keys, "p384Private", "ff".repeat(48))), "a P-384 number past the curve's order");
+      refused(with(two, "staticKeys", with(keys, "p384Private", HexFormat.of().formatHex(number).toUpperCase())), "capitals");
+      // All 194 digits, the last one changed (until 2026-11-09 this kept only 193, so it was refused for its length, never its point)
+      throwsWith(() -> parse(with(two, "staticKeys", with(keys, "p384Public", point.substring(0, 193) + (point.endsWith("0") ? "1" : "0")))),
+          "two halves of one P-384 key", "a point off the curve (its last digit changed)");
+      refused(with(two, "staticKeys", with(keys, "mlkemSeed", "00".repeat(64))), "an ML-KEM seed of all 0, as one left unset would be");
+      refused(with(two, "staticKeys", with(keys, "mlkemSeed", seed.substring(2))), "a seed of 63 bytes");
+      refused(with(two, "staticKeys", with(keys, "mlkemPrivate", "ab")), "a name staticKeys doesn't have");
+      refused(with(two, "staticKeys", with(keys, "mlkemSeed", LEAVE_OUT)), "no seed");
+    });
+
+    test("a version 2 relay's public keys in list.relays: both or neither, each a real key, and the list's own from staticKeys", () -> {
+      HexFormat hex = HexFormat.of();
+      String parisP384 = hex.formatHex(P384.encode((ECPublicKey) P384.generate(ScriptedRandom.seeded(50)).getPublic()));
+      String parisKem = hex.formatHex(MlKem.encode(MlKem.fromSeed(hex.parseHex("4d".repeat(64))).getPublic()));
+      Map<String, Object> paris2 = with(paris(), "p384", parisP384, "mlkem", parisKem);
+      Settings s = parse(relaysWith(List.of(own(), paris2)));
+      same(s.list().relays().get(1).p384(), hex.parseHex(parisP384), "paris's P-384 key, as written");
+      same(s.list().relays().get(1).mlkem(), hex.parseHex(parisKem), "paris's ML-KEM key, as written");
+      same(s.list().relays().get(0).p384(), null, "the list's own relay, on protocol 1, has no P-384 key");
+      same(s.list().relays().get(0).mlkem(), null, "nor an ML-KEM one");
+      same(parse(withList()).list().relays().get(1).p384(), null, "a relay given neither is a version 1 relay");
+
+      Map<String, Object> keys = v2Keys();
+      Settings own2 = parse(with(relaysWith(List.of(own(), paris2)), "protocol", 2, "staticKeys", keys, "accessFolder", ACCESS));
+      same(own2.list().relays().get(0).p384(), own2.staticKeys().p384Public(), "on protocol 2, the list's own relay's P-384 key is "
+          + "staticKeys' public half");
+      same(own2.list().relays().get(0).mlkem(), own2.staticKeys().kemPublic(), "and its ML-KEM key too");
+
+      refused(relaysWith(List.of(with(own(), "p384", parisP384, "mlkem", parisKem), paris2)), "its own relay with keys written again");
+      refused(relaysWith(List.of(with(own(), "mlkem", parisKem), paris2)), "its own relay with one key written again");
+      // These four say why in their own words, so a person putting in one key and not the other, or a wrong key, is told which
+      throwsWith(() -> parse(relaysWith(List.of(own(), with(paris2, "mlkem", LEAVE_OUT)))), "both p384 and mlkem",
+          "a P-384 key with no ML-KEM key");
+      throwsWith(() -> parse(relaysWith(List.of(own(), with(paris2, "p384", LEAVE_OUT)))), "both p384 and mlkem",
+          "an ML-KEM key with no P-384 key");
+      throwsWith(() -> parse(relaysWith(List.of(own(), with(paris2, "p384", parisP384.substring(0, 193)
+          + (parisP384.endsWith("0") ? "1" : "0"))))), "a point on the curve", "a P-384 point off the curve (its last digit changed)");
+      throwsWith(() -> parse(relaysWith(List.of(own(), with(paris2, "p384", "02" + parisP384.substring(2))))), "a point on the curve",
+          "a P-384 key that doesn't start 04");
+      refused(relaysWith(List.of(own(), with(paris2, "p384", parisP384.toUpperCase()))), "a P-384 key in capitals");
+      refused(relaysWith(List.of(own(), with(paris2, "p384", parisP384.substring(2)))), "a P-384 key of 96 bytes");
+      refused(relaysWith(List.of(own(), with(paris2, "p384", 4))), "a P-384 key that isn't text");
+      // The first number of the key's first polynomial made 4,095: past q = 3,329, so FIPS 203's check refuses it
+      throwsWith(() -> parse(relaysWith(List.of(own(), with(paris2, "mlkem", "ff0f" + parisKem.substring(4))))), "FIPS 203's check",
+          "an ML-KEM key with a number past q");
+      refused(relaysWith(List.of(own(), with(paris2, "mlkem", parisKem.substring(2)))), "an ML-KEM key of 1,567 bytes");
+      refused(relaysWith(List.of(own(), with(paris2, "mlkem", "00".repeat(1568)))), "an ML-KEM key of all 0, as one left unset would be");
+    });
+
+    test("the biggest settings file there can be fits under the size limit, with room for a person's spaces and line ends", () -> {
+      // Every field at its longest: 16 relays, 15 of them version 2 relays with both keys, each region 16 characters and each host 63
+      Map<String, Object> keys = v2Keys();
+      String longPath = "C:\\" + "p".repeat(257);
+      List<Object> relays = new ArrayList<>();
+      relays.add(object("region", "virginia-longest", "host", "h".repeat(63), "port", 65535));
+      String p384 = (String) keys.get("p384Public");
+      String kem = HexFormat.of().formatHex(MlKem.encode(MlKem.fromSeed(HexFormat.of().parseHex((String) keys.get("mlkemSeed")))
+          .getPublic()));
+
+      for (int i = 1; i < 16; i++) {
+        relays.add(object("region", String.format("region-%09d", i), "host", "h".repeat(60) + String.format("%03d", i), "port", 65535,
+            "passKey", PARIS_KEY, "p384", p384, "mlkem", kem));
+      }
+
+      Map<String, Object> most = object("region", "virginia-longest", "passKey", KEY, "relayAddress", "255.255.255.255", "controlPort",
+          65535, "relayPorts", "61000-64999", "logFile", longPath, "protocol", 2, "staticKeys", keys, "accessFolder", longPath, "list",
+          object("address", "255.255.255.255", "port", 65535, "certFile", longPath, "keyFile", longPath, "relays", relays));
+      String compact = Stringify.text(most);
+      same(compact.length(), 55119, "the worst case Settings.java gives, written with no spaces");
+      doesNotThrow(() -> Settings.parse(compact.getBytes(StandardCharsets.US_ASCII)), "it's read");
+
+      // The same with a line end and 8 spaces after every { and every comma: more than a person writing it by hand would put in
+      String spaced = compact.replace("{", "{\n        ").replace(",", ",\n        ");
+      ok(spaced.length() < 64 * 1024, "and with spaces and line ends too");
+      doesNotThrow(() -> Settings.parse(spaced.getBytes(StandardCharsets.US_ASCII)), "which is read too");
+    });
+
+    // The unit is what lets the server write its access store at all: everything else on the machine is read only to it
+    // (ProtectSystem=strict), and without these two lines requests.json could never be written
+    test("deploy/avpx-java.service gives the server one place to write, /var/lib/avpx, made by systemd as avpx's own, 0700", () -> {
+      List<String> unit = Files.readAllLines(Path.of("..", "deploy", "avpx-java.service"), StandardCharsets.US_ASCII);
+      ok(unit.contains("StateDirectory=avpx"), "StateDirectory=avpx: systemd makes /var/lib/avpx, owned by the service's user");
+      ok(unit.contains("StateDirectoryMode=0700"), "StateDirectoryMode=0700: with rights for nobody else, as the access store wants");
+      ok(unit.contains("ProtectSystem=strict") && unit.contains("User=avpx"), "and the rest stays read only, for the avpx user");
+      ok(unit.stream().noneMatch(line -> line.startsWith("ReadWritePaths")), "with no other place to write");
     });
 
     test("deploy/settings.example.json is refused as it is, until a real pass key is put in", () -> {

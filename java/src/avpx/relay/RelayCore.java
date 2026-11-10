@@ -6,7 +6,9 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -67,7 +69,7 @@ import java.util.Set;
 // NO ADDRESSES ARE WRITTEN ANYWHERE (the user's ruling: no IPs). Addresses live in memory only while a game or a port needs them, and are
 // forgotten when it ends; the per-sender limits key by a hash (AddressHasher.java). The relay's lines (tick) are counts and times only.
 // Codes, tokens and tickets are never written either: a code would let anyone join.
-public final class RelayCore {
+public final class RelayCore implements Relay {
   // Every limit of the relay's, with its starting value (PROTOCOL.md section 5). A test changes some, on a Limits of its own.
   public static final class Limits {
     public int mostGames = 500;
@@ -109,12 +111,22 @@ public final class RelayCore {
   // While a claimed port waits for its host's hello, NEW_JOINER goes to the host again at most this often, in case the first was lost
   private static final long HOST_TOLD_AGAIN_MILLISECONDS = 1000;
 
-  // A packet to send: from one of the relay's own ports, to an address and port
-  public record Out(int from, String address, int port, byte[] data) {
+  // A packet to send: from one of the relay's own ports, to an address and port. session is null for version 1, and for a game's own
+  // packets passed on. In version 2 it's the sealed session (avpx.v2's) the packet is a control message for: the version 2 relay seals
+  // the 64 bytes under it before they go. RelayCore never looks inside a session; it only carries it.
+  public record Out(int from, String address, int port, byte[] data, Object session) {
+    public Out(int from, String address, int port, byte[] data) {
+      this(from, address, port, data, null);
+    }
   }
 
-  // Where a host's or joiner's packets come from, as the relay sees them through its NAT
-  record End(String address, int port) {
+  // Where a host's or joiner's packets come from, as the relay sees them through its NAT, and in version 2 the sealed session that end
+  // proved itself with (null in version 1)
+  record End(String address, int port, Object session) {
+    End(String address, int port) {
+      this(address, port, null);
+    }
+
     boolean is(String otherAddress, int otherPort) {
       return address.equals(otherAddress) && port == otherPort;
     }
@@ -217,15 +229,32 @@ public final class RelayCore {
   private long statsAt;
   Counts counts = new Counts();
 
+  // Whether this core is behind version 2's sealed channel (avpx.v2.SealedRelay), which hands it each control message already opened
+  // (fromSession) and each game packet to pass on (forward). Then, as CRYPTO.md 5.1 point 11 says, HOST_OPEN and JOIN need no cookie
+  // (the handshake's cookie already proved the address), ECHO isn't answered (the handshake's first round trip is the echo), and nothing
+  // comes in as a bare message: a version 1 message sent to a version 2 relay is refused.
+  private final boolean sealed;
+
   // controlPort: the port hosts and joiners ask on. ports: the relay's other ports, one for each joiner while it's connected, all opened
   // by RelaySockets. region: this relay's region name, such as "virginia". passKey: this relay's pass key, 32 bytes, which the list holds
   // too. random: where random bytes come from (RandomBytes.secure() for the server). limits: the limits (new Limits() for the server's
-  // own). now: the time, in milliseconds since 1970-01-01 UTC.
+  // own). now: the time, in milliseconds since 1970-01-01 UTC. This is a version 1 relay; sealed() makes the core of a version 2 one.
   public RelayCore(int controlPort, int[] ports, String region, byte[] passKey, RandomBytes random, Limits limits, long now) {
+    this(controlPort, ports, region, passKey, random, limits, now, false);
+  }
+
+  // The core behind a version 2 relay (avpx.v2.SealedRelay): the same games, ports and limits, its messages opened and sealed in front
+  public static RelayCore sealed(int controlPort, int[] ports, String region, byte[] passKey, RandomBytes random, Limits limits, long now) {
+    return new RelayCore(controlPort, ports, region, passKey, random, limits, now, true);
+  }
+
+  private RelayCore(int controlPort, int[] ports, String region, byte[] passKey, RandomBytes random, Limits limits, long now,
+      boolean sealed) {
     if (!Pass.isRegion(region) || passKey == null || passKey.length != Pass.PASS_KEY_BYTES) {
       throw new IllegalArgumentException("RelayCore: a region name, and a pass key of 32 bytes");
     }
 
+    this.sealed = sealed;
     this.region = region;
     this.passKey = passKey.clone();
     this.limits = limits;
@@ -250,36 +279,48 @@ public final class RelayCore {
     this.statsAt = now;
   }
 
+  @Override
   public int controlPort() {
     return controlPort;
   }
 
   // The relay's ports for joiners, in order
+  @Override
   public List<Integer> relayPorts() {
     return List.copyOf(slots.keySet());
   }
 
   // The biggest packet the relay takes: the sockets read one byte more, so they can tell a packet that was bigger
+  @Override
   public int mostDatagramBytes() {
     return limits.mostDatagramBytes;
   }
 
   // ----- A packet in
 
-  // A packet came to localPort from address:port at now (milliseconds). Gives back what to send, each from one of the relay's own ports.
+  // Version 1: a packet came to localPort from address:port at now (milliseconds). Gives back what to send, each from one of the relay's
+  // own ports. A version 2 core takes nothing this way (see sealed): its packets come opened, through fromSession, or through forward.
+  @Override
   public List<Out> receive(int localPort, String address, int port, byte[] data, long now) {
     try {
+      if (sealed) {
+        counts.notAMessage++;
+        return List.of();
+      }
+
       if (data == null || data.length > limits.mostDatagramBytes) {
         counts.tooBig++;
         return List.of();
       }
 
+      End from = new End(address, port);
+
       if (localPort == controlPort) {
-        return onControl(address, port, data, now);
+        return onControl(from, data, now);
       }
 
       Slot slot = slots.get(localPort);
-      return slot != null ? onRelayPort(slot, address, port, data, now) : List.of();
+      return slot != null ? onRelayPort(slot, from, data, now) : List.of();
     } catch (RuntimeException e) {
       // Nothing a packet holds should get here; if something does, the packet is dropped and the relay goes on
       counts.notAMessage++;
@@ -287,15 +328,73 @@ public final class RelayCore {
     }
   }
 
-  // An answer from the control port, to whoever asked
-  private Out control(String address, int port, Message m) {
-    return new Out(controlPort, address, port, Protocol.encode(m));
+  // Version 2: a 64-byte control message that came sealed under a session, and was opened in front (avpx.v2.SealedRelay), to localPort
+  // (the control port, or a joiner's port for a hello) from address:port. The session is the front's own: it comes back on every Out
+  // that answers this message, or that's for the end it proved, so the front seals each under the right session.
+  public List<Out> fromSession(int localPort, String address, int port, Object session, byte[] message, long now) {
+    try {
+      boolean shaped = sealed && session != null && message != null && message.length == Protocol.MESSAGE_BYTES;
+      Message m = shaped ? Protocol.decode(message) : null;
+
+      if (m == null) {
+        counts.notAMessage++;
+        return List.of();
+      }
+
+      End from = new End(address, port, session);
+
+      if (localPort == controlPort) {
+        return allowed(from, now) ? onMessage(from, m, now) : List.of();
+      }
+
+      Slot slot = slots.get(localPort);
+
+      if (slot == null || slot.state == Slot.State.FREE || (m.type() != Type.HOST_HELLO && m.type() != Type.JOINER_HELLO)) {
+        counts.strangers++;
+        return List.of();
+      }
+
+      return onHello(slot, m, from, now);
+    } catch (RuntimeException e) {
+      counts.notAMessage++;
+      return List.of();
+    }
   }
 
-  private List<Out> onControl(String address, int port, byte[] data, long now) {
-    // The sender's own limit first, so one sender going too fast doesn't use up everyone's
-    if (!perSender.allows(address, now) || !everyone.take(now)) {
+  // Version 2: a game's own packet on a joiner's port, sealed by the games themselves (CRYPTO.md section 9) and never opened here, to
+  // pass on to the port's other end
+  public List<Out> forward(int localPort, String address, int port, byte[] data, long now) {
+    try {
+      if (!sealed || data == null || data.length > limits.mostDatagramBytes) {
+        counts.tooBig++;
+        return List.of();
+      }
+
+      Slot slot = slots.get(localPort);
+      return slot != null ? pass(slot, address, port, data, now) : List.of();
+    } catch (RuntimeException e) {
+      counts.notAMessage++;
+      return List.of();
+    }
+  }
+
+  // An answer from the control port, to an end (sealed in front under that end's session, in version 2)
+  private Out control(End to, Message m) {
+    return new Out(controlPort, to.address(), to.port(), Protocol.encode(m), to.session());
+  }
+
+  // The sender's own limit first, so one sender going too fast doesn't use up everyone's
+  private boolean allowed(End from, long now) {
+    if (!perSender.allows(from.address(), now) || !everyone.take(now)) {
       counts.overLimit++;
+      return false;
+    }
+
+    return true;
+  }
+
+  private List<Out> onControl(End from, byte[] data, long now) {
+    if (!allowed(from, now)) {
       return List.of();
     }
 
@@ -306,19 +405,29 @@ public final class RelayCore {
       return List.of();
     }
 
+    return onMessage(from, m, now);
+  }
+
+  private List<Out> onMessage(End from, Message m, long now) {
     switch (m.type()) {
       case Type.HOST_OPEN:
-        return hostOpen(m, address, port, now);
+        return hostOpen(m, from, now);
       case Type.HOST_KEEP:
-        return hostKeep(m, address, port, now);
+        return hostKeep(m, from, now);
       case Type.HOST_CLOSE:
         return hostClose(m);
       case Type.JOIN:
-        return join(m, address, port, now);
+        return join(m, from, now);
       case Type.ECHO:
+        // Version 2 answers none: its echo is the handshake's first round trip (CRYPTO.md 5.1, point 11)
+        if (sealed) {
+          counts.notAMessage++;
+          return List.of();
+        }
+
         // The asker's own bytes and count, straight back: the same size, to the same address, and nothing kept
         counts.echoes++;
-        return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
+        return List.of(control(from, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
       default:
         // A message the relay sends (an ECHO_BACK among them, so two relays can't answer each other), or a hello, which belongs on a
         // joiner's port
@@ -327,19 +436,31 @@ public final class RelayCore {
     }
   }
 
-  private List<Out> hostOpen(Message m, String address, int port, long now) {
-    if (!cookieIsGood(m.secret(), address, port, now)) {
-      return List.of(control(address, port, Message.of(Type.COOKIE).secret(cookieFor(address, port, now, 0))));
+  // A cookie round, in version 1 only (in version 2 the handshake's cookie already proved the address): null if the cookie is good, else
+  // the COOKIE answer to send
+  private List<Out> cookieRound(Message m, End from, long now) {
+    if (sealed || cookieIsGood(m.secret(), from.address(), from.port(), now)) {
+      return null;
     }
 
-    String sender = hasher.keyOf(address, now);
+    return List.of(control(from, Message.of(Type.COOKIE).secret(cookieFor(from.address(), from.port(), now, 0))));
+  }
+
+  private List<Out> hostOpen(Message m, End from, long now) {
+    List<Out> cookie = cookieRound(m, from, now);
+
+    if (cookie != null) {
+      return cookie;
+    }
+
+    String sender = hasher.keyOf(from.address(), now);
 
     if (gamesPerSender.getOrDefault(sender, 0) >= limits.mostGamesPerSender) {
-      return refuse(address, port, now, Why.TOO_MANY_GAMES);
+      return refuse(from, now, Why.TOO_MANY_GAMES);
     }
 
     if (games.size() >= limits.mostGames) {
-      return refuse(address, port, now, Why.BUSY);
+      return refuse(from, now, Why.BUSY);
     }
 
     byte[] code = null;
@@ -350,16 +471,15 @@ public final class RelayCore {
     }
 
     if (code == null) {
-      return refuse(address, port, now, Why.BUSY);
+      return refuse(from, now, Why.BUSY);
     }
 
-    Game game = new Game(code, random.next(Protocol.SECRET_BYTES), new End(address, port), sender, now,
-        new TokenBucket(limits.joinRate, limits.joinBurst));
+    Game game = new Game(code, random.next(Protocol.SECRET_BYTES), from, sender, now, new TokenBucket(limits.joinRate, limits.joinBurst));
     games.put(game.codeText, game);
     gamesByToken.put(game.tokenHex, game);
     gamesPerSender.merge(sender, 1, Integer::sum);
     counts.opened++;
-    return List.of(control(address, port, withPass(Message.of(Type.HOST_OPENED).secret(game.token).code(code), game, now)));
+    return List.of(control(from, withPass(Message.of(Type.HOST_OPENED).secret(game.token).code(code), game, now)));
   }
 
   // The game a token is for, or null: found by the token's hex, then the token itself compared in a time that says nothing
@@ -368,17 +488,18 @@ public final class RelayCore {
     return game != null && Crypto.same(game.token, token) ? game : null;
   }
 
-  private List<Out> hostKeep(Message m, String address, int port, long now) {
+  private List<Out> hostKeep(Message m, End from, long now) {
     Game game = byToken(m.secret());
 
     if (game == null) {
-      return refuse(address, port, now, Why.NO_SUCH_GAME);
+      return refuse(from, now, Why.NO_SUCH_GAME);
     }
 
-    // The host's NAT may have given it a new port: the token says it's the host, so this is where it is now
-    game.host = new End(address, port);
+    // The host's NAT may have given it a new port, or (version 2) it may have a new session: the token says it's the host, so this is
+    // where, and how, it is now
+    game.host = from;
     game.keptAt = now;
-    return List.of(control(address, port, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(seats(game)), game, now)));
+    return List.of(control(from, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(seats(game)), game, now)));
   }
 
   private List<Out> hostClose(Message m) {
@@ -392,27 +513,29 @@ public final class RelayCore {
     return List.of();
   }
 
-  private List<Out> join(Message m, String address, int port, long now) {
-    if (!cookieIsGood(m.secret(), address, port, now)) {
-      return List.of(control(address, port, Message.of(Type.COOKIE).secret(cookieFor(address, port, now, 0))));
+  private List<Out> join(Message m, End from, long now) {
+    List<Out> cookie = cookieRound(m, from, now);
+
+    if (cookie != null) {
+      return cookie;
     }
 
     byte[] wanted = m.code();
     Game game = wanted == null ? null : games.get(new String(wanted, StandardCharsets.US_ASCII));
 
     if (game == null) {
-      return refuse(address, port, now, Why.NO_SUCH_GAME);
+      return refuse(from, now, Why.NO_SUCH_GAME);
     }
 
     // The same JOIN again, from the same address and port, before its port is claimed: its JOIN_PORT was lost, and the joiner's game is
     // asking again, as it does each second. It gets the same port and ticket again, never a second port, and nothing more is spent.
-    Slot again = unclaimedFor(game, address, port);
+    Slot again = unclaimedFor(game, from.address(), from.port());
 
     if (again != null) {
-      return List.of(control(address, port, Message.of(Type.JOIN_PORT).secret(again.ticket).code(game.code).port(again.port)));
+      return List.of(control(from, Message.of(Type.JOIN_PORT).secret(again.ticket).code(game.code).port(again.port)));
     }
 
-    String sender = hasher.keyOf(address, now);
+    String sender = hasher.keyOf(from.address(), now);
 
     // A sender waiting on its most unclaimed ports gets no answer at all, and nothing of the game's is spent: the joiner's game asks
     // again a second later, by when one of them may have been claimed or freed. A refusal would end its join at once.
@@ -422,16 +545,16 @@ public final class RelayCore {
     }
 
     if (portsPerSender.getOrDefault(sender, 0) >= limits.mostPortsPerSender) {
-      return refuse(address, port, now, Why.BUSY);
+      return refuse(from, now, Why.BUSY);
     }
 
     // The game's players are its claimed ports: a JOIN no hello followed holds no one's place
     if (seats(game) >= limits.mostJoinersPerGame) {
-      return refuse(address, port, now, Why.GAME_FULL);
+      return refuse(from, now, Why.GAME_FULL);
     }
 
     if (!game.joinLimit.take(now) || free.isEmpty()) {
-      return refuse(address, port, now, Why.BUSY);
+      return refuse(from, now, Why.BUSY);
     }
 
     int relayPort = free.pollFirst();
@@ -442,7 +565,7 @@ public final class RelayCore {
     slot.hostEnd = null;
     slot.joinerEnd = null;
     slot.claimed = false;
-    slot.asker = new End(address, port);
+    slot.asker = new End(from.address(), from.port());
     slot.sender = sender;
     slot.hostTold = false;
     slot.hostToldAt = now;
@@ -458,7 +581,7 @@ public final class RelayCore {
 
     // Only the joiner hears now. The host hears once the joiner's hello has claimed the port (onHello), so JOINs that never say hello
     // never reach it, nor fill the places its game keeps for joiners it's saying hello to.
-    return List.of(control(address, port, Message.of(Type.JOIN_PORT).secret(slot.ticket).code(game.code).port(relayPort)));
+    return List.of(control(from, Message.of(Type.JOIN_PORT).secret(slot.ticket).code(game.code).port(relayPort)));
   }
 
   // The game's port not yet claimed that this address and port asked for, or null
@@ -485,23 +608,29 @@ public final class RelayCore {
     return n;
   }
 
-  private List<Out> onRelayPort(Slot slot, String address, int port, byte[] data, long now) {
+  // Version 1's joiner ports: a hello, or a game's packet to pass on
+  private List<Out> onRelayPort(Slot slot, End from, byte[] data, long now) {
     if (slot.state == Slot.State.FREE) {
       counts.strangers++;
       return List.of();
     }
-
-    boolean fromHost = slot.hostEnd != null && slot.hostEnd.is(address, port);
-    boolean fromJoiner = slot.joinerEnd != null && slot.joinerEnd.is(address, port);
 
     // A hello: only ever exactly a message, so a game's packet is never taken for one unless it is one, secret and all
     if (data.length == Protocol.MESSAGE_BYTES) {
       Message m = Protocol.decode(data);
 
       if (m != null && (m.type() == Type.HOST_HELLO || m.type() == Type.JOINER_HELLO)) {
-        return onHello(slot, m, address, port, now);
+        return onHello(slot, m, from, now);
       }
     }
+
+    return pass(slot, from.address(), from.port(), data, now);
+  }
+
+  // A game's packet on a joiner's port, passed on unread and unchanged to the port's other end, if it came from one of its two ends
+  private List<Out> pass(Slot slot, String address, int port, byte[] data, long now) {
+    boolean fromHost = slot.hostEnd != null && slot.hostEnd.is(address, port);
+    boolean fromJoiner = slot.joinerEnd != null && slot.joinerEnd.is(address, port);
 
     if (slot.state != Slot.State.ACTIVE || !(fromHost || fromJoiner)) {
       counts.strangers++;
@@ -529,7 +658,7 @@ public final class RelayCore {
     return List.of(new Out(slot.port, to.address(), to.port(), data));
   }
 
-  private List<Out> onHello(Slot slot, Message m, String address, int port, long now) {
+  private List<Out> onHello(Slot slot, Message m, End from, long now) {
     // The secret first, in a time that says nothing, before anything is spent: a stranger's hellos, however many, never use up what the
     // real ones need (the review's V1-2). One with a wrong secret is dropped, counted, and never answered.
     boolean fromHost = m.type() == Type.HOST_HELLO && Crypto.same(m.secret(), slot.game.token) && m.port() == slot.port;
@@ -546,8 +675,9 @@ public final class RelayCore {
       return List.of();
     }
 
+    // A good hello from a new address moves that end there: that's how a NAT giving a player a new port keeps working
     if (fromHost) {
-      slot.hostEnd = new End(address, port);
+      slot.hostEnd = from;
     } else {
       if (!slot.claimed && !claim(slot)) {
         // The game filled up while this port waited to be claimed: it stays unclaimed, and is freed after claimMilliseconds
@@ -555,7 +685,7 @@ public final class RelayCore {
         return List.of();
       }
 
-      slot.joinerEnd = new End(address, port);
+      slot.joinerEnd = from;
     }
 
     // The host is told of a claimed port until it says hello there: at once, then at most once a second, in case a NEW_JOINER was lost
@@ -564,7 +694,7 @@ public final class RelayCore {
         slot.hostTold = true;
         slot.hostToldAt = now;
         Game game = slot.game;
-        return List.of(control(game.host.address(), game.host.port(), Message.of(Type.NEW_JOINER).secret(game.token).port(slot.port)));
+        return List.of(control(game.host, Message.of(Type.NEW_JOINER).secret(game.token).port(slot.port)));
       }
 
       return List.of();
@@ -583,12 +713,10 @@ public final class RelayCore {
     slot.trafficAt = now;
     byte[] ready = Protocol.encode(Message.of(Type.READY).secret(slot.ticket).port(slot.port));
 
-    // The joiner hears READY each time it says hello once both ends are there, so a READY that was lost is sent again when it asks again
-    if (m.type() == Type.JOINER_HELLO) {
-      return List.of(new Out(slot.port, address, port, ready));
-    }
-
-    return List.of(new Out(slot.port, slot.joinerEnd.address(), slot.joinerEnd.port(), ready));
+    // The joiner hears READY each time it says hello once both ends are there, so a READY that was lost is sent again when it asks again.
+    // It goes from the joiner's port, and in version 2 sealed under the joiner's own session.
+    End joiner = slot.joinerEnd;
+    return List.of(new Out(slot.port, joiner.address(), joiner.port(), ready, joiner.session()));
   }
 
   // The joiner's first hello with its ticket: the port is claimed, and the joiner is one of the game's players. False, with nothing
@@ -614,14 +742,14 @@ public final class RelayCore {
     }
   }
 
-  private List<Out> refuse(String address, int port, long now, int why) {
+  private List<Out> refuse(End from, long now, int why) {
     counts.refused++;
 
-    if (!refusals.allows(address, now)) {
+    if (!refusals.allows(from.address(), now)) {
       return List.of();
     }
 
-    return List.of(control(address, port, Message.of(Type.REFUSED).number(why)));
+    return List.of(control(from, Message.of(Type.REFUSED).number(why)));
   }
 
   // ----- Cookies
@@ -700,7 +828,56 @@ public final class RelayCore {
     Arrays.fill(game.token, (byte) 0);
   }
 
+  // Version 2: every session a game or a joiner's port holds now (a game's host's, and both ends of each joiner's port), as RelayCore
+  // carries them, unopened. SealedRelay keeps those: their ends may need them again (a hello from a new address, a NEW_JOINER).
+  public Set<Object> sessionsInUse() {
+    Set<Object> held = Collections.newSetFromMap(new IdentityHashMap<>());
+
+    for (Game game : games.values()) {
+      addSession(held, game.host);
+    }
+
+    for (Slot slot : slots.values()) {
+      addSession(held, slot.hostEnd);
+      addSession(held, slot.joinerEnd);
+    }
+
+    return held;
+  }
+
+  private static void addSession(Set<Object> held, End end) {
+    if (end != null && end.session() != null) {
+      held.add(end.session());
+    }
+  }
+
+  // Version 2: a session that's being ended for good, as a revoked player's is (CRYPTO.md section 6). Everything it holds ends now: each
+  // game whose host it is, with every joiner's port of that game, and each joiner's port it's an end of. A session is known by being the
+  // same object (as sessionsInUse keeps them), never by what it holds. Added 2026-11-09 by Melanikus for AVPx Dedicated Server (#24).
+  public void endSession(Object session) {
+    if (session == null) {
+      return;
+    }
+
+    for (Game game : new ArrayList<>(games.values())) {
+      if (game.host != null && game.host.session() == session) {
+        closeGame(game);
+        counts.closed++;
+      }
+    }
+
+    for (Slot slot : slots.values()) {
+      boolean holds = (slot.hostEnd != null && slot.hostEnd.session() == session)
+          || (slot.joinerEnd != null && slot.joinerEnd.session() == session);
+
+      if (slot.state != Slot.State.FREE && holds) {
+        freeSlot(slot);
+      }
+    }
+  }
+
   // Called about once a second: ends what has run out, and gives back the lines to write, if any (counts only, never an address or code)
+  @Override
   public List<String> tick(long now) {
     for (Game game : new ArrayList<>(games.values())) {
       if (now - game.keptAt >= limits.gameLifeMilliseconds) {
@@ -729,6 +906,7 @@ public final class RelayCore {
 
   // The line of counts since the last one, made now, whatever the time: tick gives one a minute, and the relay's sockets give one more
   // as the relay stops, so the last part of a minute isn't lost. Counts and times only, never an address or a code.
+  @Override
   public String countsLine(long now) {
     Counts c = counts;
     int pending = 0;

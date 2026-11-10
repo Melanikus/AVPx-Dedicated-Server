@@ -123,17 +123,21 @@ Every call is HTTPS with TLS 1.2 or newer, and the server sends HSTS. The server
 | Call | Body | Answer |
 |---|---|---|
 | `GET /v1/relays` | none | `200 {"relays": [{"region", "host", "port"}]}`, at most 16 relays |
-| `POST /v1/games` | `{"region", "code", "pass", "passTime", "name", "level", "mode", "gameStyle", "levelNumber", "coopLobby", "players", "maxPlayers", "version", "hostMs"}` | `201 {"owner"}`; `403` for a pass that isn't good; `409` if that game is listed already; `503` if the list is full |
-| `PUT /v1/games` | `{"owner"}` and all of POST's fields | `204`, no body; `403` for a pass that isn't good, or the wrong owner; `404` if that game isn't listed |
+| `GET /v1/relay-keys?region=R` | none | `200 {"region", "p384", "mlkem"}`: a version 2 relay's static public keys (CRYPTO.md section 12.1); `400` for any other query, or a body; `404` if the list has no version 2 relay in that region; `405` for any other method |
+| `POST /v1/games` | `{"region", "code", "pass", "passTime", "name", "level", "mode", "gameStyle", "levelNumber", "coopLobby", "players", "maxPlayers", "version", "fingerprint", "hostMs"}`, with `fingerprint` for a version-2 game and only for one | `201 {"owner"}`; `403` for a pass that isn't good; `409` if that game is listed already; `503` if the list is full |
+| `PUT /v1/games` | `{"owner"}` and all of POST's fields | `204`, no body; `403` for a pass that isn't good, the wrong owner, or a fingerprint other than the one it was listed with; `404` if that game isn't listed |
 | `DELETE /v1/games` | `{"region", "code", "owner"}` | `204`, no body; `403` for the wrong owner; `404` if that game isn't listed. The room itself stays until its host closes it, or stops keeping it. |
-| `GET /v1/games?version=N` | none | `200 {"games": [{"region", "code", "name", "level", "mode", "gameStyle", "levelNumber", "coopLobby", "players", "maxPlayers", "version", "hostMs", "seconds"}]}`, at most 100 games, newest first |
+| `GET /v1/games?version=N` | none | `200 {"games": [{"region", "code", "name", "level", "mode", "gameStyle", "levelNumber", "coopLobby", "players", "maxPlayers", "version", "fingerprint", "hostMs", "seconds"}]}`, with `fingerprint` exactly on a version-2 game's row; at most 100 games, newest first |
+| `GET /v1/games?version=N&code=C` | none | the same, with only the games of that version whose code is `C`, one a region at most: how a game finds a code someone typed. `200` with no games if there are none |
 
 A game is known to the list by its region and code together: two relays could, rarely, make the same code.
 
 Any other status, and every `{"error"}` answer, means the call didn't work. The error's words are for the server's own tests and are never shown to a player: they come from the network.
 
 **Fields:**
-- **region:** 1 to 16 characters, small letters, digits and `-`, one of the regions in `GET /v1/relays`.
+- **region:** 1 to 16 characters, small letters, digits and `-`, one of the regions in `GET /v1/relays`. In `GET /v1/relay-keys`, everything after `region=` is checked as one, so `&`, `%`, a space or a capital letter there is `400`.
+- **p384:** a relay's static P-384 key, 194 hex digits, small letters: the 97-byte point, 0x04 then X and Y.
+- **mlkem:** a relay's static ML-KEM-1024 encapsulation key, 3,136 hex digits, small letters: its 1,568 bytes. The game holds the two keys to the relay's id it already has, 96 hex digits, and uses neither if they don't match (CRYPTO.md section 12.1).
 - **host:** a relay's DNS name, 1 to 63 characters, letters, digits, `-` and `.`. A name, never an address, so a relay can move to another machine without a game update.
 - **port:** a relay's control port, 1 to 65535.
 - **code:** 8 code letters (section 2).
@@ -147,12 +151,14 @@ Any other status, and every `{"error"}` answer, means the call didn't work. The 
 - **levelNumber:** 0 to 99 for a stock level, 100 for a custom one, which the game then finds by `level`.
 - **coopLobby:** the game's co-op lobby state (coop_lobby.h), 0 to 255. With `gameStyle`, `levelNumber` and `level`, it's how a joiner's game picks the level it will load, which on a LAN comes from the session search.
 - **players and maxPlayers:** whole numbers, 1 to 8, with players no more than maxPlayers.
-- **version:** a whole number, 1 to 65535, the game's network version.
+- **version:** a whole number, 1 to 65535, the game's network version. A **version-2 game** is one whose network version is the first that speaks handshake B (CRYPTO.md section 8) or a newer one. The list's code names that first version once (`FIRST_V2_VERSION`, Requests.java), and the game names the same number. A game asks only for games of its own version, so an older game never sees a version-2 row.
+- **fingerprint:** 32 hex digits, small letters: the fingerprint of the host's identity for this run (CRYPTO.md section 8), which a joiner checks in handshake B. A version-2 game must give it, and an older game can't (`400`). It stays the same for the listing's life: a host that starts again makes a new listing. Nothing secret.
+  **Changing (decided 2026-11-09, CRYPTO.md section 8):** this field becomes `id`, the host's whole id, 96 hex digits, small letters, in POST, PUT and GET alike, because the joiner's game compares it, and a machine compares the whole digest. Until that change is built, it's the fingerprint, as written here, and SERVER-BLOCKERS.md item 6 keeps every tester off.
 - **hostMs:** the host's round trip to its relay, in milliseconds, 1 to 9999; 0 if it wasn't measured (section 2, Round trips).
 - **seconds:** how long the game has been listed, 0 to 31,536,000 (a year); a game listed longer still says a year.
 
 **What a reader can hold the answer to:**
-- **Its size:** an answer to `GET /v1/games` is at most 48 KB. The worst case, 100 games with every text at its longest and made of the characters JSON writes as two, and every number at its longest, is 41,111 bytes. An answer to `GET /v1/relays` is at most 4 KB (worst case, 16 relays: 1,868 bytes). A reader can refuse anything bigger.
+- **Its size:** an answer to `GET /v1/games` is at most 48 KB. The worst case, 100 version-2 games (each with a fingerprint) with every text at its longest and made of the characters JSON writes as two, and every number at its longest, is 46,011 bytes; `&code=` answers less. With `id` in place of `fingerprint` (above), each version-2 row has 55 more bytes (64 more hex digits, and 9 fewer in the field's name), so the worst case becomes 51,511 bytes and the cap 56 KB: the list's own test counts it again from the code when it changes. An answer to `GET /v1/relays` is at most 4 KB (worst case, 16 relays: 1,868 bytes), and one to `GET /v1/relay-keys` at most 4 KB too (worst case, a 16-character region: 3,380 bytes). A reader can refuse anything bigger.
 - **Its escapes:** every text is printable ASCII, and for those JSON writes only two escapes, `\"` and `\\`. A reader can refuse any other escape (`\u`, `\n`, `\/` and the rest). The server's tests check both of these.
 
 **Heartbeat and expiry:** a listing lives 45 s after its last good `POST` or `PUT`. A host `PUT`s every 15 s with its newest pass. A pass is good for 60 s, so a listing outlives its room by at most 105 s, and a joiner who tries it meanwhile gets `REFUSED` (reason 1).
@@ -171,6 +177,81 @@ Any other status, and every `{"error"}` answer, means the call didn't work. The 
   - no key is `__proto__`, `constructor` or `prototype`. Those name parts of every JavaScript object, and a reader that wrote them into one could change how every other object behaves. No field here has those names, so every server refuses them, in any language (added 2026-11-09 as a fix, from a CodeQL finding). The Java server's words for it are "a field named __proto__, constructor or prototype, which name a part of every JavaScript object"; as with every refusal, the words are for the server's own tests, and never shown to a player.
 
   Anything else gets `400`.
+
+### Asking to play: access requests (version 2)
+
+A version 2 relay takes approved players only (CRYPTO.md section 6). A player asks to be approved from the game, by pressing
+**Request access**. Nothing is ever sent without that press. The owner approves by the access code the player gives him (below).
+Agreed 2026-11-09 by Fourth (the game), Primary (the server) and Third.
+
+| Call | Body | Answer |
+|---|---|---|
+| `POST /v1/access-requests` | `{"v": 1, "name", "key"}` | `200 {"v": 1, "fp", "state"}`; `400 {"v": 1, "error"}` with `name`, `key` or `shape`; `429` with `busy`; `503` with `closed` |
+
+**Fields:**
+- **v:** the layout's version, 1.
+- **name:** what the player chose; the game fills in their profile's name, which they can change. 1 to 15 bytes, each 32 to 126 but
+  not `"` or `\` (so the name never needs an escape), and no space at either end. The list shows it only to the owner.
+- **key:** the player's identity, its public halves only, exactly as the game keeps them: the P-384 key (97 bytes, 0x04 then X then
+  Y), then the ML-KEM-1024 encapsulation key (1,568). These are 1,665 bytes, written in standard base64 with no line breaks: always
+  exactly 2,220 characters, with no `=`.
+- **fp:** the fingerprint the list worked out from `key` (CRYPTO.md section 8), 32 hex digits, small letters. The list never takes a
+  fingerprint it's given. The game checks the answer's `fp` is its own, and treats it as no answer if not: that catches a list and a
+  game that work it out differently. It proves nothing about who answered: the access code does that (below).
+- **state:** `waiting`, `approved`, `refused` or `revoked`.
+
+**What the list checks,** before it keeps anything:
+- exactly these fields, and every size;
+- the P-384 key on the curve and not the point at infinity;
+- the ML-KEM key passing FIPS 203's encapsulation key check.
+
+**What the list keeps,** for each key: its id (CRYPTO.md section 8, the whole SHA-384, 96 hex digits), its fingerprint (the id's first
+32), the name, the state, and when it was first asked. Not the key itself: the relay compares A1's `s` by its id, so nothing needs the
+key again, and the store is about 20 times smaller. No address is kept, and the log has counts only, never a name, key, id or
+fingerprint. One program writes the store: the list itself. The owner's approvals reach it as
+decision files, which it reads as hostile input like any request.
+
+**The owner's decisions** are files in the store's folder, named `decisions.` and a number. Each line is a fingerprint, a space,
+and `approved`, `refused`, `revoked` or `forgotten`; the last line is `end` and how many lines came before it, so a file read while
+it's still being written is refused whole, never applied in part. The lines are applied in order, all of them or none, at the
+list's next turn (about a second), and then the file is deleted. The same moves are checked again there, and a file with a move the
+states don't allow (below) is refused whole.
+
+**Asking again** is the same call, from **Check again**. There's no other call, so nobody can look up another player's state by their
+fingerprint:
+- a key already waiting or approved isn't a new request: the list keeps the name it had first, and answers with the state;
+- a key whose fingerprint is a record's but whose id isn't is refused (`400` with `key`), so a fingerprint, and the access code made
+  from it, names one record only;
+- a key refused stays so, unless the owner forgets it: then it may ask again, as a new request;
+- a key revoked stays so. To ask again, the player makes a new identity.
+
+**The states move only so:** waiting to approved or refused, approved to revoked. The owner may also forget a waiting or refused
+request: its record goes, so it no longer counts against the limits below, and that key may ask again. Never an approved one (it's
+revoked, which also ends its sessions), and never a revoked one (a key taken back stays so). A waiting request is forgotten after 30
+days anyway.
+
+**The access code**, shown in the game and never sent: the fingerprint's first 80 bits, read as one number with the highest byte first,
+cut into sixteen 5-bit pieces from the top, each written as a letter of `23456789ABCDEFGHJKLMNPQRSTUVWXYZ` (section 2's code letters),
+in four groups of four with dashes between, like `ABCD-EF23-4567-89GH`. The player gives it to the owner directly, by a way the owner
+knows is them. The owner's approval takes the code, in either case, with dashes and spaces left out, and refuses unless exactly one
+waiting request has it. When more than one has it, it shows every one. To get a key swapped in the middle approved, someone would
+have to find a key whose code is the real one's (an 80-bit second preimage), and keep the real request from ever arriving: one more
+request with the same code, such as the player's own **Check again**, stops the approval and shows the owner both.
+
+**Why the code, and not the list's answer, is what protects a request:** the list's HTTPS is checked by Windows, with no pin of the
+game's own (CRYPTO.md section 12.1). A certificate wrongly given out for the list's name could let someone in the middle put another
+key in a request, and answer the game as the list would. But that key makes another code, so the code the player gives the owner
+matches no waiting request of it, and it's never approved.
+
+**The limits** (section 5 says how they're kept):
+- this call's body is at most 4,096 bytes, and its answer at most 512; every other call keeps the 1,024-byte limit;
+- one request a minute from one address, and 10 an hour;
+- a **new** request (a key the list doesn't have) 5 a day from one address, and 10 a day from one network: an IPv4 address's first 24
+  bits, or an IPv6 address's first 48. Asking again about a key the list has costs only the minute and hour limits. The day is the
+  address hasher's (section 5): its secret changes every 24 hours, and every count starts again with it;
+- at most 1,000 requests waiting;
+- **`busy`:** a limit was reached, so try again later;
+- **`closed`:** the list takes no requests at all (its settings give it no store).
 
 ## 5. The abuse limits
 
@@ -196,10 +277,10 @@ Every number is a starting point, written in one place in the code, and changed 
 | Listings | 2,000 in all |
 | A listing with no good `POST` or `PUT` | 45 s |
 | Relays the list names | 16 |
-| Addresses the per-address limits remember | 10,000; the one heard from longest ago is forgotten first |
+| Addresses the per-address limits remember | 10,000; the one heard from longest ago is forgotten first. For the access call's limits, an address is forgotten only once its count has come all the way back: until then a new address gets `busy`, so a crowd of more than 10,000 can't start each address afresh |
 | An HTTPS request | headers 8 KB, body 1 KB; 5 s to send the headers and 5 s for the body |
 | HTTPS connections | 200 at once in all, 10 from one address |
-| HTTPS requests from one address | 5 a second, 20 at once; `GET /v1/games` and `GET /v1/relays` 1 a second, 5 at once |
+| HTTPS requests from one address | 5 a second, 20 at once; `GET /v1/games`, `GET /v1/relays` and `GET /v1/relay-keys` 1 a second, 5 at once |
 | HTTPS requests from everyone | 500 a second, 1,000 at once (in the code from the start; added to this table 2026-11-08 as a fix) |
 | An HTTPS connection's TLS handshake | 5 s |
 
@@ -210,6 +291,7 @@ Every number is a starting point, written in one place in the code, and changed 
 - joins and refusals;
 - echoes answered;
 - listings made, ended and expired, and passes refused;
+- relay keys given, and asked for but not found;
 - packets and bytes passed on;
 - drops by reason;
 - rooms and ports in use.

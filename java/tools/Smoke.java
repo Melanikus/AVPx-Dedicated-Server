@@ -1,7 +1,9 @@
 package avpx.tools;
 
 import avpx.Settings;
+import avpx.access.AccessCode;
 import avpx.list.Listings;
+import avpx.v2.Identity;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -17,10 +19,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyStore;
+import java.security.MessageDigest;
 import java.security.SecureRandom;
 import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.LinkedHashMap;
@@ -49,19 +53,29 @@ import javax.net.ssl.TrustManagerFactory;
 // With --installed it reads the server's own settings, /etc/avpx/settings.json, as the server does: the ports, the region, the relays the
 // list should name, and the certificate file. It trusts only that certificate, checks it is for this machine's own relay host in the
 // settings (or the DNS name --name gives), and leaves out the 6 log checks (its log is the journal). Its one game is listed, and taken
-// down, under network version 65535, which no game uses, so no player ever sees it.
+// down, under network version 65535, which no game uses, so no player ever sees it. That's at or past the first version-2 network
+// version, whatever number that is, so the listing comes with a fingerprint (a made-up one: nobody joins it by handshake B).
 //
 // A RELAY-ONLY MACHINE (a later region's: its settings have no list, deploy/settings.relay-only.example.json) gets the relay's checks
 // only: the control port answering, a whole game through the relay's ports, and the pass in HOST_OPENED being this relay's own, for its
 // region, made again here with the pass key in its settings (PROTOCOL.md section 3). The list's checks over HTTPS can't run there, and
 // the output says so at its end, so a relay-only run never reads as a full one. It exits 0 only if every check that ran passed.
 //
+// A VERSION 2 RELAY (its settings say "protocol": 2) speaks version 2 only, so with --installed it gets SmokeV2.java's checks instead:
+// handshake A, then a whole game sealed. That file says how it's held to the known answers before it's trusted. A version 2 relay takes
+// approved players only, so its whole game needs two the owner approved (SmokeIdentities.java):
+//   java -jar avpx-smoke.jar --make-identities <file>              makes two, writes them to file, and prints their fingerprints
+//   java -jar avpx-smoke.jar --installed --identities <file>       plays the whole game with them; without, it checks only that a
+//                                                                  player nobody approved gets nothing
+//
 // SAFE TO RUN ANYWHERE: it sends only to 127.0.0.1, and binds only there, so it can test only a server on the same machine and can never be
 // pointed at anyone else's. HTTPS trusts only list-test.pem, and checks the certificate is for "localhost" (the name the relays' list gives).
 //
 // INDEPENDENT OF THE SERVER: it uses none of the server's code but its settings reader (for --installed). Its messages are written by
 // hand from PROTOCOL.md section 2, a pass is made by hand from section 3, and the list's answers are compared as exact text, so a fault
-// in the server's own encoder or JSON can't hide itself here.
+// in the server's own encoder or JSON can't hide itself here. Three things of the server's are used, each said where: version 2's game
+// side (SmokeV2.java, pinned to the known answers first), the identity's keys (Identity, only to hold them), and the access code, only to
+// show it to the owner, whose own tools work it out for themselves. An access request's fingerprint is worked out here, by hand.
 //
 // Without --installed, it expects the server started with the settings CI uses: region "virginia", the list on 8443, the control port
 // 27500, relay ports 27501 to 27564, a relay whose host is "localhost", and the log in server.log (java.yml's smoke job).
@@ -72,6 +86,8 @@ public final class Smoke {
   private static final String HOST = "127.0.0.1";
   // The network version its game is listed under: one no game uses, so a player never sees it
   private static final int VERSION = 65535;
+  // The fingerprint its listing gives, as a version-2 game's must (PROTOCOL.md section 4). Made up, and plainly so
+  private static final String FINGERPRINT = "00112233445566778899aabbccddeeff";
   private static final Path INSTALLED_SETTINGS = Path.of("/etc/avpx/settings.json");
   private static final Pattern DNS_NAME = Pattern.compile("[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*");
 
@@ -91,20 +107,20 @@ public final class Smoke {
   private static byte[] passKey;
 
   // The relay's message types, by their numbers (PROTOCOL.md section 2)
-  private static final int ECHO = 14;
+  static final int ECHO = 14;
   private static final int ECHO_BACK = 15;
-  private static final int HOST_OPEN = 1;
-  private static final int HOST_OPENED = 2;
-  private static final int HOST_KEEP = 3;
-  private static final int HOST_KEPT = 4;
-  private static final int HOST_CLOSE = 5;
-  private static final int JOIN = 6;
-  private static final int JOIN_PORT = 7;
-  private static final int NEW_JOINER = 8;
-  private static final int HOST_HELLO = 9;
-  private static final int JOINER_HELLO = 10;
-  private static final int READY = 11;
-  private static final int REFUSED = 12;
+  static final int HOST_OPEN = 1;
+  static final int HOST_OPENED = 2;
+  static final int HOST_KEEP = 3;
+  static final int HOST_KEPT = 4;
+  static final int HOST_CLOSE = 5;
+  static final int JOIN = 6;
+  static final int JOIN_PORT = 7;
+  static final int NEW_JOINER = 8;
+  static final int HOST_HELLO = 9;
+  static final int JOINER_HELLO = 10;
+  static final int READY = 11;
+  static final int REFUSED = 12;
   private static final int COOKIE = 13;
 
   private static final SecureRandom RANDOM = new SecureRandom();
@@ -113,12 +129,12 @@ public final class Smoke {
 
   private static int passed;
   private static int failed;
-  private static int notLoopback;
+  static int notLoopback;
 
   // The host's round trip to the relay, from its best echo, which its listing says (hostMs)
   private static long hostMs = 1;
 
-  private static void check(boolean ok, String name, String more) {
+  static void check(boolean ok, String name, String more) {
     if (ok) {
       passed++;
     } else {
@@ -128,15 +144,15 @@ public final class Smoke {
     System.out.println((ok ? "PASS" : "FAIL") + "  " + name + (more.isEmpty() ? "" : "  (" + more + ")"));
   }
 
-  private static void check(boolean ok, String name) {
+  static void check(boolean ok, String name) {
     check(ok, name, "");
   }
 
-  private static void pause(long ms) throws InterruptedException {
+  static void pause(long ms) throws InterruptedException {
     Thread.sleep(ms);
   }
 
-  private static byte[] random(int n) {
+  static byte[] random(int n) {
     byte[] out = new byte[n];
     RANDOM.nextBytes(out);
     return out;
@@ -144,7 +160,7 @@ public final class Smoke {
 
   // ----- The relay's 64-byte messages, by hand (PROTOCOL.md section 2): little-endian numbers
 
-  private static byte[] msg(int type, byte[] secret, String code, int port, int number) {
+  static byte[] msg(int type, byte[] secret, String code, int port, int number) {
     byte[] b = new byte[64];
     System.arraycopy("AVPR".getBytes(StandardCharsets.US_ASCII), 0, b, 0, 4);
     b[4] = 1;
@@ -165,15 +181,15 @@ public final class Smoke {
     return b;
   }
 
-  private static byte[] msg(int type) {
+  static byte[] msg(int type) {
     return msg(type, null, null, 0, 0);
   }
 
   // A message's fields, read by hand; null if it isn't one
-  private record Read(int type, byte[] secret, String code, int port, int number, byte[] pass, long passTime, byte[] tail) {
+  record Read(int type, byte[] secret, String code, int port, int number, byte[] pass, long passTime, byte[] tail) {
   }
 
-  private static Read read(byte[] b) {
+  static Read read(byte[] b) {
     if (b == null || b.length != 64 || !new String(b, 0, 4, StandardCharsets.US_ASCII).equals("AVPR") || b[4] != 1) {
       return null;
     }
@@ -189,7 +205,7 @@ public final class Smoke {
         Arrays.copyOfRange(b, 60, 64));
   }
 
-  private static boolean allZero(byte[] b) {
+  static boolean allZero(byte[] b) {
     for (byte x : b) {
       if (x != 0) {
         return false;
@@ -201,25 +217,25 @@ public final class Smoke {
 
   // ----- UDP, on 127.0.0.1 only
 
-  private record Got(byte[] data, int fromPort) {
+  record Got(byte[] data, int fromPort) {
   }
 
-  private static DatagramSocket udp() throws IOException {
+  static DatagramSocket udp() throws IOException {
     DatagramSocket s = new DatagramSocket(new InetSocketAddress(loopback(), 0));
     s.setReceiveBufferSize(1 << 20);
     return s;
   }
 
-  private static InetAddress loopback() {
+  static InetAddress loopback() {
     return Inet4Address.ofLiteral(HOST);
   }
 
-  private static void send(DatagramSocket s, int port, byte[] data) throws IOException {
+  static void send(DatagramSocket s, int port, byte[] data) throws IOException {
     s.send(new DatagramPacket(data, data.length, new InetSocketAddress(loopback(), port)));
   }
 
   // The next packet s gets within ms, or null
-  private static Got next(DatagramSocket s, int ms) throws IOException {
+  static Got next(DatagramSocket s, int ms) throws IOException {
     DatagramPacket packet = new DatagramPacket(new byte[2048], 2048);
     s.setSoTimeout(ms);
 
@@ -236,13 +252,13 @@ public final class Smoke {
     return new Got(Arrays.copyOf(packet.getData(), packet.getLength()), packet.getPort());
   }
 
-  private static Got ask(DatagramSocket s, int port, byte[] data) throws IOException {
+  static Got ask(DatagramSocket s, int port, byte[] data) throws IOException {
     send(s, port, data);
     return next(s, 1000);
   }
 
   // The message in what came back, or an empty one (type 0) if nothing did, so a check fails rather than the run stopping
-  private static Read readOrNothing(Got got) {
+  static Read readOrNothing(Got got) {
     Read r = got == null ? null : read(got.data());
     return r != null ? r : new Read(0, new byte[16], "", 0, 0, new byte[16], 0, new byte[4]);
   }
@@ -344,7 +360,8 @@ public final class Smoke {
   private static String listing(String owner, String code, String pass, long passTime, int players) {
     return "{" + (owner == null ? "" : "\"owner\":\"" + owner + "\",") + "\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"pass\":\"" + pass
         + "\",\"passTime\":" + passTime + ",\"name\":\"Smoke test\",\"level\":\"Genshd1\",\"mode\":\"Coop\",\"gameStyle\":3,\"levelNumber\":12,"
-        + "\"coopLobby\":0,\"players\":" + players + ",\"maxPlayers\":4,\"version\":" + VERSION + ",\"hostMs\":" + hostMs + "}";
+        + "\"coopLobby\":0,\"players\":" + players + ",\"maxPlayers\":4,\"version\":" + VERSION + ",\"fingerprint\":\"" + FINGERPRINT
+        + "\",\"hostMs\":" + hostMs + "}";
   }
 
   // How many games a GET /v1/games answer holds, counted from its text
@@ -363,11 +380,132 @@ public final class Smoke {
     return r.body().startsWith("{\"games\":[{") ? n : -1;
   }
 
+  // The word after flag on the command line, or null if flag isn't there (or is last)
+  private static String after(List<String> words, String flag) {
+    int at = words.indexOf(flag);
+    return at < 0 || at + 1 >= words.size() ? null : words.get(at + 1);
+  }
+
+  // The access requests of the two identities in file (SmokeIdentities.java), sent to this machine's own list as the game's page sends
+  // them (PROTOCOL.md section 4), the host's and then, a minute later, the joiner's: the list takes one a minute from one address, and
+  // both come from 127.0.0.1. Each is checked to come back with its own fingerprint, and printed with its access code, for the owner.
+  private static void requestAccess(Path file) throws Exception {
+    if (c.certificate() == null) {
+      check(false, "access requests: this machine runs no list to send them to (a version 2 relay takes its own list's approved players "
+          + "only, CRYPTO.md section 6)");
+      return;
+    }
+
+    Identity[] players = SmokeIdentities.read(file);
+
+    if (players == null) {
+      check(false, "the identities file " + file + " holds two identities as --make-identities writes them");
+      return;
+    }
+
+    SSLContext tls = trustingOnly(c.certificate());
+    String[] who = {"host", "joiner"};
+
+    // The list may still be starting: asked until it answers, up to 15 s
+    long until = System.nanoTime() + 15_000_000_000L;
+
+    while (api(tls, "GET", "/v1/relays", (String) null).status() != 200 && System.nanoTime() < until) {
+      pause(250);
+    }
+
+    for (int i = 0; i < 2; i++) {
+      if (i > 0) {
+        pause(61_000);
+      }
+
+      // The fingerprint worked out here, by hand from PROTOCOL.md (the first 16 bytes of SHA-384("AVPX-ID-2" || the 1,665 public bytes)),
+      // not with the server's own code: so the list's answer is held to what the protocol says, not to the server's idea of it
+      byte[] statics = players[i].statics();
+      MessageDigest sha = MessageDigest.getInstance("SHA-384");
+      sha.update("AVPX-ID-2".getBytes(StandardCharsets.US_ASCII));
+      String fp = HexFormat.of().formatHex(Arrays.copyOf(sha.digest(statics), 16));
+      String body = "{\"v\":1,\"name\":\"smoke " + who[i] + "\",\"key\":\"" + Base64.getEncoder().encodeToString(statics) + "\"}";
+      Reply r = api(tls, "POST", "/v1/access-requests", body);
+      boolean waiting = r.body().equals("{\"v\":1,\"fp\":\"" + fp + "\",\"state\":\"waiting\"}");
+      boolean approved = r.body().equals("{\"v\":1,\"fp\":\"" + fp + "\",\"state\":\"approved\"}");
+      check(r.status() == 200 && (waiting || approved), "the " + who[i] + "'s access request: 200, with its own fingerprint, waiting or "
+          + "approved", r.status() + " " + r.body());
+      System.out.println(who[i] + " " + fp + " " + AccessCode.of(fp) + (approved ? " approved" : waiting ? " waiting" : " not asked"));
+    }
+  }
+
+  // What this machine's own list gives games for its own relay, GET /v1/relay-keys?region= (PROTOCOL.md section 4): it must be exactly
+  // the public halves of the static keys the relay's settings hold. Then their id, worked out here by hand from CRYPTO.md section 12.1
+  // (SHA-384 of "AVPX relay keys v2", then the P-384 key, then the ML-KEM key), not with the server's own code, is printed: the owner
+  // holds it to MakeRelayKeys' ID line and to the RelayKey line in the game's AliensVsPredator.cfg. The game checks that id itself, and
+  // refuses keys that don't hash to it, so this is for finding a mistake on deploy day, not what keeps a player safe. Added 2026-11-09
+  // by Melanikus for AVPx Dedicated Server, for Secondary's dry run of the self-test.
+  private static void relayKeys(Settings settings) throws Exception {
+    if (c.certificate() == null) {
+      System.out.println("NOT RUN  GET /v1/relay-keys: this machine runs no list (the list's machine has these keys in list.relays)");
+      return;
+    }
+
+    SSLContext tls = trustingOnly(c.certificate());
+
+    // The list may still be starting: asked until it answers, up to 15 s
+    long until = System.nanoTime() + 15_000_000_000L;
+    Reply r = api(tls, "GET", "/v1/relay-keys?region=" + c.region(), (String) null);
+
+    while (r.status() != 200 && System.nanoTime() < until) {
+      pause(250);
+      r = api(tls, "GET", "/v1/relay-keys?region=" + c.region(), (String) null);
+    }
+
+    HexFormat hex = HexFormat.of();
+    byte[] p384 = settings.staticKeys().p384Public();
+    byte[] kem = settings.staticKeys().kemPublic();
+    String expected = "{\"region\":\"" + c.region() + "\",\"p384\":\"" + hex.formatHex(p384) + "\",\"mlkem\":\"" + hex.formatHex(kem) + "\"}";
+    check(r.status() == 200 && r.body().equals(expected), "GET /v1/relay-keys for " + c.region() + ": 200, and exactly the public keys this "
+        + "relay's settings hold", r.status() == 200 ? "another answer" : r.status() + " " + r.body());
+
+    MessageDigest sha = MessageDigest.getInstance("SHA-384");
+    sha.update("AVPX relay keys v2".getBytes(StandardCharsets.US_ASCII));
+    sha.update(p384);
+    sha.update(kem);
+    String id = hex.formatHex(sha.digest());
+    System.out.println("relay " + c.region() + " ID " + id);
+    System.out.println("  the game's AliensVsPredator.cfg, [Network], must have: RelayKey=" + c.region() + ":" + id);
+  }
+
   public static void main(String[] args) throws Exception {
     List<String> words = Arrays.asList(args);
 
+    // Two identities for a version 2 game (SmokeIdentities.java), and nothing else
+    if (words.contains("--make-identities")) {
+      String file = after(words, "--make-identities");
+      System.exit(file != null && SmokeIdentities.make(Path.of(file)) ? 0 : 1);
+    }
+
     if (words.contains("--installed")) {
-      c = installed(words);
+      Settings settings = Settings.read(INSTALLED_SETTINGS);
+
+      // The two identities' access requests, to this machine's own list (SmokeIdentities.java), and nothing else
+      String requestFor = after(words, "--request-access");
+
+      if (requestFor != null) {
+        c = installed(settings, words);
+        requestAccess(Path.of(requestFor));
+        finish();
+        return;
+      }
+
+      // A version 2 relay speaks only version 2, so its checks are SmokeV2's (see the top), after the list's answer for its keys
+      if (settings.protocol() == 2) {
+        c = installed(settings, words);
+        relayKeys(settings);
+        String identities = after(words, "--identities");
+        SmokeV2.run(settings, identities == null ? null : Path.of(identities));
+        finish();
+        return;
+      }
+
+      c = installed(settings, words);
     }
 
     boolean withList = c.certificate() != null;
@@ -418,11 +556,13 @@ public final class Smoke {
         owner = ownerFound.matches() ? ownerFound.group(1) : "";
         Reply shown = api(tls, "GET", "/v1/games?version=" + VERSION, (byte[]) null);
         check(games(shown) == 1 && shown.body().contains("\"region\":\"" + c.region() + "\",\"code\":\"" + code + "\",\"name\":\"Smoke test\"")
-            && shown.body().contains("\"levelNumber\":12") && !shown.body().contains(owner) && !shown.body().contains(pass),
-            "the listing shows, with no owner key or pass in it");
+            && shown.body().contains("\"levelNumber\":12") && shown.body().contains("\"version\":" + VERSION + ",\"fingerprint\":\"" + FINGERPRINT + "\"")
+            && !shown.body().contains(owner) && !shown.body().contains(pass),
+            "the listing shows, with its fingerprint and no owner key or pass in it");
       } else {
         // No list here to check the pass, so it's checked by hand: this relay's own, for its region
-        check(Arrays.equals(opened.pass(), passFor(code, opened.passTime())), "the pass is this relay's own, for region " + c.region());
+        check(Arrays.equals(opened.pass(), passFor(passKey, c.region(), code, opened.passTime())),
+            "the pass is this relay's own, for region " + c.region());
       }
 
       // A joiner joins
@@ -616,11 +756,11 @@ public final class Smoke {
 
   // A pass, made by hand as PROTOCOL.md section 3 says: HMAC-SHA-256, with the relay's pass key, of "AVPX-PASS-1", the region, a 0 byte,
   // the room's code and the pass time (8 bytes, little-endian), cut to 16 bytes
-  private static byte[] passFor(String code, long passTime) throws Exception {
+  static byte[] passFor(byte[] key, String region, String code, long passTime) throws Exception {
     Mac mac = Mac.getInstance("HmacSHA256");
-    mac.init(new SecretKeySpec(passKey, "HmacSHA256"));
+    mac.init(new SecretKeySpec(key, "HmacSHA256"));
     mac.update("AVPX-PASS-1".getBytes(StandardCharsets.US_ASCII));
-    mac.update(c.region().getBytes(StandardCharsets.US_ASCII));
+    mac.update(region.getBytes(StandardCharsets.US_ASCII));
     mac.update((byte) 0);
     mac.update(code.getBytes(StandardCharsets.US_ASCII));
 
@@ -632,8 +772,7 @@ public final class Smoke {
   }
 
   // The config of the server installed on this machine, from its own settings, read as the server reads them
-  private static Config installed(List<String> words) throws Exception {
-    Settings settings = Settings.read(INSTALLED_SETTINGS);
+  private static Config installed(Settings settings, List<String> words) throws Exception {
     Settings.ListSettings list = settings.list();
     int[] ports = settings.relayPorts();
 
@@ -719,7 +858,7 @@ public final class Smoke {
     return "";
   }
 
-  private static void finish() {
+  static void finish() {
     System.out.println("\n" + passed + " passed, " + failed + " failed");
     System.exit(failed == 0 && passed > 0 ? 0 : 1);
   }

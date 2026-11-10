@@ -1,0 +1,267 @@
+(* Handshake A of CRYPTO.md: a game and its relay, pattern pqIK, hybrid (ECDH P-384 and ML-KEM-1024), as a ProVerif model. Written
+   2026-11-09 by Melanikus for AVPx Dedicated Server, in place of pqnk.pv, when handshake A became pqIK (CRYPTO.md section 6, server
+   #24): the player's identity key is the initiator's static key, and the relay takes only approved players.
+
+   ProVerif (INRIA, bblanche.gitlabpages.inria.fr/proverif) proves things about a protocol against an attacker who controls the whole
+   network: it reads, drops, changes and makes up every message. It proves them about the pattern, not about our code: the code is held
+   to the pattern by the test vectors (CRYPTO.md section 15) and the tests.
+
+   WHAT IS MODELLED, step for step as CRYPTO.md sections 5, 5.1 (points 4 to 6, 21 and 22) and 6 write it:
+   - h starts as the hash of the protocol's name, and ck as h; then MixHash(the prologue: the region and a 0 byte), then the
+     pre-message "<- s": MixHash(the relay's static P-384 key), then MixHash(its static ML-KEM key);
+   - A1, game to relay: e (MixHash of the ephemeral P-384 key, then of the ephemeral ML-KEM key), es, skem, s (the game's two static
+     public keys, one EncryptAndHash under skem's key at nonce 0), ss, and an empty EncryptAndHash under ss's key;
+   - the relay opens s, and takes the game only if its keys are approved: the table "approved", which the owner fills. That's where it
+     refuses (refusal 22), before ss;
+   - A2, relay to game: e, ee, se, ekem, skem (to the game's static ML-KEM key), and EncryptAndHash(the relay's session id);
+   - A3, game to relay: an empty EncryptAndHash at nonce 1, the game's key confirmation. Only then does the relay take the player;
+   - Split: one key each way. The game then sends a control message sealed with its key, holding a secret.
+     (Split gives each direction a secret, and epoch 0's key is made from it: 5.1 points 3 and 8. The model makes those two one-way
+     steps one, splitir and splitri, because a one-way function of a one-way function is the same to the attacker here.)
+   - MixKey is HKDF: two functions of (ck, the secret) that give the next ck and the next k, one-way and with no other property.
+   - ECDH is Diffie-Hellman: exp(exp(g, x), y) = exp(exp(g, y), x). ML-KEM is an ideal KEM. AES-256-GCM is ideal authenticated
+     encryption, opening only with its key, nonce and associated data (here, h). The nonces are n0 and n1, as in section 5.
+
+   WHO IS WHO: one honest relay; one honest player, whose static keys are cdhHonest and ckemHonest, approved; and a second approved
+   player whose keys the attacker holds (a tester gone bad), so that every query is about honest players among dishonest ones.
+
+   WHAT IS NOT MODELLED, and why:
+   - the cookie round (A0, A0'): it guards against floods from forged addresses, not secrecy or authentication; the tests hold it;
+   - the fingerprint: the relay's approved list is of fingerprints, and here it's of the keys themselves. The fingerprint is a hash of
+     exactly those 1,665 bytes, so taking one for the other changes no answer;
+   - the checks that a received key is a key (refusal 23): ProVerif's keys are always keys;
+   - counters, replay windows, epochs and fragments: the Java tests and the test vectors hold the code to those;
+   - revoking: the table only grows here. A revoke is the relay's own bookkeeping (CRYPTO.md section 6), held by the tests;
+   - the relay taking the game's first sealed message in place of a lost A3: the relay takes the player on A3 here, which is the
+     stricter of the two, since the sealed message's tag needs the same keys;
+   - the identity hiding: that a watcher can't tell which approved player a session is. It's an equivalence, which ProVerif can't prove
+     for this model as written; section 6 argues it (s is sealed under es and skem), and says its limit (not after the relay's keys
+     are lost).
+
+   THE QUERIES (proofs/run.sh runs them, and says what each must give):
+   1. secrecy: the attacker never learns what the honest player sends under its session key, even when every static key, the relay's
+      and the player's, is given away after the sessions end (phase 1 below): forward secrecy;
+   2. the relay, to the game, injective: whenever the honest player finishes a handshake, a real relay, holding the static keys,
+      derived the same two keys over the same transcript for that same player, in a session of its own, and only once;
+   3. the game, to the relay, injective: whenever the relay takes a session as the honest player's, the honest player itself made those
+      keys over that transcript, with that relay, and each of its sessions is taken at most once. So no one else, the bad tester
+      included, can be taken for the honest player.
+
+   THE BROKEN HALVES. The lines marked LEAKDH and LEAKKEM are comments here. proofs/run.sh makes copies with them switched on:
+   - LEAKDH breaks ECDH entirely: the attacker is given every static ECDH secret (the relay's and the honest player's) and every ECDH
+     result an honest side computes;
+   - LEAKKEM breaks ML-KEM the same way: every static ML-KEM secret key, and every ML-KEM secret an honest side computes.
+   Either alone must keep all three queries true: that's the hybrid. Both together make them false, so the model isn't trivially true. *)
+
+free c: channel.
+
+(* The bytes everyone knows *)
+const protoname: bitstring.
+const region: bitstring.
+const empty: bitstring.
+
+(* Diffie-Hellman on P-384 *)
+type G.
+type exponent.
+const g: G [data].
+fun exp(G, exponent): G.
+equation forall x: exponent, y: exponent; exp(exp(g, x), y) = exp(exp(g, y), x).
+fun G2b(G): bitstring [typeConverter].
+
+(* ML-KEM-1024, an ideal KEM *)
+type kemsk.
+type kempk.
+type coins.
+fun kemPub(kemsk): kempk.
+fun kemct(kempk, coins): bitstring.
+fun kemss(kempk, coins): bitstring.
+reduc forall sk: kemsk, r: coins; kemdec(sk, kemct(kemPub(sk), r)) = kemss(kemPub(sk), r).
+fun kempk2b(kempk): bitstring [typeConverter].
+
+(* SHA-384 for MixHash, and HKDF-SHA-384 for MixKey and Split, as one-way functions *)
+type key.
+fun hash0(bitstring): bitstring.
+fun hash(bitstring, bitstring): bitstring.
+fun kdfck(bitstring, bitstring): bitstring.
+fun kdfk(bitstring, bitstring): key.
+fun splitir(bitstring): key.
+fun splitri(bitstring): key.
+
+(* AES-256-GCM, ideal authenticated encryption with associated data *)
+type nonce.
+const n0: nonce.
+const n1: nonce.
+fun aenc(key, nonce, bitstring, bitstring): bitstring.
+reduc forall k: key, n: nonce, ad: bitstring, m: bitstring; adec(k, n, ad, aenc(k, n, ad, m)) = m.
+
+(* The honest player's static keys: private names, so that the queries can say "the honest player" *)
+free cdhHonest: exponent [private].
+free ckemHonest: kemsk [private].
+
+(* The players the relay takes: their static P-384 and ML-KEM public keys *)
+table approved(G, kempk).
+
+(* What the honest player sends under its session key, which must stay secret *)
+free secretI: bitstring [private].
+
+(* The events: the relay's static P-384 key, the player's, the transcript h after A2 (before A3's tag: agreeing on it and the keys is
+   agreeing on h after A3, which is the hash of it and A3's tag, made under the same keys), and the two keys.
+   IKeys: the player made these keys, about to send A3. IDone: the player has finished.
+   RKeys: the relay made these keys for this player, about to send A2. RDone: the relay has taken the session as this player's, on A3. *)
+event IKeys(G, G, bitstring, key, key).
+event IDone(G, G, bitstring, key, key).
+event RKeys(G, G, bitstring, key, key).
+event RDone(G, G, bitstring, key, key).
+
+query attacker(secretI).
+query s: G, p: G, h: bitstring, kir: key, kri: key; inj-event(IDone(s, p, h, kir, kri)) ==> inj-event(RKeys(s, p, h, kir, kri)).
+query s: G, h: bitstring, kir: key, kri: key;
+  inj-event(RDone(s, exp(g, cdhHonest), h, kir, kri)) ==> inj-event(IKeys(s, exp(g, cdhHonest), h, kir, kri)).
+
+(* The game: knows the relay's static keys before it says anything, and holds its own *)
+let Initiator(cdh: exponent, ckem: kemsk, sdhPub: G, skemPub: kempk) =
+  new e: exponent;
+  new ek: kemsk;
+  new r1: coins;
+  let cdhPub = exp(g, cdh) in
+  let h0 = hash0(protoname) in
+  let ck0 = h0 in
+  let h1 = hash(h0, region) in
+  let h2 = hash(h1, G2b(sdhPub)) in
+  let h3 = hash(h2, kempk2b(skemPub)) in
+  (* A1: e *)
+  let epub = exp(g, e) in
+  let h4 = hash(h3, G2b(epub)) in
+  let h5 = hash(h4, kempk2b(kemPub(ek))) in
+  (* es *)
+  let dhes = G2b(exp(sdhPub, e)) in
+  (*LEAKDH out(c, dhes); LEAKDH*)
+  let ck1 = kdfck(ck0, dhes) in
+  (* skem, to the relay's static ML-KEM key *)
+  let ct1 = kemct(skemPub, r1) in
+  let h6 = hash(h5, ct1) in
+  let ss1 = kemss(skemPub, r1) in
+  (*LEAKKEM out(c, ss1); LEAKKEM*)
+  let ck2 = kdfck(ck1, ss1) in
+  let k2 = kdfk(ck1, ss1) in
+  (* s: the game's two static public keys, sealed *)
+  let sct = aenc(k2, n0, h6, (cdhPub, kemPub(ckem))) in
+  let h7 = hash(h6, sct) in
+  (* ss *)
+  let dhss = G2b(exp(sdhPub, cdh)) in
+  (*LEAKDH out(c, dhss); LEAKDH*)
+  let ck3 = kdfck(ck2, dhss) in
+  let k3 = kdfk(ck2, dhss) in
+  let a1tag = aenc(k3, n0, h7, empty) in
+  let h8 = hash(h7, a1tag) in
+  out(c, (epub, kemPub(ek), ct1, sct, a1tag));
+  (* A2: e, ee, se, ekem, skem, and the session id *)
+  in(c, (repub: G, ct2: bitstring, ct3: bitstring, a2: bitstring));
+  let h9 = hash(h8, G2b(repub)) in
+  let dhee = G2b(exp(repub, e)) in
+  (*LEAKDH out(c, dhee); LEAKDH*)
+  let ck4 = kdfck(ck3, dhee) in
+  let dhse = G2b(exp(repub, cdh)) in
+  (*LEAKDH out(c, dhse); LEAKDH*)
+  let ck5 = kdfck(ck4, dhse) in
+  let h10 = hash(h9, ct2) in
+  let ss2 = kemdec(ek, ct2) in
+  (*LEAKKEM out(c, ss2); LEAKKEM*)
+  let ck6 = kdfck(ck5, ss2) in
+  let h11 = hash(h10, ct3) in
+  let ss3 = kemdec(ckem, ct3) in
+  (*LEAKKEM out(c, ss3); LEAKKEM*)
+  let ck7 = kdfck(ck6, ss3) in
+  let k7 = kdfk(ck6, ss3) in
+  let sid = adec(k7, n0, h11, a2) in
+  let h12 = hash(h11, a2) in
+  (* A3, and Split *)
+  let kir = splitir(ck7) in
+  let kri = splitri(ck7) in
+  event IKeys(sdhPub, cdhPub, h12, kir, kri);
+  let a3tag = aenc(k7, n1, h12, empty) in
+  event IDone(sdhPub, cdhPub, h12, kir, kri);
+  out(c, a3tag);
+  (* A sealed control message, holding what must stay secret *)
+  out(c, aenc(kir, n0, empty, secretI)).
+
+(* The relay: holds its static keys, and takes only approved players *)
+let Responder(sdh: exponent, skem: kemsk) =
+  let sdhPub = exp(g, sdh) in
+  let skemPub = kemPub(skem) in
+  in(c, (epub: G, ekPub: kempk, ct1: bitstring, sct: bitstring, a1tag: bitstring));
+  let h0 = hash0(protoname) in
+  let ck0 = h0 in
+  let h1 = hash(h0, region) in
+  let h2 = hash(h1, G2b(sdhPub)) in
+  let h3 = hash(h2, kempk2b(skemPub)) in
+  let h4 = hash(h3, G2b(epub)) in
+  let h5 = hash(h4, kempk2b(ekPub)) in
+  let dhes = G2b(exp(epub, sdh)) in
+  let ck1 = kdfck(ck0, dhes) in
+  let h6 = hash(h5, ct1) in
+  let ss1 = kemdec(skem, ct1) in
+  let ck2 = kdfck(ck1, ss1) in
+  let k2 = kdfk(ck1, ss1) in
+  let (cdhPub: G, ckemPub: kempk) = adec(k2, n0, h6, sct) in
+  let h7 = hash(h6, sct) in
+  (* Approval, right after s opens and before ss: an unapproved player goes no further (refusal 22) *)
+  get approved(=cdhPub, =ckemPub) in
+  let dhss = G2b(exp(cdhPub, sdh)) in
+  let ck3 = kdfck(ck2, dhss) in
+  let k3 = kdfk(ck2, dhss) in
+  let m1 = adec(k3, n0, h7, a1tag) in
+  if m1 = empty then
+  let h8 = hash(h7, a1tag) in
+  (* A2 *)
+  new re: exponent;
+  new r2: coins;
+  new r3: coins;
+  new sid: bitstring;
+  let repub = exp(g, re) in
+  let h9 = hash(h8, G2b(repub)) in
+  let dhee = G2b(exp(epub, re)) in
+  let ck4 = kdfck(ck3, dhee) in
+  let dhse = G2b(exp(cdhPub, re)) in
+  let ck5 = kdfck(ck4, dhse) in
+  let ct2 = kemct(ekPub, r2) in
+  let h10 = hash(h9, ct2) in
+  let ss2 = kemss(ekPub, r2) in
+  let ck6 = kdfck(ck5, ss2) in
+  let ct3 = kemct(ckemPub, r3) in
+  let h11 = hash(h10, ct3) in
+  let ss3 = kemss(ckemPub, r3) in
+  let ck7 = kdfck(ck6, ss3) in
+  let k7 = kdfk(ck6, ss3) in
+  let a2 = aenc(k7, n0, h11, sid) in
+  let h12 = hash(h11, a2) in
+  let kir = splitir(ck7) in
+  let kri = splitri(ck7) in
+  event RKeys(sdhPub, cdhPub, h12, kir, kri);
+  out(c, (repub, ct2, ct3, a2));
+  (* A3: the game's key confirmation, and its proof that it holds its static ML-KEM key. Only now is the player taken. *)
+  in(c, a3tag: bitstring);
+  let m3 = adec(k7, n1, h12, a3tag) in
+  if m3 = empty then
+  event RDone(sdhPub, cdhPub, h12, kir, kri);
+  in(c, sealed: bitstring);
+  let msg = adec(kir, n0, empty, sealed) in
+  0.
+
+process
+  new sdh: exponent;
+  new skem: kemsk;
+  new adh: exponent;
+  new akem: kemsk;
+  insert approved(exp(g, cdhHonest), kemPub(ckemHonest));
+  insert approved(exp(g, adh), kemPub(akem));
+  (* Everyone knows the public keys; the attacker holds the bad tester's private ones *)
+  out(c, (exp(g, sdh), kemPub(skem), exp(g, cdhHonest), kemPub(ckemHonest)));
+  out(c, (adh, akem));
+  (*LEAKDH out(c, (sdh, cdhHonest)); LEAKDH*)
+  (*LEAKKEM out(c, (skem, ckemHonest)); LEAKKEM*)
+  (
+    (! Initiator(cdhHonest, ckemHonest, exp(g, sdh), kemPub(skem)))
+  | (! Responder(sdh, skem))
+  | (phase 1; out(c, (sdh, skem, cdhHonest, ckemHonest)))
+  )

@@ -52,4 +52,11 @@ public final class TokenBucket {
     tokens -= amount;
     return true;
   }
+
+  // Whether it would be full at now, without taking anything: a full bucket is the same as a new one, so forgetting it loses nothing
+  // (PerSender.keepingDrained). A clock that goes back is taken as no time, as in take.
+  public boolean full(long now) {
+    double held = started && now > at ? Math.min(burst, tokens + ((now - at) / 1000.0) * rate) : tokens;
+    return held >= burst;
+  }
 }

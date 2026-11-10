@@ -1,13 +1,18 @@
 package avpx;
 
+import avpx.crypto.MlKem;
+import avpx.crypto.P384;
 import avpx.list.Json;
 import avpx.list.Listings;
 import avpx.relay.Pass;
+import avpx.v2.HandshakeA;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.KeyPair;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.HexFormat;
 import java.util.List;
@@ -33,7 +38,20 @@ import java.util.regex.Pattern;
 //   controlPort    the relay's control port                          1024 to 65535, default 27500
 //   relayPorts     the relay's ports for joiners, "first-last"       1024 to 65535, 1 to 4000 of them, default "27501-27564"
 //   logFile        where the log goes as well as the screen          a path, or "" for the screen only; default ""
+//   protocol       which protocol the relay speaks                   1 (PROTOCOL.md) or 2 (CRYPTO.md); default 1. One only: version 2
+//                                                                    is a new deployment, with no mixing of the two
+//   staticKeys     the relay's static keys, for protocol 2           an object, below; required for protocol 2, refused for 1
+//   accessFolder   the access store's folder (AccessStore.java)      a path, or "" for none; default "". Required for protocol 2,
+//                                                                    which takes approved players only (CRYPTO.md section 6). With
+//                                                                    none, the list answers access requests "closed". The deploy makes
+//                                                                    it, owned by the server's user, 0700
 //   list           the list, if this machine runs it                 an object, below; leave it out on a machine that doesn't
+//
+// The static keys (CRYPTO.md section 4) prove the relay in handshake A; their public halves go in the signed directory.
+// java/tools/MakeRelayKeys.java makes them, all three at once:
+//   p384Private    its P-384 private key's number                    96 hex digits, small letters
+//   p384Public     its P-384 public key (04, then x and y)           194 hex digits; it must be p384Private's own (P384.pair)
+//   mlkemSeed      its ML-KEM-1024 key's seed, FIPS 203's d then z   128 hex digits: the key pair is made from it each start
 //
 // The list:
 //   address        the address the HTTPS list listens on             an IPv4 address, default "0.0.0.0"
@@ -41,14 +59,22 @@ import java.util.regex.Pattern;
 //   certFile       the certificate, with its chain, PEM              a path; required
 //   keyFile        its private key, PEM                              a path; required
 //   relays         every relay the list knows, 1 to 16 of them:      required, and must name this machine's own region
-//                  { region, host (its DNS name, never an address), port (its control port), passKey (that relay's pass key) }.
-//                  This machine's own relay leaves passKey out: it's the passKey above, so the one secret is written once.
+//                  { region, host (its DNS name, never an address), port (its control port), passKey (that relay's pass key),
+//                    p384 and mlkem (a version 2 relay's static PUBLIC keys, 194 and 3,136 hex digits, both or neither) }.
+//                  This machine's own relay leaves passKey out: it's the passKey above, so the one secret is written once. It leaves
+//                  p384 and mlkem out too: with protocol 2 they're the public halves of staticKeys above, and with 1 it has none.
+//                  Another version 2 relay's come from MakeRelayKeys's PUBLIC lines, run on that relay. Each is checked as a key
+//                  before anything starts: the P-384 key a point on the curve, the ML-KEM key FIPS 203's modulus check. GET
+//                  /v1/relay-keys gives a game exactly these (CRYPTO.md section 12.1).
 //
 // The file holds pass keys, so it's readable only by root and the server's own user (deploy/README.md).
 public final class Settings {
-  private static final Set<String> NAMES = Set.of("region", "passKey", "relayAddress", "controlPort", "relayPorts", "logFile", "list");
+  private static final Set<String> NAMES = Set.of("region", "passKey", "relayAddress", "controlPort", "relayPorts", "logFile", "protocol",
+      "staticKeys", "accessFolder", "list");
+  private static final Set<String> STATIC_KEY_NAMES = Set.of("p384Private", "p384Public", "mlkemSeed");
+  private static final Pattern HEX = Pattern.compile("[0-9a-f]*");
   private static final Set<String> LIST_NAMES = Set.of("address", "port", "certFile", "keyFile", "relays");
-  private static final Set<String> RELAY_NAMES = Set.of("region", "host", "port", "passKey");
+  private static final Set<String> RELAY_NAMES = Set.of("region", "host", "port", "passKey", "p384", "mlkem");
 
   private static final String DEFAULT_ADDRESS = "0.0.0.0";
   private static final int DEFAULT_CONTROL_PORT = 27500;
@@ -59,7 +85,10 @@ public final class Settings {
   private static final int MOST_RELAYS = 16;
   private static final int MOST_HOST_LENGTH = 63;
   private static final int MOST_PATH_LENGTH = 260;
-  private static final int MOST_SETTINGS_BYTES = 16 * 1024;
+  // 16 relays, each with every field at its longest and both public keys (15 of them: the list's own takes its keys from staticKeys),
+  // and every other setting at its longest, come to 55,119 bytes written with no spaces. 64 KB leaves room for the spaces and line ends
+  // a person puts in (SettingsTest.java checks both fit).
+  private static final int MOST_SETTINGS_BYTES = 64 * 1024;
   private static final int MOST_NAME_SHOWN = 40;
 
   // The file's own object, the list's object in it, the list of relays in that, and each relay's object
@@ -94,17 +123,38 @@ public final class Settings {
   private final int controlPort;
   private final int[] relayPorts;
   private final String logFile;
+  private final int protocol;
+  private final HandshakeA.RelayKeys staticKeys;
+  private final String accessFolder;
   private final ListSettings list;
 
-  private Settings(String region, byte[] passKey, String relayAddress, int controlPort, int[] relayPorts, String logFile,
-      ListSettings list) {
+  private Settings(String region, byte[] passKey, String relayAddress, int controlPort, int[] relayPorts, String logFile, int protocol,
+      HandshakeA.RelayKeys staticKeys, String accessFolder, ListSettings list) {
     this.region = region;
     this.passKey = passKey;
     this.relayAddress = relayAddress;
     this.controlPort = controlPort;
     this.relayPorts = relayPorts;
     this.logFile = logFile;
+    this.protocol = protocol;
+    this.staticKeys = staticKeys;
+    this.accessFolder = accessFolder;
     this.list = list;
+  }
+
+  // The access store's folder, or "" for none (only with protocol 1)
+  public String accessFolder() {
+    return accessFolder;
+  }
+
+  // 1 or 2
+  public int protocol() {
+    return protocol;
+  }
+
+  // The relay's static keys, for protocol 2; null for protocol 1
+  public HandshakeA.RelayKeys staticKeys() {
+    return staticKeys;
   }
 
   public String region() {
@@ -190,6 +240,76 @@ public final class Settings {
     return HexFormat.of().parseHex(text);
   }
 
+  // A key's bytes, from exactly 2 hex digits (small letters) for each, and never all 0
+  private static byte[] keyBytes(Object value, String name, int bytes) throws Refused {
+    if (!(value instanceof String text) || text.length() != 2 * bytes || !HEX.matcher(text).matches() || ALL_ZERO.matcher(text).matches()) {
+      throw new Refused(name + " must be " + (2 * bytes) + " hex digits, small letters, and not all 0 (java/tools/MakeRelayKeys.java makes it)");
+    }
+
+    return HexFormat.of().parseHex(text);
+  }
+
+  // A version 2 relay's static keys, each held to what it must be before the relay could use it
+  private static HandshakeA.RelayKeys staticKeys(Object value) throws Refused {
+    Map<String, Object> given = value instanceof Map ? Json.object(value) : null;
+
+    if (given == null) {
+      throw new Refused("staticKeys must be an object");
+    }
+
+    onlyKnown(given, STATIC_KEY_NAMES, " in staticKeys");
+    byte[] number = keyBytes(given.get("p384Private"), "staticKeys.p384Private", P384.SECRET_BYTES);
+    byte[] point = keyBytes(given.get("p384Public"), "staticKeys.p384Public", P384.PUBLIC_BYTES);
+    byte[] seed = keyBytes(given.get("mlkemSeed"), "staticKeys.mlkemSeed", MlKem.SEED_BYTES);
+
+    try {
+      KeyPair p384 = P384.pair(number, point);
+
+      if (p384 == null) {
+        throw new Refused("staticKeys.p384Private and staticKeys.p384Public must be the two halves of one P-384 key");
+      }
+
+      KeyPair kem = MlKem.fromSeed(seed);
+
+      if (kem == null) {
+        throw new Refused("staticKeys.mlkemSeed: this Java can't make an ML-KEM-1024 key from a seed as FIPS 203 says");
+      }
+
+      return HandshakeA.RelayKeys.of(p384, kem);
+    } finally {
+      Arrays.fill(number, (byte) 0);
+      Arrays.fill(seed, (byte) 0);
+    }
+  }
+
+  // Another version 2 relay's two static public keys, from its list.relays entry: both or neither (neither is a version 1 relay). Each
+  // must be a key the game could use: P384.decode and MlKem.decode make the same checks handshake A's own reading does.
+  private static byte[][] publicKeys(Map<String, Object> r, String where) throws Refused {
+    boolean hasP384 = r.containsKey("p384");
+    boolean hasKem = r.containsKey("mlkem");
+
+    if (!hasP384 && !hasKem) {
+      return new byte[][] {null, null};
+    }
+
+    if (!hasP384 || !hasKem) {
+      throw new Refused(where + " must give both p384 and mlkem (a version 2 relay), or neither (a version 1 relay)");
+    }
+
+    byte[] p384 = keyBytes(r.get("p384"), where + ".p384", P384.PUBLIC_BYTES);
+    byte[] kem = keyBytes(r.get("mlkem"), where + ".mlkem", MlKem.ENCAPSULATION_KEY_BYTES);
+
+    if (P384.decode(p384) == null) {
+      throw new Refused(where + ".p384 must be a P-384 public key: 04, then x and y, a point on the curve");
+    }
+
+    if (MlKem.decode(kem) == null) {
+      throw new Refused(where + ".mlkem must be an ML-KEM-1024 encapsulation key that passes FIPS 203's check");
+    }
+
+    return new byte[][] {p384, kem};
+  }
+
   private static String address(Object value, String name) throws Refused {
     if (!(value instanceof String text) || !IPV4.matcher(text).matches()) {
       throw new Refused(name + " must be an IPv4 address");
@@ -211,7 +331,8 @@ public final class Settings {
     return text;
   }
 
-  private static ListSettings parseList(Object value, String ownRegion, byte[] ownKey) throws Refused {
+  // ownKeys: this machine's own relay's static keys with protocol 2, or null with protocol 1
+  private static ListSettings parseList(Object value, String ownRegion, byte[] ownKey, HandshakeA.RelayKeys ownKeys) throws Refused {
     Map<String, Object> given = Json.object(value);
 
     if (given == null) {
@@ -245,15 +366,22 @@ public final class Settings {
         throw new Refused(where + " is this machine's own relay, so it leaves passKey out (it's the passKey above)");
       }
 
+      if (own && (r.containsKey("p384") || r.containsKey("mlkem"))) {
+        throw new Refused(where + " is this machine's own relay, so it leaves p384 and mlkem out (with protocol 2 they come from "
+            + "staticKeys above)");
+      }
+
       String itsHost = host(r.get("host"), where + ".host");
       int itsPort = port(r.get("port"), where + ".port", 1);
       byte[] itsKey = own ? ownKey.clone() : passKey(r.get("passKey"), where + ".passKey");
+      byte[][] itsPublic = own ? (ownKeys == null ? new byte[][] {null, null} : new byte[][] {ownKeys.p384Public().clone(),
+          ownKeys.kemPublic().clone()}) : publicKeys(r, where);
 
       if (!regions.add(itsRegion)) {
         throw new Refused("list.relays must name each region once");
       }
 
-      out.add(new Listings.Relay(itsRegion, itsHost, itsPort, itsKey));
+      out.add(new Listings.Relay(itsRegion, itsHost, itsPort, itsKey, itsPublic[0], itsPublic[1]));
     }
 
     if (!regions.contains(ownRegion)) {
@@ -267,7 +395,7 @@ public final class Settings {
   // The settings from a file's bytes, every setting checked, or Refused with the reason
   public static Settings parse(byte[] bytes) throws Refused {
     if (bytes.length > MOST_SETTINGS_BYTES) {
-      throw new Refused("the file must be text, at most 16 KB");
+      throw new Refused("the file must be text, at most 64 KB");
     }
 
     Object value;
@@ -315,8 +443,32 @@ public final class Settings {
     }
 
     String logFile = path(given.get("logFile"), "logFile", false);
-    ListSettings list = given.containsKey("list") ? parseList(given.get("list"), ownRegion, ownKey) : null;
-    return new Settings(ownRegion, ownKey, relayAddress, controlPort, relayPorts, logFile, list);
+    Object protocolGiven = given.getOrDefault("protocol", 1L);
+
+    if (!(protocolGiven instanceof Long p) || (p != 1 && p != 2)) {
+      throw new Refused("protocol must be 1 or 2");
+    }
+
+    int protocol = p.intValue();
+
+    if (protocol == 2 && !given.containsKey("staticKeys")) {
+      throw new Refused("staticKeys are needed for protocol 2: java/tools/MakeRelayKeys.java makes them");
+    }
+
+    if (protocol == 1 && given.containsKey("staticKeys")) {
+      throw new Refused("staticKeys are for protocol 2 only");
+    }
+
+    HandshakeA.RelayKeys keys = protocol == 2 ? staticKeys(given.get("staticKeys")) : null;
+    String accessFolder = path(given.get("accessFolder"), "accessFolder", false);
+
+    // A version 2 relay takes approved players only (CRYPTO.md section 6): with no store to ask, it could take nobody
+    if (protocol == 2 && accessFolder.isEmpty()) {
+      throw new Refused("accessFolder is needed for protocol 2, which takes approved players only: the deploy makes it (deploy/README.md)");
+    }
+
+    ListSettings list = given.containsKey("list") ? parseList(given.get("list"), ownRegion, ownKey, keys) : null;
+    return new Settings(ownRegion, ownKey, relayAddress, controlPort, relayPorts, logFile, protocol, keys, accessFolder, list);
   }
 
   // The settings from a file. At most MOST_SETTINGS_BYTES are read, so a file that's far too big is never read whole.

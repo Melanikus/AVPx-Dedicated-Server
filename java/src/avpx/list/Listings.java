@@ -9,10 +9,12 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
+import java.util.HexFormat;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 // What the list holds: the games hosts have listed, each checked with its relay's pass. Written 2026-11-08 by Melanikus for AVPx Dedicated
 // Server, from list/listings.js.
@@ -34,8 +36,14 @@ public final class Listings {
   static final long STATS_MILLISECONDS = 60000;
   private static final int OWNER_BYTES = 16;
 
-  // A relay the list knows: its region, where games find it, and its pass key, which never leaves the list
-  public record Relay(String region, String host, int port, byte[] passKey) {
+  // A relay the list knows: its region, where games find it, and its pass key, which never leaves the list. A version 2 relay also has
+  // its two static PUBLIC keys (CRYPTO.md section 12.1), already checked (Settings.java), which GET /v1/relay-keys gives a game; a version
+  // 1 relay has null for both.
+  public record Relay(String region, String host, int port, byte[] passKey, byte[] p384, byte[] mlkem) {
+    // A version 1 relay: no static keys
+    public Relay(String region, String host, int port, byte[] passKey) {
+      this(region, host, port, passKey, null, null);
+    }
   }
 
   // A game on the list
@@ -61,6 +69,8 @@ public final class Listings {
     long expired;
     long passesRefused;
     long full;
+    long keysGiven;
+    long keysNotFound;
   }
 
   private final Map<String, Relay> relays = new LinkedHashMap<>();
@@ -72,7 +82,8 @@ public final class Listings {
   // relays: every relay the list knows, already checked (Settings.java). random: where owner keys come from. now: the time.
   public Listings(List<Relay> relays, RandomBytes random, long now) {
     for (Relay r : relays) {
-      this.relays.put(r.region(), new Relay(r.region(), r.host(), r.port(), r.passKey().clone()));
+      this.relays.put(r.region(), new Relay(r.region(), r.host(), r.port(), r.passKey().clone(), r.p384() == null ? null : r.p384().clone(),
+          r.mlkem() == null ? null : r.mlkem().clone()));
     }
 
     this.random = random;
@@ -96,6 +107,25 @@ public final class Listings {
     }
 
     return out;
+  }
+
+  // One version 2 relay's static public keys, as GET /v1/relay-keys gives them: {region, p384, mlkem}, each key in hex, small letters.
+  // Null for a region the list doesn't know, or a version 1 relay, which has none. Only public keys: the pass key never leaves the list.
+  public Map<String, Object> relayKeys(String region) {
+    Relay relay = relays.get(region);
+
+    if (relay == null || relay.p384() == null || relay.mlkem() == null) {
+      counts.keysNotFound++;
+      return null;
+    }
+
+    HexFormat hex = HexFormat.of();
+    Map<String, Object> shown = new LinkedHashMap<>();
+    shown.put("region", relay.region());
+    shown.put("p384", hex.formatHex(relay.p384()));
+    shown.put("mlkem", hex.formatHex(relay.mlkem()));
+    counts.keysGiven++;
+    return shown;
   }
 
   // Whether a pass is good for this region and code, at now: made with that relay's key, and less than a minute old
@@ -164,6 +194,12 @@ public final class Listings {
       throw new Refusal(403, "that is not the owner key of that listing");
     }
 
+    // A listing's host is the same for its whole life: a game that starts again makes a new listing. So a PUT can't change the
+    // fingerprint a joiner is told to check, nor give one to a listing that had none, nor take it away (a change of version would).
+    if (!Objects.equals(listing.fingerprint(), old.shown.fingerprint())) {
+      throw new Refusal(403, "that is not the fingerprint that game was listed with");
+    }
+
     old.shown = listing;
     old.renewedAt = now;
     counts.renewed++;
@@ -190,12 +226,14 @@ public final class Listings {
   record Shown(Listing listing, long listedAt) {
   }
 
-  // The live listings of one network version, the newest first, at most `most`
-  List<Shown> games(int version, long now, int most) {
+  // The live listings of one network version, and if code isn't null only those with that code (one a region at most), the newest
+  // first, at most `most`
+  List<Shown> games(int version, String code, long now, int most) {
     List<Entry> live = new ArrayList<>();
 
     for (Entry entry : byGame.values()) {
-      if (entry.shown.version() == version && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
+      if (entry.shown.version() == version && (code == null || entry.shown.code().equals(code))
+          && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
         live.add(entry);
       }
     }
@@ -243,7 +281,8 @@ public final class Listings {
     Counts c = counts;
     String line = "list: in the last " + Math.round((now - statsAt) / 1000.0) + " s: " + c.listed + " games listed, " + c.renewed
         + " renewals, " + c.ended + " taken down, " + c.expired + " ended unrenewed; " + c.passesRefused + " passes refused, " + c.full
-        + " refused as the list was full. Now " + byGame.size() + " listed";
+        + " refused as the list was full; relay keys given " + c.keysGiven + " times, and " + c.keysNotFound
+        + " times not found. Now " + byGame.size() + " listed";
     statsAt = now;
     counts = new Counts();
     return line;

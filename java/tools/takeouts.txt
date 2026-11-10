@@ -95,7 +95,7 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    if (!perSender.allows(address, now) || !everyone.take(now)) {
+    if (!perSender.allows(from.address(), now) || !everyone.take(now)) {
 <<< to
     if (!everyone.take(now)) {
 >>>
@@ -104,16 +104,16 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    if (!perSender.allows(address, now) || !everyone.take(now)) {
+    if (!perSender.allows(from.address(), now) || !everyone.take(now)) {
 <<< to
-    if (!perSender.allows(address, now)) {
+    if (!perSender.allows(from.address(), now)) {
 >>>
 
 === refusals not limited
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    if (!refusals.allows(address, now)) {
+    if (!refusals.allows(from.address(), now)) {
       return List.of();
     }
 <<< to
@@ -176,9 +176,9 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    return List.of(control(address, port, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(seats(game)), game, now)));
+    return List.of(control(from, withPass(Message.of(Type.HOST_KEPT).secret(game.token).number(seats(game)), game, now)));
 <<< to
-    return List.of(control(address, port, Message.of(Type.HOST_KEPT).secret(game.token).number(seats(game))));
+    return List.of(control(from, Message.of(Type.HOST_KEPT).secret(game.token).number(seats(game))));
 >>>
 
 === a pass made for another region
@@ -203,18 +203,18 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-        return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
+        return List.of(control(from, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
 <<< to
-        return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number() + 1)));
+        return List.of(control(from, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number() + 1)));
 >>>
 
 === an echo answered with an echo, so two relays could answer each other
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-        return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
+        return List.of(control(from, Message.of(Type.ECHO_BACK).secret(m.secret()).number(m.number())));
 <<< to
-        return List.of(control(address, port, Message.of(Type.ECHO).secret(m.secret()).number(m.number())));
+        return List.of(control(from, Message.of(Type.ECHO).secret(m.secret()).number(m.number())));
 >>>
 
 === an ECHO_BACK answered
@@ -231,16 +231,18 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    // The sender's own limit first, so one sender going too fast doesn't use up everyone's
+  private List<Out> onControl(End from, byte[] data, long now) {
+    if (!allowed(from, now)) {
 <<< to
+  private List<Out> onControl(End from, byte[] data, long now) {
     Message early = Protocol.decode(data);
 
     if (early != null && early.type() == Type.ECHO) {
       counts.echoes++;
-      return List.of(control(address, port, Message.of(Type.ECHO_BACK).secret(early.secret()).number(early.number())));
+      return List.of(control(from, Message.of(Type.ECHO_BACK).secret(early.secret()).number(early.number())));
     }
 
-    // The sender's own limit first, so one sender going too fast doesn't use up everyone's
+    if (!allowed(from, now)) {
 >>>
 
 === a relay with no region or pass key
@@ -373,9 +375,7 @@ file: java/src/avpx/relay/TokenBucket.java
 check: tests
 file: java/src/avpx/relay/PerSender.java
 <<< from
-      if (buckets.size() >= most) {
-        buckets.remove(buckets.keySet().iterator().next());
-      }
+        buckets.remove(oldest.getKey());
 <<< to
 >>>
 
@@ -412,7 +412,7 @@ file: java/src/avpx/list/Requests.java
 check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
-    if (value.size() != fields.size() || !value.keySet().containsAll(fields)) {
+    if (value.size() != expected || !value.keySet().containsAll(fields)) {
 <<< to
     if (!value.keySet().containsAll(fields)) {
 >>>
@@ -458,7 +458,7 @@ check: tests
 file: java/src/avpx/list/Requests.java
 <<< from
     if (version < 1) {
-      throw new Refusal(400, "the query must be version=N, N from 1 to 65535");
+      throw new Refusal(400, "the query must be version=N, N from 1 to 65535, and may go on with &code= and 8 code letters");
     }
 <<< to
     if (version < 0) {
@@ -513,9 +513,9 @@ file: java/src/avpx/list/Listings.java
       throw new Refusal(403, "that is not the owner key of that listing");
     }
 
-    old.shown = listing;
+    // A listing's host is the same for its whole life: a game that starts again makes a new listing. So a PUT can't change the
 <<< to
-    old.shown = listing;
+    // A listing's host is the same for its whole life: a game that starts again makes a new listing. So a PUT can't change the
 >>>
 
 === anyone may take a listing down
@@ -544,9 +544,10 @@ file: java/src/avpx/list/Listings.java
 check: tests
 file: java/src/avpx/list/Listings.java
 <<< from
-      if (entry.shown.version() == version && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
+      if (entry.shown.version() == version && (code == null || entry.shown.code().equals(code))
+          && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
 <<< to
-      if (entry.shown.version() == version) {
+      if (entry.shown.version() == version && (code == null || entry.shown.code().equals(code))) {
 >>>
 
 === no cap on listings
@@ -614,9 +615,9 @@ file: java/src/avpx/list/Routes.java
 check: tests
 file: java/src/avpx/list/Routes.java
 <<< from
-        for (Listings.Shown shown : listings.games(version, now, MOST_GAMES)) {
+        for (Listings.Shown shown : listings.games(asked.version(), asked.code(), now, MOST_GAMES)) {
 <<< to
-        for (Listings.Shown shown : listings.games(version, now, Integer.MAX_VALUE)) {
+        for (Listings.Shown shown : listings.games(asked.version(), asked.code(), now, Integer.MAX_VALUE)) {
 >>>
 
 === a GET /v1/games with a body
@@ -1072,7 +1073,7 @@ file: java/src/avpx/list/ListServer.java
 check: live
 file: java/src/avpx/list/ListServer.java
 <<< from
-      long declaredLength = Json.digitsValue(declared, Requests.MOST_BODY_BYTES);
+      long declaredLength = Json.digitsValue(declared, isAccess ? AccessRequests.MOST_BODY_BYTES : Requests.MOST_BODY_BYTES);
 <<< to
       long declaredLength = Json.digitsValue(declared, Long.MAX_VALUE);
 >>>
@@ -1091,6 +1092,340 @@ file: java/src/avpx/list/Certificates.java
 <<< from
       checkPair(key, chain.get(0));
 <<< to
+>>>
+
+# ----- Version 2's rows (CRYPTO.md): java/src/avpx/crypto/ and java/src/avpx/v2/
+
+# Java 25 takes an ML-KEM key that fails FIPS 203's check, and refuses it only when it's used, by throwing: so MlKem.decode checks it
+=== an ML-KEM key with a number past q taken (FIPS 203 section 7.2's check)
+check: tests
+file: java/src/avpx/crypto/MlKem.java
+<<< from
+    if (raw == null || raw.length != ENCAPSULATION_KEY_BYTES || !inRange(raw)) {
+<<< to
+    if (raw == null || raw.length != ENCAPSULATION_KEY_BYTES) {
+>>>
+
+# Java 25 takes a point that isn't on the curve, and refuses it only in the ECDH, by throwing: so P384.decode checks it
+=== a P-384 point taken without checking it's on the curve
+check: tests
+file: java/src/avpx/crypto/P384.java
+<<< from
+    if (!onCurve(x, y)) {
+<<< to
+    if (false) {
+>>>
+
+=== the region left out of handshake A's start
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+    noise.mixHash(Arrays.copyOf(name, name.length + 1));
+<<< to
+    noise.mixHash(new byte[1]);
+>>>
+
+=== A3, the game's key confirmation, not checked
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+        if (a3 == null || a3.length != A3_BYTES || noise.decryptAndHash(a3) == null) {
+<<< to
+        if (a3 == null || a3.length != A3_BYTES) {
+>>>
+
+=== the chaining key not wiped when a handshake ends
+check: tests
+file: java/src/avpx/v2/Noise.java
+<<< from
+  void wipe() {
+    wipe(ck);
+<<< to
+  void wipe() {
+>>>
+
+=== a fragment's bytes after its part not held to 0
+check: tests
+file: java/src/avpx/v2/Fragments.java
+<<< from
+      if (d[i] != 0) {
+<<< to
+      if (false) {
+>>>
+
+=== the replay window that forgets what it took
+check: tests
+file: java/src/avpx/v2/ReplayWindow.java
+<<< from
+    return behind < WINDOW && !bit(counter);
+<<< to
+    return behind < WINDOW;
+>>>
+
+=== a sealed message's counter never marked taken
+check: tests
+file: java/src/avpx/v2/Channel.java
+<<< from
+    window.take(counter);
+<<< to
+>>>
+
+=== the keys that never change: one epoch for a whole session
+check: tests
+file: java/src/avpx/v2/Channel.java
+<<< from
+      long e = counter >>> EPOCH_SHIFT;
+<<< to
+      long e = 0;
+>>>
+
+=== one failed tag more than the limit before a session ends
+check: tests
+file: java/src/avpx/v2/Channel.java
+<<< from
+      if (++failedTags >= FAILED_TAGS) {
+<<< to
+      if (++failedTags > FAILED_TAGS) {
+>>>
+
+# Java 25 takes a long-form ML-KEM decapsulation key whose hash isn't its own key's, and refuses it only when it's used, by throwing
+=== an ML-KEM decapsulation key taken whose hash isn't its key's (FIPS 203 section 7.3's check)
+check: tests
+file: java/src/avpx/crypto/MlKem.java
+<<< from
+      if (!MessageDigest.isEqual(hash, Arrays.copyOfRange(dk, DK_HASH_AT, DK_HASH_AT + HASH_BYTES))) {
+<<< to
+      if (false) {
+>>>
+
+# The version 2 relay: java/src/avpx/v2/SealedRelay.java, and RelayCore.java's version 2 paths
+=== A1 kept and read with its cookie unchecked
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (!cookieIsGood(f.cookie(), address, port, f.id(), now)) {
+<<< to
+    if (false) {
+>>>
+
+=== the same A1 again gets no A2, where it must get the same one
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (seen.address.equals(address) && seen.port == port && MessageDigest.isEqual(seen.a1Hash, a1Hash)) {
+<<< to
+      if (false) {
+>>>
+
+=== any A3 taken as the game's key confirmation
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (!MessageDigest.isEqual(f.part(), answer.expected.a3())) {
+<<< to
+    if (false) {
+>>>
+
+=== an A3 taken from another address and port than A1's
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (!answer.address.equals(address) || answer.port != port) {
+      return refused(18);
+    }
+<<< to
+>>>
+
+=== no limit on A1s being put together from one address
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (assembling.size() >= limits.mostAssemblies || assemblingPerAddress.getOrDefault(address, 0) >= limits.mostAssembliesPerAddress) {
+<<< to
+      if (assembling.size() >= limits.mostAssemblies) {
+>>>
+
+=== no limit on handshakes started from one address and port
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (!starts.allows(address + "|" + port, now) || !everyoneStarts.take(now)) {
+<<< to
+    if (!everyoneStarts.take(now)) {
+>>>
+
+=== anything passed on through a joiner's port, not only sealed game traffic
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      return data.length >= GAME_OVERHEAD && startsWith(data, GAME_MAGIC) ? core.forward(localPort, address, port, data, now) : refused(19);
+<<< to
+      return core.forward(localPort, address, port, data, now);
+>>>
+
+=== quiet sessions never end
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      boolean idle = !held.contains(s) && now - s.heardAt >= limits.sessionIdleMilliseconds;
+<<< to
+      boolean idle = false;
+>>>
+
+=== a session a game holds ends when it's quiet
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      boolean idle = !held.contains(s) && now - s.heardAt >= limits.sessionIdleMilliseconds;
+<<< to
+      boolean idle = now - s.heardAt >= limits.sessionIdleMilliseconds;
+>>>
+
+=== a version 2 core takes bare messages
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      if (sealed) {
+        counts.notAMessage++;
+        return List.of();
+      }
+
+      if (data == null || data.length > limits.mostDatagramBytes) {
+<<< to
+      if (data == null || data.length > limits.mostDatagramBytes) {
+>>>
+
+=== a version 1 core takes opened messages
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      boolean shaped = sealed && session != null && message != null && message.length == Protocol.MESSAGE_BYTES;
+<<< to
+      boolean shaped = session != null && message != null && message.length == Protocol.MESSAGE_BYTES;
+>>>
+
+=== a sealed ECHO answered
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+        if (sealed) {
+          counts.notAMessage++;
+          return List.of();
+        }
+
+<<< to
+>>>
+
+=== a cookie round inside the sealed channel
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+    if (sealed || cookieIsGood(m.secret(), from.address(), from.port(), now)) {
+<<< to
+    if (cookieIsGood(m.secret(), from.address(), from.port(), now)) {
+>>>
+
+=== a lost A3's stand-in, the game's first sealed message, taken from another address and port
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (!answer.address.equals(address) || answer.port != port) {
+        return refused(18);
+      }
+<<< to
+>>>
+
+# A version 2 relay's settings: its static keys
+=== a P-384 number taken with any point, not only its own
+check: tests
+file: java/src/avpx/crypto/P384.java
+<<< from
+      return pair ? new KeyPair(theirs, mine) : null;
+<<< to
+      return new KeyPair(theirs, mine);
+>>>
+
+=== a P-384 number of 0, or past the curve's order, taken
+check: tests
+file: java/src/avpx/crypto/P384.java
+<<< from
+    if (s.signum() == 0 || s.compareTo(CURVE.getOrder()) >= 0) {
+<<< to
+    if (false) {
+>>>
+
+=== protocol 2 with no static keys, without saying so
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (protocol == 2 && !given.containsKey("staticKeys")) {
+<<< to
+    if (false) {
+>>>
+
+=== static keys taken, and kept unused, with protocol 1
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (protocol == 1 && given.containsKey("staticKeys")) {
+<<< to
+    if (false) {
+>>>
+
+# CRYPTO.md section 17 (ed51759): handshakes waiting for A3 count toward an address's most sessions
+=== a handshake waiting for A3 not counted toward its address's sessions
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    heldPerAddress.merge(address, 1, Integer::sum);
+<<< to
+>>>
+
+=== a handshake given up on still counted toward its address
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      letGo(answer.address);
+<<< to
+>>>
+
+=== no most sessions for one address
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (sessions.size() + waiting.size() >= limits.mostSessions || heldPerAddress.getOrDefault(address, 0) >= limits.mostSessionsPerAddress) {
+<<< to
+    if (sessions.size() + waiting.size() >= limits.mostSessions) {
+>>>
+
+# CRYPTO.md bd0e45d: handshake B's datagrams (AVPE) pass through a joiner's port, end to end
+=== handshake B's datagrams refused on a joiner's port
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (data.length == Fragments.DATAGRAM_BYTES && startsWith(data, END_TO_END)) {
+<<< to
+      if (false) {
+>>>
+
+# Keys of no bytes, and parameter sets by name (the CodeQL and Snyk fixes of 2026-11-09)
+=== an HMAC keyed with no bytes, not refused by our own words
+check: tests
+file: java/src/avpx/crypto/Hkdf.java
+<<< from
+    if (key.length == 0) {
+      throw new IllegalArgumentException(NO_KEY);
+    }
+<<< to
+>>>
+
+=== ML-KEM by the family's name, so a key of any ML-KEM size is taken
+check: tests
+file: java/src/avpx/crypto/MlKem.java
+<<< from
+  private static final String KEM_NAME = NamedParameterSpec.ML_KEM_1024.getName();
+<<< to
+  private static final String KEM_NAME = "ML-KEM";
 >>>
 
 # ----- The independent review's V1 fixes (2026-11-09, AvP-docs/engine/review-server-Reviewer.md): V1-1, a JOIN that never says hello
@@ -1136,10 +1471,10 @@ file: java/src/avpx/relay/RelayCore.java
 check: tests
 file: java/src/avpx/relay/RelayCore.java
 <<< from
-    return List.of(control(address, port, Message.of(Type.JOIN_PORT).secret(slot.ticket).code(game.code).port(relayPort)));
+    return List.of(control(from, Message.of(Type.JOIN_PORT).secret(slot.ticket).code(game.code).port(relayPort)));
 <<< to
-    return List.of(control(address, port, Message.of(Type.JOIN_PORT).secret(slot.ticket).code(game.code).port(relayPort)),
-        control(game.host.address(), game.host.port(), Message.of(Type.NEW_JOINER).secret(game.token).port(relayPort)));
+    return List.of(control(from, Message.of(Type.JOIN_PORT).secret(slot.ticket).code(game.code).port(relayPort)),
+        control(game.host, Message.of(Type.NEW_JOINER).secret(game.token).port(relayPort)));
 >>>
 
 === the same JOIN again given a second port
@@ -1246,7 +1581,8 @@ file: java/src/avpx/list/ListServer.java
 check: live
 file: java/src/avpx/list/ListServer.java
 <<< from
-      allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at)) && everyone.take(at);
+      allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at))
+          && (!isAccess || accessLimits.allowsTry(from, at)) && everyone.take(at);
 <<< to
       allowed = true;
 >>>
@@ -1273,4 +1609,799 @@ file: java/src/avpx/relay/RelaySockets.java
           closeQuietly(channel);
           continue;
         }
+>>>
+
+# ----- Version 2's ML-DSA has the empty context only (the Reviewer's V2-2; CRYPTO.md 5.1 point 16 and section 12)
+
+# ----- The list's fingerprint and &code= (version-2 games; Requests.java, Listings.java, Routes.java)
+
+=== a version-2 game is listed without its fingerprint
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    } else if (speaksHandshakeB) {
+      throw new Refusal(400, "a game of network version " + FIRST_V2_VERSION + " or newer must give its fingerprint");
+    }
+<<< to
+    }
+>>>
+
+=== an older game may give a fingerprint
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+      if (!speaksHandshakeB) {
+        throw new Refusal(400, "fingerprint is only for a game of network version " + FIRST_V2_VERSION + " or newer");
+      }
+<<< to
+>>>
+
+=== a fingerprint of any shape
+check: tests
+file: java/src/avpx/list/Requests.java
+<<< from
+    if (!(value instanceof String text) || !HEX_16_BYTES.matcher(text).matches()) {
+      throw new Refusal(400, "fingerprint must be 32 hex digits, small letters");
+    }
+
+    return text;
+<<< to
+    return String.valueOf(value);
+>>>
+
+=== a PUT may change the fingerprint
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (!Objects.equals(listing.fingerprint(), old.shown.fingerprint())) {
+      throw new Refusal(403, "that is not the fingerprint that game was listed with");
+    }
+<<< to
+>>>
+
+=== &code= gives every code's games
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+      if (entry.shown.version() == version && (code == null || entry.shown.code().equals(code))
+          && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
+<<< to
+      if (entry.shown.version() == version && now - entry.renewedAt < LISTING_LIFE_MILLISECONDS) {
+>>>
+
+=== a version-2 game's row leaves its fingerprint out
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+          if (g.fingerprint() != null) {
+            game.put("fingerprint", g.fingerprint());
+          }
+<<< to
+>>>
+
+# ----- GET /v1/relay-keys, a version 2 relay's public keys from the list (CRYPTO.md section 12.1), added 2026-11-09
+
+=== relay-keys takes any region text
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+        if (!Pass.isRegion(region)) {
+<<< to
+        if (region.isEmpty()) {
+>>>
+
+=== relay-keys takes a query with more after the region
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+<<< to
+        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()).split("&")[0] : "";
+>>>
+
+=== relay-keys takes a body
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+        Requests.checkNoBody(body);
+        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+<<< to
+        String region = query.startsWith(REGION_QUERY) ? query.substring(REGION_QUERY.length()) : "";
+>>>
+
+=== relay-keys answers any method
+check: tests
+file: java/src/avpx/list/Routes.java
+<<< from
+      if (path.equals("/v1/relay-keys")) {
+        if (!method.equals("GET")) {
+          return error(405, "no such call on this path");
+        }
+<<< to
+      if (path.equals("/v1/relay-keys")) {
+>>>
+
+=== relay-keys reads a version 1 relay's keys, which it hasn't
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    if (relay == null || relay.p384() == null || relay.mlkem() == null) {
+<<< to
+    if (relay == null) {
+>>>
+
+=== relay-keys gives the pass key for the P-384 key
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    shown.put("p384", hex.formatHex(relay.p384()));
+<<< to
+    shown.put("p384", hex.formatHex(relay.passKey()));
+>>>
+
+=== relay keys given aren't counted
+check: tests
+file: java/src/avpx/list/Listings.java
+<<< from
+    counts.keysGiven++;
+<<< to
+>>>
+
+=== relay-keys isn't held to the GETs' rate
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+        && (head.path().equals("/v1/games") || head.path().equals("/v1/relays") || head.path().equals("/v1/relay-keys"));
+<<< to
+        && (head.path().equals("/v1/games") || head.path().equals("/v1/relays"));
+>>>
+
+=== the list's own relay may write its public keys again
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+      if (own && (r.containsKey("p384") || r.containsKey("mlkem"))) {
+        throw new Refused(where + " is this machine's own relay, so it leaves p384 and mlkem out (with protocol 2 they come from "
+            + "staticKeys above)");
+      }
+<<< to
+>>>
+
+=== the list's own relay has no keys on protocol 2
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+      byte[][] itsPublic = own ? (ownKeys == null ? new byte[][] {null, null} : new byte[][] {ownKeys.p384Public().clone(),
+          ownKeys.kemPublic().clone()}) : publicKeys(r, where);
+<<< to
+      byte[][] itsPublic = own ? new byte[][] {null, null} : publicKeys(r, where);
+>>>
+
+=== a relay's P-384 key isn't checked as a point on the curve
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (P384.decode(p384) == null) {
+      throw new Refused(where + ".p384 must be a P-384 public key: 04, then x and y, a point on the curve");
+    }
+<<< to
+>>>
+
+=== a relay's ML-KEM key isn't held to FIPS 203's check
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (MlKem.decode(kem) == null) {
+      throw new Refused(where + ".mlkem must be an ML-KEM-1024 encapsulation key that passes FIPS 203's check");
+    }
+<<< to
+>>>
+
+=== one relay key without the other isn't said plainly
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+    if (!hasP384 || !hasKem) {
+      throw new Refused(where + " must give both p384 and mlkem (a version 2 relay), or neither (a version 1 relay)");
+    }
+<<< to
+>>>
+
+=== the settings file's size limit too small for 16 version 2 relays
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+  private static final int MOST_SETTINGS_BYTES = 64 * 1024;
+<<< to
+  private static final int MOST_SETTINGS_BYTES = 48 * 1024;
+>>>
+
+=== the settings file's size limit too big
+check: tests
+file: java/src/avpx/Settings.java
+<<< from
+  private static final int MOST_SETTINGS_BYTES = 64 * 1024;
+<<< to
+  private static final int MOST_SETTINGS_BYTES = 1024 * 1024;
+>>>
+
+=== a relay's id without its words
+check: tests
+file: java/src/avpx/v2/RelayId.java
+<<< from
+      sha.update(WORDS);
+<<< to
+>>>
+
+=== a relay's id from keys of any size
+check: tests
+file: java/src/avpx/v2/RelayId.java
+<<< from
+    if (p384Public == null || p384Public.length != P384.PUBLIC_BYTES || kemPublic == null
+        || kemPublic.length != MlKem.ENCAPSULATION_KEY_BYTES) {
+      throw new IllegalArgumentException("RelayId: the keys are 97 and 1,568 bytes");
+    }
+<<< to
+>>>
+
+# ----- Handshake A as pqIK, approved players only, and the access store (CRYPTO.md section 6, server #24), added 2026-11-09
+
+=== A1's s isn't checked as two keys (refusal 23)
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      if (playerStatic == null || playerStaticKem == null) {
+        return Read.refused(REFUSED_NOT_KEYS);
+      }
+<<< to
+>>>
+
+=== any player is taken: approval isn't asked (refusal 22)
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      if (!approved.test(player)) {
+        return Read.refused(REFUSED_NOT_APPROVED);
+      }
+<<< to
+>>>
+
+=== the relay leaves ss out of A1's chain
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      mix(noise, P384.agree(relay.p384().getPrivate(), playerStatic));
+<<< to
+>>>
+
+=== the relay leaves se out of A2's chain
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      mix(noise, P384.agree(ephemeral.getPrivate(), playerStatic));
+<<< to
+>>>
+
+=== A2's skem goes to the game's ephemeral ML-KEM key, not the player's static one
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      MlKem.Encapsulated toPlayer = MlKem.encapsulate(playerStaticKem, random);
+<<< to
+      MlKem.Encapsulated toPlayer = MlKem.encapsulate(gameEphemeralKem, random);
+>>>
+
+=== the game opens A2's skem with its ephemeral ML-KEM key
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+        byte[] staticSecret = MlKem.decapsulate(player.kem().getPrivate(), toStatic);
+<<< to
+        byte[] staticSecret = MlKem.decapsulate(ephemeralKem.getPrivate(), toStatic);
+>>>
+
+=== a handshake datagram may be one of 4 fragments only
+check: tests
+file: java/src/avpx/v2/Fragments.java
+<<< from
+  public static final int MOST_FRAGMENTS = 5;
+<<< to
+  public static final int MOST_FRAGMENTS = 4;
+>>>
+
+=== a revoke ends no session
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (s.player.equals(player)) {
+        core.endSession(s);
+        end(s);
+        ended++;
+      }
+<<< to
+>>>
+
+=== the relay never takes the revokes the approvals give back
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    for (String player : approvals.takeRevoked()) {
+      revoke(player);
+    }
+<<< to
+>>>
+
+=== a revoked host's game goes on
+check: tests
+file: java/src/avpx/relay/RelayCore.java
+<<< from
+      if (game.host != null && game.host.session() == session) {
+        closeGame(game);
+        counts.closed++;
+      }
+<<< to
+>>>
+
+=== a decision may move any state to any other
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      boolean allowed = e != null && ((e.state() == State.WAITING && (to == State.APPROVED || to == State.REFUSED))
+          || (e.state() == State.APPROVED && to == State.REVOKED));
+<<< to
+      boolean allowed = e != null;
+>>>
+
+=== a decisions line may be written loosely
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+  private static final Pattern DECISION_LINE = Pattern.compile("([0-9a-f]{32}) (approved|refused|revoked|forgotten)");
+<<< to
+  private static final Pattern DECISION_LINE = Pattern.compile("([0-9a-fA-F]{32}) +(approved|refused|revoked|forgotten|waiting)\r?");
+>>>
+
+=== a link is looked at as what it points to
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    return posix() ? Files.readAttributes(path, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS)
+        : Files.readAttributes(path, BasicFileAttributes.class, LinkOption.NOFOLLOW_LINKS);
+<<< to
+    return posix() ? Files.readAttributes(path, PosixFileAttributes.class) : Files.readAttributes(path, BasicFileAttributes.class);
+>>>
+
+=== a waiting request is never forgotten
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (e.state() == State.WAITING && (now - e.firstSeen() >= WAITING_LIFE_MILLISECONDS)) {
+<<< to
+      if (e.state() == State.WAITING && false) {
+>>>
+
+=== no cap on the requests waiting
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    if (waiting() >= MOST_WAITING || entries.size() >= MOST_RECORDS) {
+<<< to
+    if (entries.size() >= MOST_RECORDS) {
+>>>
+
+=== the store's own file isn't held to what the server writes
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (!isFingerprint(fp) || !isId(id) || !id.startsWith(fp) || !isName(name) || state == null || firstSeen < 0) {
+<<< to
+      if (state == null) {
+>>>
+
+=== a name may hold " or \
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (c < 32 || c > 126 || c == '"' || c == '\\') {
+<<< to
+      if (c < 32 || c > 126) {
+>>>
+
+=== a revoke isn't given back to the relay
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+          if (line[1].equals("revoked")) {
+            revoked.add(next.get(line[0]).id());
+          }
+<<< to
+>>>
+
+=== an access request's key isn't held to being two keys
+check: tests
+file: java/src/avpx/list/AccessRequests.java
+<<< from
+    if (P384.decode(p384) == null || MlKem.decode(kem) == null) {
+<<< to
+    if (false) {
+>>>
+
+=== an access request's key is decoded before its letters are checked
+check: tests
+file: java/src/avpx/list/AccessRequests.java
+<<< from
+    byte[] statics = KEY.matcher(key).matches() ? Base64.getDecoder().decode(key) : null;
+<<< to
+    byte[] statics = Base64.getDecoder().decode(key);
+>>>
+
+=== an access request's name isn't checked
+check: tests
+file: java/src/avpx/list/AccessRequests.java
+<<< from
+    if (!AccessStore.isName(name)) {
+      return answer(400, "error", "name");
+    }
+<<< to
+>>>
+
+=== the access call isn't held to one a minute from an address
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+          && (!isAccess || accessLimits.allowsTry(from, at)) && everyone.take(at);
+<<< to
+          && everyone.take(at);
+>>>
+
+=== the access call's body is held to 1 KB, too small for a player's keys
+check: live
+file: java/src/avpx/list/ListServer.java
+<<< from
+      long declaredLength = Json.digitsValue(declared, isAccess ? AccessRequests.MOST_BODY_BYTES : Requests.MOST_BODY_BYTES);
+<<< to
+      long declaredLength = Json.digitsValue(declared, Requests.MOST_BODY_BYTES);
+>>>
+
+# ----- Approval by the whole id, owners and modes, the unit's state folder, and the access code (CRYPTO.md sections 6 and 8), 2026-11-09
+
+=== the relay asks about the 16-byte fingerprint, not the whole id
+check: tests
+file: java/src/avpx/v2/HandshakeA.java
+<<< from
+      String player = Identity.idHex(playerP384, playerKemBytes);
+<<< to
+      String player = Identity.fingerprintHex(playerP384, playerKemBytes);
+>>>
+
+=== the store approves by the fingerprint part alone
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    return e != null && e.id().equals(id) && e.state() == State.APPROVED;
+<<< to
+    return e != null && e.state() == State.APPROVED;
+>>>
+
+=== a request with another player's fingerprint is taken as theirs
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+        if (!known.id().equals(id)) {
+          counts.notTheirs++;
+          return Reply.NOT_THEIRS;
+        }
+<<< to
+>>>
+
+=== a decisions file anyone could have written is read
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      return p.owner().getName().equals(user) && others.isEmpty();
+<<< to
+      return p.owner().getName().equals(user);
+>>>
+
+=== an access folder others can open is taken
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    if (user != null && a instanceof PosixFileAttributes p && (!p.owner().getName().equals(user) || !p.permissions().equals(FOLDER_MODE))) {
+<<< to
+    if (user != null && a instanceof PosixFileAttributes p && !p.owner().getName().equals(user)) {
+>>>
+
+=== a store file others can read is taken
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      bytes = readTrusted(file, user, MOST_STORE_BYTES).bytes();
+<<< to
+      bytes = Files.readAllBytes(file);
+>>>
+
+=== a relay's id is cut to 16 bytes
+check: tests
+file: java/src/avpx/v2/RelayId.java
+<<< from
+      return HexFormat.of().formatHex(sha.digest());
+<<< to
+      return HexFormat.of().formatHex(sha.digest()).substring(0, 32);
+>>>
+
+=== the unit gives the server no state folder to write the store in
+check: tests
+file: deploy/avpx-java.service
+<<< from
+StateDirectory=avpx
+<<< to
+# StateDirectory=avpx
+>>>
+
+=== the access code reads each byte's bits the wrong way round
+check: tests
+file: java/src/avpx/access/AccessCode.java
+<<< from
+        value = (value << 1) | ((b[k / 8] >> (7 - k % 8)) & 1);
+<<< to
+        value = (value << 1) | ((b[k / 8] >> (k % 8)) & 1);
+>>>
+
+# ----- Secondary's review of the access store (AvP-docs, 2026-11-09): each fix, taken out again. The review's numbers are in the names.
+# Not here, because no test can make them happen on time: a file swapped between the two looks (2.1), the revoke handed over before
+# the records say no, and the list's two calls into AccessLimits and the store (ListServer: 1.2's lock, and allowsNew), which only a
+# live test with a store could reach, at one request a minute.
+
+=== 1.1: a forgotten record is kept
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+        next.remove(line[0]);
+<<< to
+>>>
+
+=== 1.1: an approved or revoked record may be forgotten
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+        if (e == null || (e.state() != State.WAITING && e.state() != State.REFUSED)) {
+<<< to
+        if (e == null) {
+>>>
+
+=== 1.1: the store never asks the list's limit on new requests
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (!newAllowed.getAsBoolean()) {
+        counts.overNewLimits++;
+        return Reply.BUSY;
+      }
+<<< to
+>>>
+
+=== 1.1: a new request isn't held to a day from one address
+check: tests
+file: java/src/avpx/list/AccessLimits.java
+<<< from
+    return newPerDay.allows(senderOf(from), now) && newPerNetwork.allows(networkOf(from), now);
+<<< to
+    return newPerNetwork.allows(networkOf(from), now);
+>>>
+
+=== 1.1: a new request isn't held to a day from one network
+check: tests
+file: java/src/avpx/list/AccessLimits.java
+<<< from
+    return newPerDay.allows(senderOf(from), now) && newPerNetwork.allows(networkOf(from), now);
+<<< to
+    return newPerDay.allows(senderOf(from), now);
+>>>
+
+=== 1.1: a network is the whole address
+check: tests
+file: java/src/avpx/list/AccessLimits.java
+<<< from
+    int keep = v4 ? IPV4_NETWORK_BYTES : IPV6_NETWORK_BYTES;
+<<< to
+    int keep = bytes.length;
+>>>
+
+=== 1.1: a crowd of senders starts each one afresh
+check: tests
+file: java/src/avpx/relay/PerSender.java
+<<< from
+        if (keepDrained && !oldest.getValue().full(now)) {
+          return false;
+        }
+<<< to
+>>>
+
+=== 1.1: a bucket is full while it still lacks tokens
+check: tests
+file: java/src/avpx/relay/TokenBucket.java
+<<< from
+    return held >= burst;
+<<< to
+    return true;
+>>>
+
+=== 1.2: the relay's approved waits on the store's lock for writing
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    Entry e = entries.get(id.substring(0, FINGERPRINT_DIGITS));
+    return e != null && e.id().equals(id) && e.state() == State.APPROVED;
+<<< to
+    synchronized (writing) {
+      Entry e = entries.get(id.substring(0, FINGERPRINT_DIGITS));
+      return e != null && e.id().equals(id) && e.state() == State.APPROVED;
+    }
+>>>
+
+=== 2.1: a turn that hangs is never seen
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    return inTurn && nowNanos - startedAt > TimeUnit.MILLISECONDS.toNanos(STUCK_MILLISECONDS);
+<<< to
+    return false;
+>>>
+
+=== 2.1: a store that stopped still approves
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    if (stopped || !isId(id)) {
+<<< to
+    if (!isId(id)) {
+>>>
+
+=== 2.1: a store that stopped still answers requests
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (stopped) {
+        return Reply.CLOSED;
+      }
+<<< to
+>>>
+
+=== 2.1: the server isn't told when the store stops
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      whenFailed.run();
+<<< to
+>>>
+
+=== 2.2: a decisions file's end line may count any number
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+    if (!end.matches() || !end.group(1).equals(Integer.toString(lines.length - 1))) {
+<<< to
+    if (!end.matches()) {
+>>>
+
+=== 2.3: what isn't a plain file is counted among the 100 a turn
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (a.isRegularFile()) {
+        files.add(p);
+<<< to
+      if (true) {
+        files.add(p);
+>>>
+
+=== 2.3: what can't be deleted is refused again every turn
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      if (what.equals(leftAlone.get(p.getFileName().toString()))) {
+        continue;
+      }
+<<< to
+>>>
+
+=== 2.5: the waiting run out before the decisions are taken
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      String problem = folderProblem(folder, user);
+<<< to
+      expire(now);
+      String problem = folderProblem(folder, user);
+>>>
+
+=== 3.1: the folder isn't checked at each turn
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      String problem = folderProblem(folder, user);
+
+      if (problem == null) {
+        problem = takeDecisions();
+      }
+<<< to
+      String problem = takeDecisions();
+>>>
+
+=== 3.2: the server's own user is Java's user.name
+check: tests
+file: java/src/avpx/access/AccessStore.java
+<<< from
+      return Files.readAttributes(probe, PosixFileAttributes.class, LinkOption.NOFOLLOW_LINKS).owner().getName();
+<<< to
+      return System.getProperty("user.name");
+>>>
+
+=== 4.1: a revoke keeps the A2s kept for that player's A1s
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    answered.values().removeIf(answer -> answer.player.equals(player));
+<<< to
+>>>
+
+# ----- Secondary's read of the server's v2 crypto (AvP-docs, 2026-11-09), and CRYPTO.md 5.1 point 3's new Split (Third's a7a369f).
+# Not here, because no test can see inside Java's heap: 6.1 (HKDF's output in one array, its blocks wiped) and 6.2 (the plaintexts
+# wiped). Signatures.java went (7.2), and its two rows with it; they come back with the signed relays directory.
+
+=== 2.1: epoch 0 seals with Split's secret itself
+check: tests
+file: java/src/avpx/v2/Channel.java
+<<< from
+    return Hkdf.expand(secret, epochInfo(epoch), Noise.KEY_BYTES);
+<<< to
+    return epoch == 0 ? Arrays.copyOf(secret, Noise.KEY_BYTES) : Hkdf.expand(secret, epochInfo(epoch), Noise.KEY_BYTES);
+>>>
+
+=== 2.1: Split's secrets are 32 bytes, short of the hash's length
+check: tests
+file: java/src/avpx/v2/Noise.java
+<<< from
+  static final int SECRET_BYTES = HASH_BYTES;
+<<< to
+  static final int SECRET_BYTES = KEY_BYTES;
+>>>
+
+=== 7.1: an answer with no session goes out as it is
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+      if (!(o.session() instanceof Session to)) {
+        Noise.wipe(o.data());
+        counts.unsealed++;
+        continue;
+      }
+<<< to
+      if (!(o.session() instanceof Session to)) {
+        sealed.add(o);
+        continue;
+      }
+>>>
+
+=== 7.3: with A3 lost, a first sealed message may fail for ever
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+        if (++answer.badA3 >= MOST_BAD_A3) {
+          giveUp(answer);
+        }
+
+        return refusedFor(why);
+<<< to
+        return refusedFor(why);
+>>>
+
+=== N-1: an IPv6 sender is its whole address, not its /64
+check: tests
+file: java/src/avpx/list/AccessLimits.java
+<<< from
+    return from instanceof Inet4Address ? from.getHostAddress() : "v6 " + HexFormat.of().formatHex(from.getAddress(), 0, IPV6_SENDER_BYTES);
+<<< to
+    return from.getHostAddress();
 >>>

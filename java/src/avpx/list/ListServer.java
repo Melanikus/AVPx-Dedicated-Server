@@ -2,6 +2,7 @@ package avpx.list;
 
 import avpx.Fatal;
 import avpx.Settings;
+import avpx.access.AccessStore;
 import avpx.relay.AddressHasher;
 import avpx.relay.PerSender;
 import avpx.relay.RandomBytes;
@@ -12,6 +13,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
@@ -46,8 +48,9 @@ import javax.net.ssl.SSLSocket;
 //   4. Its head (Http.java) must have come within HEADERS_MILLISECONDS of the connection's start, the TLS handshake included, and its
 //      body, and the answer going out, within BODY_MILLISECONDS after that. A timer closes the connection at each deadline, whatever it's
 //      doing, so a sender who trickles a byte at a time is cut off.
-//   5. The request is held to the per-address limits (5 a second, 20 at once; the two GETs 1 a second, 5 at once) and everyone's (500 a
-//      second, 1,000 at once), and then Routes.java answers it, under the one lock that keeps the listings to one thread at a time.
+//   5. The request is held to the per-address limits (5 a second, 20 at once; the three GETs 1 a second, 5 at once) and everyone's (500 a
+//      second, 1,000 at once), and then Routes.java answers it, under the one lock that keeps the listings to one thread at a time. The
+//      access call is held to its own limits too (AccessLimits.java), and answered by AccessRequests.java outside that lock.
 //   6. One request a connection: every answer says Connection: close, and the connection is closed after it.
 // Every answer is JSON, with headers that tell a browser to treat it as nothing but data, and HSTS.
 //
@@ -71,6 +74,7 @@ public final class ListServer {
   static final double REQUEST_BURST = 20;
   static final double LIST_RATE = 1;
   static final double LIST_BURST = 5;
+  // POST /v1/access-requests has limits of its own, in AccessLimits.java
   static final double EVERYONE_RATE = 500;
   static final double EVERYONE_BURST = 1000;
   static final int MOST_SENDERS = 10000;
@@ -120,12 +124,16 @@ public final class ListServer {
   private final Path keyFile;
   private volatile Certificates.Loaded certificate;
 
-  // Everything below is used only under lock: the hasher, the limits, the connections each address has open, and the listings
+  // Everything below is used only under lock: the hasher, the limits, the connections each address has open, and the listings. The
+  // access store is never called holding it (it has locks of its own, and writes to the disk); the store calls back in, for
+  // AccessLimits.allowsNew, and takes it then. One order only (the store's, then this), so the two can never wait on each other.
   private final Object lock = new Object();
   private final AddressHasher hasher = new AddressHasher(RandomBytes.secure());
   private final PerSender perAddress;
   private final PerSender lists;
+  private final AccessLimits accessLimits;
   private final TokenBucket everyone;
+  private final AccessStore access;
   private final Map<String, Integer> open = new HashMap<>();
 
   private final Semaphore slots = new Semaphore(MOST_CONNECTIONS);
@@ -136,9 +144,10 @@ public final class ListServer {
   private volatile boolean running = true;
   private volatile boolean failed;
 
-  private ListServer(Listings listings, Consumer<String> log, LongSupplier now, Runnable whenFailed, ServerSocket server, Path certFile,
-      Path keyFile, Certificates.Loaded certificate) {
+  private ListServer(Listings listings, AccessStore access, Consumer<String> log, LongSupplier now, Runnable whenFailed, ServerSocket server,
+      Path certFile, Path keyFile, Certificates.Loaded certificate) {
     this.listings = listings;
+    this.access = access;
     this.log = log;
     this.now = now;
     this.whenFailed = whenFailed;
@@ -148,15 +157,17 @@ public final class ListServer {
     this.certificate = certificate;
     this.perAddress = new PerSender(REQUEST_RATE, REQUEST_BURST, MOST_SENDERS, hasher);
     this.lists = new PerSender(LIST_RATE, LIST_BURST, MOST_SENDERS, hasher);
+    this.accessLimits = new AccessLimits(MOST_SENDERS, hasher);
     this.everyone = new TokenBucket(EVERYONE_RATE, EVERYONE_BURST);
     this.timers = Executors.newSingleThreadScheduledExecutor(task -> new Thread(task, "list-timers"));
   }
 
   // Reads the certificate, opens the HTTPS port, and starts. settings: the list's settings (its address, port and certificate files).
-  // listings: what it serves. log: where its lines go. now: the time in milliseconds since 1970-01-01 UTC. whenFailed: what to do if
-  // one of its timers stops on an error nobody expected (avpx/Fatal.java), once: Main stops the server, for systemd to start it again.
-  public static ListServer start(Settings.ListSettings settings, Listings listings, Consumer<String> log, LongSupplier now, Runnable whenFailed)
-      throws CertificateProblem, IOException {
+  // listings: what it serves. access: the access store, or null for none (its call is then "closed"). log: where its lines go. now: the
+  // time in milliseconds since 1970-01-01 UTC. whenFailed: what to do if one of its timers stops on an error nobody expected
+  // (avpx/Fatal.java), once: Main stops the server, for systemd to start it again.
+  public static ListServer start(Settings.ListSettings settings, Listings listings, AccessStore access, Consumer<String> log,
+      LongSupplier now, Runnable whenFailed) throws CertificateProblem, IOException {
     Path certFile = Path.of(settings.certFile());
     Path keyFile = Path.of(settings.keyFile());
     Certificates.Loaded certificate = Certificates.load(certFile, keyFile);
@@ -175,7 +186,7 @@ public final class ListServer {
       throw e;
     }
 
-    ListServer list = new ListServer(listings, log, now, whenFailed, server, certFile, keyFile, certificate);
+    ListServer list = new ListServer(listings, access, log, now, whenFailed, server, certFile, keyFile, certificate);
 
     // A timer whose task throws is never run again, and Java tells nobody: so each run is one Fatal.turn, and a failure stops the server
     list.timers.scheduleAtFixedRate(() -> list.guarded(list::tick), TICK_MILLISECONDS, TICK_MILLISECONDS, TimeUnit.MILLISECONDS);
@@ -301,7 +312,7 @@ public final class ListServer {
         // The head came in time: from here, the body and the answer have their own time
         deadline.cancel(false);
         deadline = timers.schedule(() -> closeQuietly(raw), BODY_MILLISECONDS, TimeUnit.MILLISECONDS);
-        answer(head, tls, in, out, raw.getInetAddress().getHostAddress());
+        answer(head, tls, in, out, raw.getInetAddress());
       }
     } catch (IOException | RuntimeException e) {
       // The sender went away, was too slow, or its TLS was no good: nothing to answer, and nothing to write about it
@@ -329,17 +340,22 @@ public final class ListServer {
     return strong.toArray(new String[0]);
   }
 
-  private void answer(Http.Head head, SSLSocket tls, InputStream in, OutputStream out, String address) throws IOException {
+  private void answer(Http.Head head, SSLSocket tls, InputStream in, OutputStream out, InetAddress from) throws IOException {
     long at = now.getAsLong();
-    boolean isList = head.method().equals("GET") && (head.path().equals("/v1/games") || head.path().equals("/v1/relays"));
+    String address = from.getHostAddress();
+    boolean isList = head.method().equals("GET")
+        && (head.path().equals("/v1/games") || head.path().equals("/v1/relays") || head.path().equals("/v1/relay-keys"));
+    boolean isAccess = head.path().equals(AccessRequests.PATH);
     boolean allowed;
 
     synchronized (lock) {
-      allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at)) && everyone.take(at);
+      allowed = perAddress.allows(address, at) && (!isList || lists.allows(address, at))
+          && (!isAccess || accessLimits.allowsTry(from, at)) && everyone.take(at);
     }
 
     if (!allowed) {
-      sendEarly(tls, out, in, error(429, "too many requests: wait and try again"));
+      // The access call answers in its own shape, as the game's page reads nothing else there
+      sendEarly(tls, out, in, isAccess ? AccessRequests.busy() : error(429, "too many requests: wait and try again"));
       return;
     }
 
@@ -364,8 +380,9 @@ public final class ListServer {
         return;
       }
 
-      // Digits, but more than a body may be (however many digits: Json.digitsValue never throws)
-      long declaredLength = Json.digitsValue(declared, Requests.MOST_BODY_BYTES);
+      // Digits, but more than a body may be (however many digits: Json.digitsValue never throws). The access call's body holds a player's
+      // public keys, so it may be 4 KB; every other call's, 1 KB.
+      long declaredLength = Json.digitsValue(declared, isAccess ? AccessRequests.MOST_BODY_BYTES : Requests.MOST_BODY_BYTES);
 
       if (declaredLength < 0) {
         sendEarly(tls, out, in, error(413, "the body is too big"));
@@ -384,8 +401,18 @@ public final class ListServer {
 
     Routes.Answer answer;
 
-    synchronized (lock) {
-      answer = Routes.handle(listings, head.method(), head.path(), head.query(), body, now.getAsLong());
+    if (isAccess) {
+      // Outside the list's lock: a new request is written to the disk, and no other call should wait for that (Secondary's review of the
+      // access store, 1.2). The store asks the day's limits on new requests only for a request it would keep, and takes the lock for that.
+      answer = AccessRequests.handle(access, head.method(), head.query(), body, now.getAsLong(), () -> {
+        synchronized (lock) {
+          return accessLimits.allowsNew(from, now.getAsLong());
+        }
+      });
+    } else {
+      synchronized (lock) {
+        answer = Routes.handle(listings, head.method(), head.path(), head.query(), body, now.getAsLong());
+      }
     }
 
     send(out, answer);
@@ -472,6 +499,7 @@ public final class ListServer {
       lines = listings.tick(now.getAsLong());
     }
 
+    // The access store takes the owner's decisions, and writes its own counts, on its own thread (AccessStore.start)
     for (String line : lines) {
       log.accept(line);
     }

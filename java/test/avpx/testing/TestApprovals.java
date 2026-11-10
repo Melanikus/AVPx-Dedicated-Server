@@ -30,7 +30,7 @@ public final class TestApprovals implements Approvals {
   }
 
   @Override
-  public List<String> takeRevoked(long now) {
+  public List<String> takeRevoked() {
     List<String> out = List.copyOf(revoked);
     revoked.clear();
     return out;

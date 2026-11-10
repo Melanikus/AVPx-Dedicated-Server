@@ -1925,7 +1925,7 @@ file: java/src/avpx/v2/SealedRelay.java
 check: tests
 file: java/src/avpx/v2/SealedRelay.java
 <<< from
-    for (String player : approvals.takeRevoked(now)) {
+    for (String player : approvals.takeRevoked()) {
       revoke(player);
     }
 <<< to
@@ -2280,7 +2280,7 @@ file: java/src/avpx/access/AccessStore.java
 check: tests
 file: java/src/avpx/access/AccessStore.java
 <<< from
-    if (!end.matches() || Integer.parseInt(end.group(1)) != lines.length - 1) {
+    if (!end.matches() || !end.group(1).equals(Integer.toString(lines.length - 1))) {
 <<< to
     if (!end.matches()) {
 >>>

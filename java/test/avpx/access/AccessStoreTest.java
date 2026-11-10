@@ -166,16 +166,16 @@ public final class AccessStoreTest {
         }
 
         decide(folder, "decisions.100", whole(fp(1) + " approved\n" + fp(2) + " refused\n" + fp(3) + " approved\n" + fp(3) + " revoked\n"));
-        same(store.takeRevoked(NOW), List.of(), "nothing is revoked before a turn has taken the file");
+        same(store.takeRevoked(), List.of(), "nothing is revoked before a turn has taken the file");
         same(store.turn(NOW), null, "the turn goes as expected");
-        same(store.takeRevoked(NOW), List.of(id(3)), "after it: player 3, approved then revoked in the same file, is given back by id");
+        same(store.takeRevoked(), List.of(id(3)), "after it: player 3, approved then revoked in the same file, is given back by id");
         ok(store.approved(id(1)), "player 1 approved");
         ok(!store.approved(id(2)) && !store.approved(id(3)) && !store.approved(id(4)), "2 refused, 3 revoked, 4 still waiting");
         same(store.request(fp(2), id(2), "x", NOW, YES), AccessStore.Reply.REFUSED, "a refused player asking again: refused, and it stays so");
         same(store.request(fp(3), id(3), "x", NOW, YES), AccessStore.Reply.REVOKED, "a revoked one: revoked");
         same(store.request(fp(1), id(1), "x", NOW, YES), AccessStore.Reply.APPROVED, "an approved one: approved");
         ok(!Files.exists(folder.resolve("decisions.100")), "the file is deleted once applied");
-        same(store.takeRevoked(NOW), List.of(), "and a revoke is given back once only");
+        same(store.takeRevoked(), List.of(), "and a revoke is given back once only");
         ok(AccessStore.open(folder).approved(id(1)), "the decisions are in the store's file: a store opened afresh has them");
       } finally {
         remove(folder);
@@ -255,7 +255,7 @@ public final class AccessStoreTest {
 
         decide(folder, "decisions.1", whole(fp(2) + " refused\n" + fp(3) + " approved\n" + fp(4) + " approved\n" + fp(4) + " revoked\n"));
         store.turn(NOW);
-        store.takeRevoked(NOW);
+        store.takeRevoked();
         decide(folder, "decisions.2", whole(fp(1) + " forgotten\n" + fp(2) + " forgotten\n"));
         same(store.turn(NOW), null, "the turn goes as expected");
         ok(!stored(folder).contains(fp(1)) && !stored(folder).contains(fp(2)), "the waiting one and the refused one are gone from the file");
@@ -271,7 +271,7 @@ public final class AccessStoreTest {
 
         ok(store.approved(id(3)), "the approved one is still approved (it would be revoked, which ends its sessions)");
         same(store.request(fp(4), id(4), "x", NOW, YES), AccessStore.Reply.REVOKED, "and the revoked one is still revoked");
-        same(store.takeRevoked(NOW), List.of(), "and forgetting revokes nobody");
+        same(store.takeRevoked(), List.of(), "and forgetting revokes nobody");
       } finally {
         remove(folder);
       }
@@ -417,7 +417,7 @@ public final class AccessStoreTest {
         decide(folder, "decisions.10", whole(fp(1) + " revoked\n"));
         decide(folder, "decisions.9", whole(fp(1) + " approved\n"));
         store.turn(NOW);
-        same(store.takeRevoked(NOW), List.of(id(1)), "decisions.9, then decisions.10: approved, then revoked");
+        same(store.takeRevoked(), List.of(id(1)), "decisions.9, then decisions.10: approved, then revoked");
       } finally {
         remove(folder);
       }
@@ -592,7 +592,7 @@ public final class AccessStoreTest {
         }));
         request.start();
         ok(inside.await(10, TimeUnit.SECONDS), "(the request is inside, holding the lock)");
-        Future<Boolean> asked = asker.submit(() -> store.approved(id(1)) && store.takeRevoked(NOW).isEmpty());
+        Future<Boolean> asked = asker.submit(() -> store.approved(id(1)) && store.takeRevoked().isEmpty());
         boolean answered;
 
         try {

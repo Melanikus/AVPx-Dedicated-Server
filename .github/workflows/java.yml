@@ -262,14 +262,16 @@ jobs:
   # The rows in shares, side by side: at 220 rows one job no longer fit its 45 minutes, and a cancelled job proves no row
   # (java/tools/Takeouts.java, "WHY SHARES"). Each share runs the rows whose number, divided by how many shares there are, leaves its own
   # place. Both numbers are GitHub's own (strategy.job-index and strategy.job-total), never the list below, which only says how many.
+  # Twelve since 2026-11-09: at six, four of the shares ran past 30 minutes and were cancelled (039bc56's run). Twelve, of about 20 rows
+  # each, with 45 minutes for each, leave room as rows are added; GitHub runs up to 20 of a public repository's jobs at once.
   takeouts-shares:
     name: Java take-outs, share ${{ strategy.job-index }} of ${{ strategy.job-total }}
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        share: [1, 2, 3, 4, 5, 6]
+        share: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

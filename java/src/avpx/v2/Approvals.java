@@ -15,5 +15,5 @@ public interface Approvals {
 
   // The ids whose approval was taken back since the last time this was asked, each once. The relay asks once a turn, and ends those
   // players' sessions. By then, approved already says no for each of them.
-  List<String> takeRevoked(long now);
+  List<String> takeRevoked();
 }

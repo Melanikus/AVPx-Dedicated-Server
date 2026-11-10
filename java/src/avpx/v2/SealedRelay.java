@@ -702,7 +702,7 @@ public final class SealedRelay implements Relay {
   @Override
   public List<String> tick(long now) {
     // The owner's revokes first, so a revoked player's sessions end within a turn of the decision (CRYPTO.md section 6)
-    for (String player : approvals.takeRevoked(now)) {
+    for (String player : approvals.takeRevoked()) {
       revoke(player);
     }
 

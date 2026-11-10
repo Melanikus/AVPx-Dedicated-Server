@@ -1,15 +1,15 @@
 # FOR MEASURING ONLY: runs on a push to the proofs-measure branch, which is never merged. Written 2026-11-09 by Melanikus for AVPx
 # Dedicated Server.
 #
-# Round 3. Round 2 (the logs are kept outside the repository) found:
-# - pqnk kem-broken: both queries true, in 6 minutes and 1.3 GB;
-# - every pqik and pqxx job out of memory at 14 GiB, in 4 to 60 minutes, as written too: one query alone, the phase-1 line out,
-#   and either other selection function. And the clauses themselves are enormous: pqik q2 held 9,336 of them in 13 GB, about
-#   1.4 MB each.
-# So this round asks what makes them so big, one change to the model at a time, mostly on pqik q2 (out of memory in 10 minutes),
-# with pqxx q3 beside it (5 minutes). measure.sh says what each change is: names is the one a proof could rest on, if it's what
-# helps; dhpk, nobad and bounded change the model, only to find the cause. pqxx both-broken runs with names too, with the newer
-# leaks (a broken half's secrets given away as each is made), to see that it still finds the attacks.
+# Round 4. Round 3 (run 42718931602; the logs are kept outside the repository) found:
+# - pqik q1 with names: proved, in 2.5 minutes; pqik q2 with no bad tester (nobad): proved, in 5 minutes. So the bad tester is
+#   pqik's cost, and he's the attacker the proof must keep: a player whose key we approved, turned hostile;
+# - pqik q2 with names: stopped at 320 minutes, at 10 GB and climbing half a gigabyte an hour, with 97,188 rules still queued. Time,
+#   not memory, is what it lacks, and GitHub stops every job at 6 hours, so no bigger runner can finish it;
+# - pqxx: out of memory with every change, bounded in 6 minutes, so its cost isn't the replication but one of its key steps.
+# So this round keeps the bad tester and tries what ProVerif itself checks: secrecy assumptions for every secret an honest side makes
+# (secret). And it takes pqxx's six key steps out one at a time, to find its cost as round 3 found pqik's. pqik q3 with no bad tester
+# is there only to say whether he's q3's cost too, never as a proof.
 #
 # ProVerif is fetched, checked and built exactly as proofs.yml does it, and the comments there say why each step is so.
 name: Proofs, measured
@@ -30,18 +30,21 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { model: pqik, variant: as-written, setting: q2+names }
-          - { model: pqik, variant: as-written, setting: q2+dhpk }
-          - { model: pqik, variant: as-written, setting: q2+nobad }
-          - { model: pqik, variant: as-written, setting: q2+bounded }
-          - { model: pqik, variant: as-written, setting: q2+names+dhpk }
-          - { model: pqik, variant: as-written, setting: q2+selterm+names }
-          - { model: pqik, variant: as-written, setting: q1+names }
-          - { model: pqik, variant: as-written, setting: names+dhpk }
-          - { model: pqxx, variant: as-written, setting: q3+names }
-          - { model: pqxx, variant: as-written, setting: q3+dhpk }
-          - { model: pqxx, variant: as-written, setting: q3+bounded }
-          - { model: pqxx, variant: both-broken, setting: names }
+          - { model: pqik, variant: as-written, setting: q2+secret }
+          - { model: pqik, variant: as-written, setting: q2+names+secret }
+          - { model: pqik, variant: as-written, setting: q3+names+secret }
+          - { model: pqik, variant: as-written, setting: q1+names+secret }
+          - { model: pqik, variant: as-written, setting: names+secret }
+          - { model: pqik, variant: as-written, setting: q3+nobad }
+          - { model: pqxx, variant: as-written, setting: q3+secret }
+          - { model: pqxx, variant: as-written, setting: q3+names+secret }
+          - { model: pqxx, variant: as-written, setting: q1+names+secret }
+          - { model: pqxx, variant: as-written, setting: q3+noee }
+          - { model: pqxx, variant: as-written, setting: q3+nokem2 }
+          - { model: pqxx, variant: as-written, setting: q3+noes }
+          - { model: pqxx, variant: as-written, setting: q3+nokem3 }
+          - { model: pqxx, variant: as-written, setting: q3+nose }
+          - { model: pqxx, variant: as-written, setting: q3+nokem4 }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

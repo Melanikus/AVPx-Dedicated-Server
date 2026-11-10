@@ -28,13 +28,24 @@
 #             names       every "new x: t" becomes "new x[]: t": a fresh name no longer carries, inside it, every message its
 #                         session took before it. Round 2 found the clauses themselves enormous (pqik q2: 13 GB for 9,336 of
 #                         them, about 1.4 MB each), and that's where such size comes from. It only makes ProVerif's picture of
-#                         names coarser, which can't hide an attack; to be checked against ProVerif's manual before any proof
-#                         rests on it
+#                         names coarser, which can't hide an attack. ProVerif's manual (2.05, section 6.7.2, page 120): a name's
+#                         arguments "tune the performance and precision of the analysis", and "the internal representation of
+#                         names always includes session identifiers (necessary for soundness)"
+#             secret      as-written only, pqik and pqxx: secrecy assumptions, "not attacker(...)", for every secret an honest side
+#                         makes: its static keys (in phase 0, when phase 1 gives them away) and every ephemeral exponent, ML-KEM key
+#                         and coins. ProVerif then drops every clause that needs the attacker to know one, and checks each assumption
+#                         itself. The manual (section 6.7.2, page 116): "The use of secrecy assumptions preserves soundness because
+#                         ProVerif also checks that F cannot be derived; if it can be derived, ProVerif fails with an error message."
+#                         Round 4: does it end pqik with its bad tester kept?
 #   And these, ONLY TO FIND WHAT MAKES THE CLAUSES GROW. Each changes the model, so no answer with them is a proof of ours:
 #             dhpk        Diffie-Hellman as dhof(x, dhpub(y)) = dhof(y, dhpub(x)), a shared secret that is a bitstring, in place
 #                         of exp on group elements, so no exponent can be put on top of another
 #             nobad       pqik only: no bad tester (the approved player whose private keys the attacker holds)
 #             bounded     no "!": one session of each role, not any number
+#             noee, nokem2, noes, nokem3, nose, nokem4
+#                         pqxx only: one of its six key steps taken out, in both roles: the secret that step mixes in (dhee, ss2,
+#                         dhes, ss3, dhse or ss4) is replaced by the public constant protoname wherever a key is made from it.
+#                         Round 4: which step is pqxx's cost, as the bad tester is pqik's
 #
 # Every argument is checked against these lists: nothing else gets into a file name, a sed edit or ProVerif.
 set -euf
@@ -56,7 +67,7 @@ case "$variant" in
   *) echo 'measure: the variant is as-written, dh-broken, kem-broken or both-broken'; exit 2 ;;
 esac
 
-first=''; only=0; names=no; dhpk=no; nobad=no; bounded=no
+first=''; only=0; names=no; dhpk=no; nobad=no; bounded=no; secret=no; nostep=''
 case "$setting" in *++*|+*|*+) echo 'measure: settings are joined by one +'; exit 2 ;; esac
 old_ifs=$IFS
 IFS=+
@@ -71,7 +82,15 @@ for one in $setting; do
     dhpk) dhpk=yes ;;
     nobad) [ "$model" = pqik ] || { echo 'measure: nobad is for pqik, the only model with a bad tester'; exit 2; }; nobad=yes ;;
     bounded) bounded=yes ;;
-    *) echo 'measure: a setting is notrace, depth8, selterm, seltermmax, q1 to q4, names, dhpk, nobad or bounded'; exit 2 ;;
+    secret)
+      [ "$model" != pqnk ] || { echo 'measure: secret is for pqik and pqxx'; exit 2; }
+      [ "$variant" = as-written ] || { echo 'measure: secret is for as-written: a broken half gives its secrets away, which ProVerif would refuse'; exit 2; }
+      secret=yes ;;
+    noee|nokem2|noes|nokem3|nose|nokem4)
+      [ "$model" = pqxx ] || { echo "measure: $one is for pqxx"; exit 2; }
+      [ -z "$nostep" ] || { echo 'measure: one step out at most'; exit 2; }
+      nostep=$one ;;
+    *) echo 'measure: a setting is notrace, depth8, selterm, seltermmax, q1 to q4, names, dhpk, nobad, bounded, secret or one of noee, nokem2, noes, nokem3, nose, nokem4'; exit 2 ;;
   esac
 done
 IFS=$old_ifs
@@ -112,6 +131,18 @@ fi
 if [ "$bounded" = yes ]; then
   sed 's/(! \([A-Z]\)/(\1/' "$work/whole.pv" > "$work/next.pv"; changed bounded 2
 fi
+# One of pqxx's key steps out: the step's secret replaced by a public constant in every kdfck and kdfk made from it, in both roles
+if [ -n "$nostep" ]; then
+  case "$nostep" in
+    noee) step=dhee; lines=2 ;;
+    nokem2) step=ss2; lines=4 ;;
+    noes) step=dhes; lines=4 ;;
+    nokem3) step=ss3; lines=4 ;;
+    nose) step=dhse; lines=4 ;;
+    nokem4) step=ss4; lines=4 ;;
+  esac
+  sed "/kdfc\{0,1\}k(ck[0-9], $step) in\$/ s/, $step) in\$/, protoname) in/" "$work/whole.pv" > "$work/next.pv"; changed "$nostep" "$lines"
+fi
 # What the settings changed, line for line, so the log shows exactly what ProVerif was given
 diff "$work/before-shape.pv" "$work/whole.pv" | head -n 120 || true
 
@@ -136,6 +167,27 @@ else
       sed -i '/^  | (phase 1; out(c, (/d' "$file"
       echo "measure: query $only alone: $kept (authentication, so the phase-1 line is taken out)" ;;
   esac
+fi
+
+# The secrecy assumptions, put just before "process" once the queries are chosen, because a static key is given away in phase 1 when
+# that line is still there, and is then assumed secret only in phase 0
+if [ "$secret" = yes ]; then
+  later=''
+  if grep -q '^  | (phase 1; out(c, (' "$file"; then later=' phase 0'; fi
+  case "$model" in
+    pqik) statics='new sdh|new skem|cdhHonest|ckemHonest'; ephemerals='new e|new ek|new r1|new re|new r2|new r3' ;;
+    pqxx) statics='new hdh|new hkem|new jdh|new jkem'; ephemerals='new e|new ek|new r3|new he|new r2|new r4' ;;
+  esac
+  {
+    old_ifs=$IFS; IFS='|'
+    for s in $statics; do printf 'not attacker(%s)%s.\n' "$s" "$later"; done
+    for s in $ephemerals; do printf 'not attacker(%s).\n' "$s"; done
+    IFS=$old_ifs
+  } > "$work/assumptions.pv"
+  grep -c '^process$' "$file" | grep -qx 1 || { echo "measure: $model has no single \"process\" line to put the assumptions before"; exit 2; }
+  awk -v extra="$work/assumptions.pv" '/^process$/ { while ((getline line < extra) > 0) print line } { print }' "$file" > "$work/next.pv"
+  mv "$work/next.pv" "$file"
+  echo "measure: secret: $(wc -l < "$work/assumptions.pv") assumptions:"; sed 's/^/  /' "$work/assumptions.pv"
 fi
 
 echo "measure: $model $variant ${setting:-(no setting)}, started $(date -u +%H:%M:%S)"

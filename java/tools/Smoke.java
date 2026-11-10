@@ -570,17 +570,21 @@ public final class Smoke {
       return false;
     }
 
+    // Each part worked out digit by digit (the pattern has held it to 1 to 3 digits), with no parse that could throw
     String[] parts = address.split("\\.");
+    int[] part = new int[parts.length];
 
-    for (String p : parts) {
-      if (Integer.parseInt(p) > 255) {
+    for (int i = 0; i < parts.length; i++) {
+      for (char c : parts[i].toCharArray()) {
+        part[i] = part[i] * 10 + (c - '0');
+      }
+
+      if (part[i] > 255) {
         return false;
       }
     }
 
-    int first = Integer.parseInt(parts[0]);
-    int second = Integer.parseInt(parts[1]);
-    return first != 0 && first < 224 && !(first == 100 && second >= 64 && second <= 127);
+    return part[0] != 0 && part[0] < 224 && !(part[0] == 100 && part[1] >= 64 && part[1] <= 127);
   }
 
   // The public key the list serves now, as the DER of its SubjectPublicKeyInfo, asked over TLS on 127.0.0.1 with the list's own

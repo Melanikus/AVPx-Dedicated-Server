@@ -2,7 +2,7 @@
 
 Written 2026-11-09 by Melanikus, at the user's word: "This is a server in the wild. Tao 1 and 3. We CANNOT get it wrong."
 
-**How this file works.** Every deploy workflow, now or later, and every way a machine fetches its own deploys (such as the pull route nyc3 is to use, by PO's ruling of 2026-11-09), runs `sh deploy/check-blockers.sh` as its first step. That step refuses to go on while anything is listed under the heading below. Only the word `Nothing.`, on its own, lets a deploy run. It also refuses:
+**How this file works.** Every deploy workflow, now or later, and every way a machine fetches its own deploys (such as the pull route nyc3 is to use, by PO's ruling of 2026-11-09), runs `sh deploy/check-blockers.sh`, from main as it is at that moment, **before anything is built or installed**, and as a user with no rights over the machine. It refuses to go on while anything is listed under the heading below. (deploy.yml's first job checks main's list before its build job; the pull route fetches main into a fresh folder as `avpx-build`, and runs that main's check there, before remote-deploy.sh or anything of root's.) Only the word `Nothing.`, on its own, lets a deploy run. It also refuses:
 - an empty list;
 - a missing heading, or the heading twice;
 - a file cut short, without its last line.

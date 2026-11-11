@@ -688,6 +688,9 @@ Each refusal is dropped and counted. The relay answers none of them. The game sh
 | A revoke | ends the player's open sessions at the relay's next turn after the owner's decision; A1 checks the approved set as the last decision left it |
 | Handshakes started, one address and port | 2 a second, 4 at once |
 | Handshakes started, everyone | 200 a second, 400 at once |
+| Handshake datagrams (A0, A1's fragments, A3), one address, spent before any is hashed | 50 a second, 100 at once: room for many homes behind one carrier's NAT (added 2026-11-10: what everyone shares is never one source's) |
+| COOKIE_ASKs answered, one address and port | 2 a second, 8 at once: a game's timing echoes and its retries (added 2026-11-10) |
+| COOKIE_ASKs answered, everyone | 2,000 a second, 4,000 at once, spent only after the two above |
 | Handshakes B a host starts, one port the relay named | 3, then none until the relay names it again (section 8) |
 | Handshakes B a host starts, all its ports | 4 a second (section 8) |
 | Retries | after 0.5, 1, 2 and 4 s, then give up |

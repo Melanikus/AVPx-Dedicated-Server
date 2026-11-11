@@ -2576,3 +2576,35 @@ final class TakeoutCompareBuffer {
   }
 }
 >>>
+
+# ----- One source's share (SealedRelay.java, "ONE SOURCE'S SHARE"), added 2026-11-10: each source's own share of the handshake's first
+# steps, spent before anything is hashed and before everyone's share
+
+=== an address has no share of handshake datagrams before they're hashed
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (!handshakesFromAnAddress.allows(address, now)) {
+      counts.overLimit++;
+      return List.of();
+    }
+<<< to
+>>>
+
+=== a COOKIE_ASK has no share of its own from one address and port
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (!asksFromASender.allows(address + "|" + port, now) || !asks.take(now)) {
+<<< to
+    if (!asks.take(now)) {
+>>>
+
+=== everyone's share of COOKIE_ASKs is spent before the source's own
+check: tests
+file: java/src/avpx/v2/SealedRelay.java
+<<< from
+    if (!asksFromASender.allows(address + "|" + port, now) || !asks.take(now)) {
+<<< to
+    if (!asks.take(now) || !asksFromASender.allows(address + "|" + port, now)) {
+>>>

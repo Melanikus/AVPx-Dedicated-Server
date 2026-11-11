@@ -24,11 +24,14 @@ import java.util.Set;
 
 // A version 2 relay (CRYPTO.md sections 5 to 7, 16 and 17): handshake A, then every control message sealed, in front of the same
 // RelayCore that keeps the games. Written 2026-11-09 by Melanikus for AVPx Dedicated Server.
+// Modified 2026-11-10 by Melanikus for AVPx Dedicated Server:
+//   each source has its own share of the handshake's first steps, spent before anything is hashed (ONE SOURCE'S SHARE, below)
 //
 // WHAT COMES TO IT, AND WHAT IT DOES. A refusal is counted, by its number in CRYPTO.md section 16, and never answered.
 //
 //   On the control port, a 1,200-byte handshake datagram (Fragments.java):
 //   - A0, COOKIE_ASK (kind 1): answered with A0', COOKIE (kind 2), 64 bytes holding the handshake's id and its cookie. Nothing is kept.
+//     At most 2 a second from one address and port (8 at once), then 2,000 a second from everyone.
 //   - A1 (kind 3), in 5 fragments. Each fragment's cookie is checked first, with nothing kept to check it (refusal 5). Then the
 //     fragments are put together: one handshake at a time from each address and port, at most 16 from one address and 1,000 in all,
 //     each for at most 2 s. When A1 is whole, HandshakeA reads it: the player's static keys in it must be keys (refusal 23) and an
@@ -56,6 +59,13 @@ import java.util.Set;
 // for one address and port, 200 a second for everyone). The relay never sends more datagrams than it was sent: one smaller for A0, and
 // 3 for A1's 5.
 //
+// ONE SOURCE'S SHARE (added 2026-11-10). What everyone shares must never be one source's to use up, and no source may make the relay
+// hash past its own share. So, before anything is hashed, every handshake datagram (A0, A1's fragments, A3) is spent from its address's
+// own share: 50 a second and 100 at once, room for many homes behind one carrier's NAT. An A0 then spends its address and port's share,
+// 2 a second and 8 at once (a game's timing echoes and its retries), and only then everyone's, 2,000 a second. A source past its share is
+// dropped there, and has spent nothing that others need. On UDP an address can be made up, so these are shares, not proofs: the cookie
+// is the proof, and the everyone limits still hold whatever a crowd of addresses sends.
+//
 // HOW LONG A SESSION LASTS: while a game or a joiner's port holds it (its host's, or the two ends of a joiner's port, whose hellos may
 // come again from a new address), or for 60 s (sessionIdleMilliseconds) after the last message that opened; and never past 24 hours or
 // its other limits (Channel.java). At most 10,000 sessions in all, and 64 for one address, handshakes waiting for A3 among them; more is
@@ -73,6 +83,10 @@ public final class SealedRelay implements Relay {
     public double startBurst = 4;
     public double everyoneStartRate = 200;            // and from everyone
     public double everyoneStartBurst = 400;
+    public double handshakeRate = 50;                 // handshake datagrams (A0, A1's fragments, A3) from one address, before any is
+    public double handshakeBurst = 100;               //   hashed: room for many homes behind one carrier's NAT (5.1, point 12)
+    public double senderAskRate = 2;                  // COOKIE_ASKs answered, from one address and port: a game's echoes and retries
+    public double senderAskBurst = 8;
     public double askRate = 2000;                     // COOKIE_ASKs answered, from everyone
     public double askBurst = 4000;
     public long answerMilliseconds = 10000;           // A2 kept to send again; the keys kept waiting for A3
@@ -179,6 +193,8 @@ public final class SealedRelay implements Relay {
   private final PerSender starts;
   private final TokenBucket everyoneStarts;
   private final TokenBucket asks;
+  private final PerSender handshakesFromAnAddress;   // ONE SOURCE'S SHARE, above
+  private final PerSender asksFromASender;
   private byte[] cookieKey;
   private long cookieKeyMadeAt;
 
@@ -209,6 +225,10 @@ public final class SealedRelay implements Relay {
     this.asks = new TokenBucket(limits.askRate, limits.askBurst);
     this.cookieKey = bytes.next(COOKIE_KEY_BYTES);
     this.cookieKeyMadeAt = now;
+    // Made after the cookie's key, so that the key is drawn from bytes as it always was. The relay's way (PerSender): where an address
+    // can be made up, a crowd of made-up ones pushes out the longest quiet, never locks a real one out.
+    this.handshakesFromAnAddress = new PerSender(limits.handshakeRate, limits.handshakeBurst, limits.mostSenders, new AddressHasher(bytes));
+    this.asksFromASender = new PerSender(limits.senderAskRate, limits.senderAskBurst, limits.mostSenders, new AddressHasher(bytes));
   }
 
   @Override
@@ -298,6 +318,13 @@ public final class SealedRelay implements Relay {
       return refused(6);
     }
 
+    // The address's own share, before anything is hashed: checking a cookie is two HMAC-SHA-384s, and making one is one (ONE SOURCE'S
+    // SHARE, above)
+    if (!handshakesFromAnAddress.allows(address, now)) {
+      counts.overLimit++;
+      return List.of();
+    }
+
     if (kind == COOKIE_ASK) {
       return cookieAsk(address, port, f, now);
     }
@@ -318,7 +345,8 @@ public final class SealedRelay implements Relay {
       return refused(6);
     }
 
-    if (!asks.take(now)) {
+    // The address and port's own share first, and only then everyone's, so a source over its share spends nothing of everyone's
+    if (!asksFromASender.allows(address + "|" + port, now) || !asks.take(now)) {
       counts.overLimit++;
       return List.of();
     }

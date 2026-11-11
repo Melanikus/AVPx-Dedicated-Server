@@ -40,6 +40,10 @@ An item comes off the list only when it's done, in the commit that shows it, nev
 
 - **A first deploy, to a test machine nobody else can reach, passes the smoke client.** Done 2026-11-09, on the test machine in DigitalOcean nyc3 (New York), region `nyc3`. While it ran, its DigitalOcean firewall let in only SSH, from the owner's own address. The second run, of 6a885c9, by hand with `deploy/remote-deploy.sh`, ended `in place, and healthy`, with `Smoke --installed` 32 of 32. Written up on issue #15, and in deploy/README.md's History. It showed neither deploy.yml nor a machine taking its own deploys (the pull route, which has since replaced the Systems Manager route): item 5 below stands in their way.
 - **The deploy's AWS command line tool is pinned (#17)**, the old item 5. Taken off 2026-11-09, by the owner's ruling, in the owner's words: "Remove it; item 5 guards the pull route". The commit that shows it is the one that builds the pull route (deploy/pull-deploy.sh): it removes the AWS Systems Manager route whole, with get-aws-cli.sh and its test, the SSM document and its maker, and deploy.yml's job that ran aws. No AWS tool runs anywhere in a deploy now, so there's nothing left to pin. **Item 5 below takes its place, and keeps every deploy blocked** until the route that replaces it is built, tested and freshly reviewed. If the AWS route ever comes back, #17 comes back with it.
+- **One address can't keep other players from starting a game.** Added and taken off 2026-11-10, in the commit that shows it. Every
+  handshake datagram is spent from its address's own share before anything is hashed, and a COOKIE_ASK from its address and port's
+  share before everyone's (java/src/avpx/v2/SealedRelay.java, "ONE SOURCE'S SHARE"; CRYPTO.md section 17's rows). What shows it:
+  SealedRelayTest's "one source's share" test, and its take-out rows in java/tools/takeouts.txt, each noticed.
 
 ## For later: before a second region or a second operator
 

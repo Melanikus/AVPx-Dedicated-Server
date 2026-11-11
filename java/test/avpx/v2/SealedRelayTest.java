@@ -479,6 +479,52 @@ public final class SealedRelayTest {
       same(full.sessions.size(), 1, "and the session already there wasn't ended to make room");
     });
 
+    // ONE SOURCE'S SHARE (SealedRelay.java): what one address sends can't keep another from starting a handshake, and what it sends past
+    // its share is never hashed. Added 2026-11-10 by Melanikus for AVPx Dedicated Server.
+    test("one source's share: an address flooding A0 or made-up cookies can't stop another's handshake, and its excess isn't hashed", () -> {
+      // A0s from one address, each from a port of its own, all in one moment: only the address's share is answered
+      SealedRelay relay = relay();
+      int answered = 0;
+
+      for (int i = 0; i < 5000; i++) {
+        byte[] id = new byte[8];
+        id[0] = (byte) i;
+        id[1] = (byte) (i >> 8);
+        answered += relay.receive(CONTROL, "10.0.0.9", 1000 + i, a0(id), NOW).size();
+      }
+
+      same(answered, 100, "5,000 A0s from one address, from 5,000 ports, in one moment: its share, 100, answered");
+      same(relay.counts.asked, 100L, "and only those 100 spent of everyone's 4,000");
+      same(relay.receive(CONTROL, "10.0.0.10", 5000, a0(bytes(8, 1)), NOW).size(), 1, "and a second address's A0 is still answered");
+
+      // From one address and port: its own share of A0s, 8 at once, and what it sends past that spends nothing of everyone's
+      SealedRelay.Limits few = new SealedRelay.Limits();
+      few.askRate = 0.001;
+      few.askBurst = 10;
+      SealedRelay small = relay(few, new RelayCore.Limits());
+      int fromOnePort = 0;
+
+      for (int i = 0; i < 20; i++) {
+        fromOnePort += small.receive(CONTROL, "10.0.0.9", 1000, a0(bytes(8, i + 1)), NOW).size();
+      }
+
+      same(fromOnePort, 8, "20 A0s from one address and port in one moment: 8 answered, its share at once");
+      same(small.receive(CONTROL, "10.0.0.11", 5000, a0(bytes(8, 99)), NOW).size(), 1,
+          "and with everyone's share only 10, a second address is still answered: the 12 past the first's share took none of it");
+
+      // A1s with made-up cookies: the address's share is hashed and refused (refusal 5), and the rest is dropped before any hashing
+      SealedRelay hashed = relay();
+      Begun real = begin(hashed, "10.0.0.20", 5000, 61, NOW);
+      byte[] forged = Fragments.cut(Fragments.toRelay(), SealedRelay.A1, bytes(8, 7), bytes(16, 7), new byte[HandshakeA.A1_BYTES]).get(0);
+
+      for (int i = 0; i < 1000; i++) {
+        hashed.receive(CONTROL, "10.0.0.9", 1000 + i, forged, NOW);
+      }
+
+      same(hashed.counts.refused[5], 100L, "1,000 A1 fragments with made-up cookies from one address: only its share, 100, had its cookie hashed");
+      same(sendAll(hashed, "10.0.0.20", 5000, real.a1(), NOW).size(), 3, "and the second address's handshake still gets its A2");
+    });
+
     // CRYPTO.md section 17's per-address cap, which handshakes waiting for A3 count toward: without that, one address with cookies for
     // its own ports could fill the table with A1s it never finishes
     test("handshakes waiting for A3 count toward an address's most sessions; given up on after 10 s, they free their places", () -> {

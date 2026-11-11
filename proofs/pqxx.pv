@@ -162,8 +162,12 @@ let Joiner(jdh: exponent, jkem: kemsk, hostfp: bitstring) =
   out(c, b5tag);
   out(c, aenc(kir, n0, empty, secretJ)).
 
-(* The host, with its identity; it takes any joiner, and knows the honest joiner's static P-384 key *)
-let Host(hdh: exponent, hkem: kemsk, honestJ: G) =
+(* The host, with its identity; it takes any joiner, and knows the honest joiner's fingerprint: the hash of BOTH its static keys, as the
+   game knows a joiner (net_handshake_b.h, ReadB3: NetIdentity_Fingerprint of the P-384 and the ML-KEM key from B3's s), and as the
+   joiner knows the host (fp, in Joiner above). Modified 2026-11-11 by Melanikus (Third): the host knew the joiner by its P-384 key alone,
+   which is less than the game checks. With the P-384 half broken (LEAKDH), the attacker could then play the honest joiner with that key
+   and an ML-KEM key of its own, and decapsulate B4's skem itself: Proofs round 6 found exactly that, pqxx q2 and q4 dh-broken false. *)
+let Host(hdh: exponent, hkem: kemsk, honestJfp: bitstring) =
   let hdhPub = exp(g, hdh) in
   let hkemPub = kemPub(hkem) in
   let hostfp = fp(hdhPub, hkemPub) in
@@ -224,7 +228,7 @@ let Host(hdh: exponent, hkem: kemsk, honestJ: G) =
   in(c, b5tag: bitstring);
   let nj = adec(k6, n1, h10, b5tag) in
   if commit(nj) = cj then
-  if jdhPub = honestJ then
+  if fp(jdhPub, jkemPub) = honestJfp then
   event HDone(hdhPub, jdhPub, h10, kir, kri);
   out(c, aenc(kri, n0, empty, secretH)).
 
@@ -239,6 +243,6 @@ process
   (*LEAKKEM out(c, (hkem, jkem)); LEAKKEM*)
   (
     (! Joiner(jdh, jkem, fp(exp(g, hdh), kemPub(hkem))))
-  | (! Host(hdh, hkem, exp(g, jdh)))
+  | (! Host(hdh, hkem, fp(exp(g, jdh), kemPub(jkem))))
   | (phase 1; out(c, (hdh, hkem, jdh, jkem)))
   )

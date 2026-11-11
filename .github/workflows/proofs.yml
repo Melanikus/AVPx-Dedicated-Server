@@ -20,7 +20,10 @@
 # never skipped.
 #
 # THE GROUPS (2026-11-10): proofs/run.sh's groups run side by side, one job each, so a query that doesn't end yet can't hide the answers
-# of the ones that do. Each ProVerif run is held to 60 minutes (PROOFS_RUN_MINUTES), and one that hasn't ended by then fails. The last
+# of the ones that do. Since round 6, a group is one variant of one query (32 of them), so each ProVerif run has a machine to itself, and
+# a run that's too big for it can't take its neighbours' answers with it (round 5 lost four groups' later variants that way). Each run
+# is held to 300 minutes (PROOFS_RUN_MINUTES), inside GitHub's 6 hours a job, and to 14 GiB (PROOFS_MEMORY_GIB) of the runner's 16 GB, and
+# one that hasn't ended, or runs out, fails, saying which. A limit can only cost a proof, never make one. The last
 # job, "Proofs (ProVerif)", is the one main requires: it passes only if the stand-ins' job and every group passed, and fails on anything
 # else (a failure, a cancel, a skip). Every query of every model is in a group, so the check stays red until each one is proved. That's
 # held, not just written (Primary's review, 2026-11-10): run.sh refuses unless proofs/ holds exactly its three models with exactly their
@@ -40,8 +43,9 @@ permissions:
 
 jobs:
   # Stand-ins for ProVerif, in folders of their own, each put first on a PATH that holds no other: none at all, one that stops, one that
-  # runs and answers nothing, and one that says "true" to every query. proofs/run.sh must fail with each, and never say it passed. (The
-  # last fails at the variants with both halves broken, whose secrecy must come out false.)
+  # runs and answers nothing, one that says "true" to every query, and one that also says each secrecy assumption was verified.
+  # proofs/run.sh must fail with each, and never say it passed. The "true" one fails at the first secrecy assumption, which it never says
+  # it checked; the one that says so fails at the variants with both halves broken, whose secrecy must come out false.
   standins:
     name: "Proofs: with no ProVerif, or a broken one, they fail"
     runs-on: ubuntu-24.04
@@ -62,12 +66,19 @@ jobs:
       - name: With no ProVerif, or a broken one, the proofs fail, never passing unproved
         run: |
           fake="$RUNNER_TEMP/fake-proverif"
-          mkdir -p "$fake/none" "$fake/stops" "$fake/silent" "$fake/yes"
+          mkdir -p "$fake/none" "$fake/stops" "$fake/silent" "$fake/yes" "$fake/yes-verified"
           printf '#!/bin/sh\nexit 1\n' > "$fake/stops/proverif"
           printf '#!/bin/sh\nexit 0\n' > "$fake/silent/proverif"
           printf '#!/bin/sh\nn=$(grep -c "^query" "$1")\nwhile [ "$n" -gt 0 ]; do echo "RESULT a query is true."; n=$((n - 1)); done\n' > "$fake/yes/proverif"
-          chmod +x "$fake/stops/proverif" "$fake/silent/proverif" "$fake/yes/proverif"
-          for kind in none stops silent yes; do
+          # The same, and before its answers a "verified" line for each "not attacker(...)" it's given, as ProVerif writes them
+          cat > "$fake/yes-verified/proverif" <<'EOF'
+          #!/bin/sh
+          grep '^not attacker(' "$1" | sed 's/^not attacker(\(new \)\{0,1\}\([A-Za-z0-9_]*\)).*/ok, secrecy assumption verified: fact unreachable attacker(\2[])/'
+          n=$(grep -c '^query' "$1")
+          while [ "$n" -gt 0 ]; do echo "RESULT a query is true."; n=$((n - 1)); done
+          EOF
+          chmod +x "$fake/stops/proverif" "$fake/silent/proverif" "$fake/yes/proverif" "$fake/yes-verified/proverif"
+          for kind in none stops silent yes yes-verified; do
             if PATH="$fake/$kind:/usr/bin:/bin" sh proofs/run.sh > "$fake/$kind.out" 2>&1; then
               cat "$fake/$kind.out"; echo "proofs/run.sh passed with the stand-in ProVerif \"$kind\""; exit 1
             fi
@@ -76,16 +87,25 @@ jobs:
             fi
             echo "proofs/run.sh failed, as it must, with the stand-in ProVerif \"$kind\": $(tail -n 1 "$fake/$kind.out")"
           done
+          # Each failed for its own reason: "yes" at the assumptions it never said it checked, and "yes-verified" (which got past them)
+          # only where the answer must be false
+          grep -q 'no line from ProVerif saying the secrecy assumption' "$fake/yes.out" \
+            || { cat "$fake/yes.out"; echo 'the stand-in "yes" got past the secrecy assumptions it never said it checked'; exit 1; }
+          if grep -q 'no line from ProVerif saying the secrecy assumption' "$fake/yes-verified.out"; then
+            cat "$fake/yes-verified.out"; echo 'the stand-in "yes-verified" said it checked each assumption, and run.sh didn'"'"'t see it'; exit 1
+          fi
+          grep '^FAIL' "$fake/yes-verified.out" | grep -v 'must be "false' && { echo 'the stand-in "yes-verified" failed somewhere other than where an answer must be false'; exit 1; }
+          echo 'each stand-in failed for its own reason'
 
   groups:
     name: "Proofs: ${{ matrix.group }}"
     runs-on: ubuntu-24.04
-    # Four runs of at most 60 minutes each, and the build
-    timeout-minutes: 270
+    # One run of at most 300 minutes, and the build: inside GitHub's 360 minutes a job
+    timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
-        group: [pqnk, pqik-q1, pqik-q2, pqik-q3, pqxx-q1, pqxx-q2, pqxx-q3, pqxx-q4]
+        group: [pqnk-as-written, pqnk-dh-broken, pqnk-kem-broken, pqnk-both-broken, pqik-q1-as-written, pqik-q1-dh-broken, pqik-q1-kem-broken, pqik-q1-both-broken, pqik-q2-as-written, pqik-q2-dh-broken, pqik-q2-kem-broken, pqik-q2-both-broken, pqik-q3-as-written, pqik-q3-dh-broken, pqik-q3-kem-broken, pqik-q3-both-broken, pqxx-q1-as-written, pqxx-q1-dh-broken, pqxx-q1-kem-broken, pqxx-q1-both-broken, pqxx-q2-as-written, pqxx-q2-dh-broken, pqxx-q2-kem-broken, pqxx-q2-both-broken, pqxx-q3-as-written, pqxx-q3-dh-broken, pqxx-q3-kem-broken, pqxx-q3-both-broken, pqxx-q4-as-written, pqxx-q4-dh-broken, pqxx-q4-kem-broken, pqxx-q4-both-broken]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -115,7 +135,8 @@ jobs:
       - name: This group's models, variants and queries, every answer the one it must be
         env:
           GROUP: ${{ matrix.group }}
-          PROOFS_RUN_MINUTES: 60
+          PROOFS_RUN_MINUTES: 300
+          PROOFS_MEMORY_GIB: 14
         run: |
           proverif -help 2>&1 | head -n 3 || true
           sh proofs/run.sh "$GROUP"

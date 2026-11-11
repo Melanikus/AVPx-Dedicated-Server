@@ -36,12 +36,13 @@
 #
 # THE VARIANTS of each model, made here from it, never kept:
 #   as written     every query true
-#   dh-broken      the attacker is given every ECDH secret an honest side computes       every query true: ML-KEM alone holds them
-#   kem-broken     the attacker is given every ML-KEM secret an honest side computes     every query true: ECDH alone holds them
-#   both-broken    the attacker is given both                                           the secrecy queries false: so the model isn't
+#   dh-broken      the attacker is given the ECDH static keys from the start, and       every query true: ML-KEM alone holds them
+#                  every ECDH secret an honest side computes
+#   kem-broken     the same for ML-KEM                                                  every query true: ECDH alone holds them
+#   both-broken    the attacker is given both                                           every query false: so the model isn't
 #                                                                                       trivially true, and the hybrid is what protects
-# In both-broken, pqnk's authentication fails too. pqxx's may not: the attacker learns each secret only when the honest side computes
-# it, which in pqXX comes after the message the attacker would need to forge with it, so its answer there isn't held to anything ("*").
+# A broken half is broken entirely, in every model (pqnk and pqxx since 2026-11-10, as pqik was): with its static keys the attacker can
+# play that side, so with both broken every authentication query fails too, and is held to it.
 # A variant is made by switching on the lines marked LEAKDH or LEAKKEM. ProVerif writes one "RESULT ... is true." or "... is false." line
 # a query, in the order the queries are written; "cannot be proved" fails wherever an answer is required.
 set -euf
@@ -90,8 +91,8 @@ command -v proverif > /dev/null || { echo 'proofs: proverif is not on the PATH';
 command -v timeout > /dev/null || { echo 'proofs: timeout is not on the PATH, so no run could be held to its time limit'; exit 1; }
 
 # SECRECY ASSUMPTIONS (added 2026-11-10, from the Proofs' round 4 measures; pqnk's in round 6): "not attacker(...)" for every secret the
-# variant doesn't give away. A broken half gives away every result an honest side computes with that half (dhes, ss1 and the rest), and
-# in pqik its static keys too, never the ephemeral exponents, ML-KEM keys and coins themselves. So:
+# variant doesn't give away. A broken half gives away its static keys and every result an honest side computes with that half (dhes, ss1
+# and the rest), never the ephemeral exponents, ML-KEM keys and coins themselves. So:
 #   as written:  every static key, and every ephemeral secret;
 #   dh-broken:   the ML-KEM static keys, and every ephemeral secret;
 #   kem-broken:  the ECDH static keys, and every ephemeral secret;
@@ -125,8 +126,7 @@ secrets() {
 }
 
 # One run: the model, the variant's name, the sed edits that make it (or nothing), which query (0 for every one), whether every name is
-# made with no arguments ("names": see pqik below), and the answers its queries must give, one word each ("true", "false", or "*" for
-# either)
+# made with no arguments ("names": see pqik below), and the answers its queries must give, one word each ("true" or "false")
 variant() {
   model=$1; name=$2; edits=$3; only=$4; names=$5; want=$6
   # Its query's group (pqnk, or the model and query, as pqxx-q3), and whether this run is to do it
@@ -220,7 +220,7 @@ variant() {
   for must in $want; do
     answer=${1:-none}
     [ "$#" -gt 0 ] && shift
-    if [ "$must" != '*' ] && [ "$must" != "$answer" ]; then ok=no; fi
+    if [ "$must" != "$answer" ]; then ok=no; fi
   done
   [ "$#" -eq 0 ] || ok=no
   if [ "$ok" = yes ]; then echo "ok    $label: $got"; else echo "FAIL  $label: got \"$got\", must be \"$want\""; failed=1; fi
@@ -261,12 +261,10 @@ done
 
 # pqxx: 1 and 2 secrecy (joiner's, host's), 3 the host's authentication, 4 the joiner's
 for q in 1 2 3 4; do
-  broken=false
-  if [ "$q" -ge 3 ]; then broken='*'; fi
   variant pqxx as-written '' "$q" no 'true'
   variant pqxx dh-broken "$dh" "$q" no 'true'
   variant pqxx kem-broken "$kem" "$q" no 'true'
-  variant pqxx both-broken "$dh; $kem" "$q" no "$broken"
+  variant pqxx both-broken "$dh; $kem" "$q" no 'false'
 done
 
 if [ "$ran" -eq 0 ]; then echo 'proofs: nothing was run'; exit 1; fi

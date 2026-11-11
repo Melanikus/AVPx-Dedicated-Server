@@ -39,8 +39,9 @@
       only one game session, so a replayed handshake can't be taken twice.
 
    The lines marked LEAKDH and LEAKKEM are comments here. proofs/run.sh makes copies with them switched on, giving the attacker every ECDH
-   secret, or every ML-KEM secret, or both, to show that either half of the hybrid alone keeps both queries true, and that with both
-   broken they fail (so the model isn't trivially true). *)
+   secret, or every ML-KEM secret, or both: the relay's static key of that half, and every result an honest side computes with it. That
+   shows that either half of the hybrid alone keeps both queries true, and that with both broken they fail (so the model isn't trivially
+   true). *)
 
 free c: channel.
 
@@ -198,6 +199,9 @@ process
   new sdh: exponent;
   new skem: kemsk;
   out(c, (exp(g, sdh), kemPub(skem)));
+  (* A broken half is broken entirely: its static key too, from the start (added 2026-11-10 by Melanikus, as pqik.pv has it) *)
+  (*LEAKDH out(c, sdh); LEAKDH*)
+  (*LEAKKEM out(c, skem); LEAKKEM*)
   (
     (! Initiator(exp(g, sdh), kemPub(skem)))
   | (! Responder(sdh, skem))

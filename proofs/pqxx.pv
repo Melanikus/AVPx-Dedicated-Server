@@ -32,7 +32,9 @@
       over the same transcript;
    4. the joiner's authentication to the host, injective: when the host finishes with the honest joiner's identity, that joiner derived
       the same keys over the same transcript.
-   The LEAKDH and LEAKKEM lines are comments here; proofs/run.sh switches them on in copies (proofs/README.md). *)
+   The LEAKDH and LEAKKEM lines are comments here; proofs/run.sh switches them on in copies (proofs/README.md). A broken half is broken
+   entirely: LEAKDH gives the attacker both static ECDH secrets (the host's and the joiner's) and every ECDH result an honest side
+   computes, and LEAKKEM does the same for ML-KEM. Either alone must keep all four queries true; both together make them false. *)
 
 free c: channel.
 
@@ -232,6 +234,9 @@ process
   new jdh: exponent;
   new jkem: kemsk;
   out(c, (exp(g, hdh), kemPub(hkem), exp(g, jdh), kemPub(jkem)));
+  (* A broken half is broken entirely: both its static keys too, from the start (added 2026-11-10 by Melanikus, as pqik.pv has it) *)
+  (*LEAKDH out(c, (hdh, jdh)); LEAKDH*)
+  (*LEAKKEM out(c, (hkem, jkem)); LEAKKEM*)
   (
     (! Joiner(jdh, jkem, fp(exp(g, hdh), kemPub(hkem))))
   | (! Host(hdh, hkem, exp(g, jdh)))

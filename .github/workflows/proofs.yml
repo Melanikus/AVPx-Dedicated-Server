@@ -45,7 +45,7 @@ jobs:
   # Stand-ins for ProVerif, in folders of their own, each put first on a PATH that holds no other: none at all, one that stops, one that
   # runs and answers nothing, one that says "true" to every query, and one that also says each secrecy assumption was verified.
   # proofs/run.sh must fail with each, and never say it passed. The "true" one fails at the first secrecy assumption, which it never says
-  # it checked; the one that says so fails at the variants with both halves broken, whose secrecy must come out false.
+  # it checked; the one that says so fails at the variants with both halves broken, whose every answer must come out false.
   standins:
     name: "Proofs: with no ProVerif, or a broken one, they fail"
     runs-on: ubuntu-24.04

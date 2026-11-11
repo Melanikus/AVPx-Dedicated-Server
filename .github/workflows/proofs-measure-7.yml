@@ -1,0 +1,65 @@
+# MEASURING ONLY (Third, 2026-11-11; branch proofs-measure-7, never merged, never the real Proofs). Round 6 of the Proofs (run
+# 42941752816) had 17 runs run out of their 14 GiB within 5 to 47 minutes, with few rules made (26,400 to 52,600), so their clauses grow.
+# This runs those 17 exactly as the real Proofs does (proofs.yml's install, run.sh, 300 minutes, 14 GiB), measured, twice each:
+# - counts: every 30 seconds, ProVerif's resident memory and its own last count line (rules inserted, base, queue);
+# - rules: ProVerif shows every clause it makes, summarised by proofs/measure-clauses.awk (sizes every 2,000, every 1,000th and the
+#   last 200 kept): which terms grow, so a nounif, select or lemma that ProVerif checks itself can be put where they do.
+# Nothing here proves or disproves anything about the protocol; it only measures. The real check is proofs.yml.
+name: Proofs, measured 7
+
+on:
+  push:
+    branches: [proofs-measure-7]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  measure:
+    name: "measured: ${{ matrix.group }} ${{ matrix.mode }}"
+    runs-on: ubuntu-24.04
+    # As the real Proofs: one run of at most 300 minutes, and the build, inside GitHub's 360 minutes a job
+    timeout-minutes: 330
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [pqik-q2-dh-broken, pqik-q2-kem-broken, pqik-q2-both-broken, pqik-q3-dh-broken, pqik-q3-kem-broken, pqik-q3-both-broken, pqnk-dh-broken, pqnk-kem-broken, pqnk-both-broken, pqxx-q1-kem-broken, pqxx-q1-both-broken, pqxx-q2-kem-broken, pqxx-q2-both-broken, pqxx-q3-kem-broken, pqxx-q3-both-broken, pqxx-q4-kem-broken, pqxx-q4-both-broken]
+        mode: [counts, rules]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The install, word for word as proofs.yml's groups job has it (its header says why each check is there)
+      - name: OCaml, from Ubuntu's signed archive
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends ocaml-nox
+          ocamlopt -version
+      - name: ProVerif 2.05 from INRIA's source, checked by its pinned SHA-256, then built
+        env:
+          URL: https://bblanche.gitlabpages.inria.fr/proverif/proverif2.05.tar.gz
+          KEY: 4871f53c32ab4a04669a060c4886ba5d9080496963fb980a9a62d2c429ceabc4
+        run: |
+          set -eu
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 -o "$RUNNER_TEMP/proverif.tar.gz" "$URL" \
+            || { echo "ProVerif's source (INRIA) is unreachable"; exit 1; }
+          echo "$KEY  $RUNNER_TEMP/proverif.tar.gz" | sha256sum --check --strict \
+            || { echo "the file fetched isn't the pinned ProVerif source (its SHA-256 differs), so it's never built"; exit 1; }
+          tar -tzf "$RUNNER_TEMP/proverif.tar.gz" > "$RUNNER_TEMP/proverif.list"
+          if grep -v '^proverif2\.05/' "$RUNNER_TEMP/proverif.list" | grep -q .; then echo 'a path outside proverif2.05/'; exit 1; fi
+          if grep -q '\.\.' "$RUNNER_TEMP/proverif.list"; then echo 'a path with ..'; exit 1; fi
+          tar -xzf "$RUNNER_TEMP/proverif.tar.gz" -C "$RUNNER_TEMP"
+          (cd "$RUNNER_TEMP/proverif2.05" && sh ./build -nointeract)
+          [ -x "$RUNNER_TEMP/proverif2.05/proverif" ] || { echo 'the build made no proverif'; exit 1; }
+          echo "$RUNNER_TEMP/proverif2.05" >> "$GITHUB_PATH"
+      - name: The one group, measured
+        env:
+          GROUP: ${{ matrix.group }}
+          MODE: ${{ matrix.mode }}
+          PROOFS_RUN_MINUTES: 300
+          PROOFS_MEMORY_GIB: 14
+          PROOFS_SAMPLE_SECONDS: 30
+        run: |
+          if [ "$MODE" = rules ]; then export PROOFS_RULES=1; fi
+          sh proofs/run.sh "$GROUP"

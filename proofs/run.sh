@@ -125,6 +125,44 @@ secrets() {
   IFS=$old_ifs
 }
 
+# MEASURING ONLY (branch proofs-measure-7, Third, 2026-11-11, for the 17 runs that ran out of memory in round 6; never merged). One
+# ProVerif run, under exactly variant's limits (ulimit -v, timeout), in the background, measured every PROOFS_SAMPLE_SECONDS seconds:
+# its resident memory (ps) and ProVerif's own last count line ("N rules inserted. Base: ... Queue: ..."), one "sample" line each time.
+# With PROOFS_RULES=1 as well, ProVerif shows every clause it makes (set verboseRules = true, its manual: "display each clause created
+# during the solving process"), which stops its count lines, so the clauses go through proofs/measure-clauses.awk instead: their number
+# and sizes every 2,000 (the "stats" in each sample), every 1,000th clause and the last 200 kept, and its RESULT lines passed on. That
+# shows which terms grow. With PROOFS_KEEP_DIR, the model as run and everything measured are copied there, for a machine that isn't
+# GitHub's (proofs/measure-droplet.sh). ProVerif's exit code goes in "$1.code", as variant reads it.
+measured_run() {
+  f=$1; lab=$2
+  rm -f "$f.code" "$f.stats" "$f.kept"
+  if [ -n "${PROOFS_RULES:-}" ]; then
+    { echo 'set verboseRules = true.'; cat "$f"; } > "$f.verbose" && mv "$f.verbose" "$f"
+    ( ( ulimit -v $((gib * 1048576)); timeout "${minutes}m" proverif "$f"; echo $? > "$f.code" ) 2>&1 \
+      | awk -v keep="$f.kept" -v stats="$f.stats" -f "$here/measure-clauses.awk" > "$f.out" ) &
+  else
+    ( ( ulimit -v $((gib * 1048576)); timeout "${minutes}m" proverif "$f"; echo $? > "$f.code" ) > "$f.out" 2>&1 ) &
+  fi
+  bg=$!
+  start=$(date +%s)
+  while kill -0 "$bg" 2> /dev/null; do
+    sleep "$PROOFS_SAMPLE_SECONDS"
+    pid=$(pgrep -f "proverif $f\$" | head -n 1 || true)
+    rss=''
+    if [ -n "$pid" ]; then rss=$(ps -o rss= -p "$pid" 2> /dev/null | tr -d ' ' || true); fi
+    count=$(grep -a 'rules inserted' "$f.out" 2> /dev/null | tail -n 1 || true)
+    stat=$(tail -n 1 "$f.stats" 2> /dev/null || true)
+    echo "  sample $lab: $(( $(date +%s) - start ))s rss_kib=${rss:-none} ${count}${stat}"
+  done
+  wait "$bg" 2> /dev/null || true
+  [ -s "$f.code" ] || echo 1 > "$f.code"
+  if [ -s "$f.kept" ]; then sed 's/^/  kept: /' "$f.kept" | head -c 2000000; fi
+  if [ -n "${PROOFS_KEEP_DIR:-}" ]; then
+    keepdir="$PROOFS_KEEP_DIR/$(printf '%s' "$lab" | tr -c 'A-Za-z0-9-' '_')"
+    mkdir -p "$keepdir" && cp "$f" "$f.out" "$f.code" "$keepdir/" && { [ ! -s "$f.stats" ] || cp "$f.stats" "$keepdir/"; } && { [ ! -s "$f.kept" ] || cp "$f.kept" "$keepdir/"; }
+  fi
+}
+
 # One run: the model, the variant's name, the sed edits that make it (or nothing), which query (0 for every one), whether every name is
 # made with no arguments ("names": see pqik below), and the answers its queries must give, one word each ("true" or "false")
 variant() {
@@ -190,7 +228,12 @@ variant() {
 
   ran=$((ran + 1))
   # The memory limit (THE MEMORY LIMIT, above) is set in a subshell of its own, so it holds ProVerif and nothing else of this script
-  if ( ulimit -v $((gib * 1048576)); exec timeout "${minutes}m" proverif "$file" ) > "$file.out" 2>&1; then code=0; else code=$?; fi
+  # MEASURING ONLY (branch proofs-measure-7, Third, 2026-11-11; never merged, never the real Proofs): with PROOFS_SAMPLE_SECONDS set, the
+  # same run, under the same limits, is measured (measured_run, below); without it, this line is exactly the real Proofs'.
+  if [ -n "${PROOFS_SAMPLE_SECONDS:-}" ]; then
+    measured_run "$file" "$label"
+    code=$(cat "$file.code")
+  elif ( ulimit -v $((gib * 1048576)); exec timeout "${minutes}m" proverif "$file" ) > "$file.out" 2>&1; then code=0; else code=$?; fi
   if [ "$code" -eq 124 ]; then
     echo "FAIL  $label: ProVerif didn't end in $minutes minutes"; tail -n 3 "$file.out"; failed=1; return 0
   fi
